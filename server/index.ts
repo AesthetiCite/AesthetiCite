@@ -230,10 +230,13 @@ app.get("/health", (_req, res) => {
 
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen(
-    { port, host: "0.0.0.0", reusePort: true },
-    () => {
-      log(`serving on port ${port}`);
+  { port, host: "0.0.0.0", reusePort: true },
+  () => {
+    log(`serving on port ${port}`);
+
+    if (process.env.NODE_ENV !== "production") {
       startPythonAPIBackground();
+    }
     },
   );
 })();
