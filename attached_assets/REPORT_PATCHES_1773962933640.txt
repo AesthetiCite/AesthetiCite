@@ -1,0 +1,227 @@
+================================================================================
+MEDICO-LEGAL REPORT — INTEGRATION PATCHES
+================================================================================
+
+================================================================================
+PATCH 1 — app/main.py
+================================================================================
+
+ADD import:
+
+    from app.api.report_generator import router as report_router
+
+ADD registration:
+
+    app.include_router(report_router)
+
+Registers:
+  POST /api/generate-report        — JSON report + store
+  POST /api/generate-report/pdf    — Binary PDF download
+  GET  /api/generate-report/{id}   — Retrieve stored report
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD inside registerRoutes():
+
+    // ── Medico-Legal Report Generator ────────────────────────────────────
+    app.get("/api/generate-report/:id",   (req, res) => proxyToFastAPI(req, res, `/api/generate-report/${req.params.id}`));
+    app.post("/api/generate-report",      (req, res) => proxyToFastAPI(req, res, "/api/generate-report"));
+
+    // PDF endpoint — streams binary
+    app.post("/api/generate-report/pdf", async (req, res) => {
+      try {
+        const response = await fetch(`${PYTHON_API_BASE}/api/generate-report/pdf`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+          },
+          body: JSON.stringify(req.body),
+        });
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          return res.status(response.status).json(err);
+        }
+        const disposition = response.headers.get("content-disposition") || "attachment";
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", disposition);
+        const buf = await response.arrayBuffer();
+        res.send(Buffer.from(buf));
+      } catch (error) {
+        res.status(502).json({ detail: "PDF generation failed" });
+      }
+    });
+
+IMPORTANT: The /api/generate-report/:id GET route must come BEFORE /api/generate-report
+POST in the file to avoid Express route matching issues. Put them in this order:
+  1. GET  /api/generate-report/:id
+  2. POST /api/generate-report
+  3. POST /api/generate-report/pdf
+
+
+================================================================================
+PATCH 3 — client/src/pages/complication-decision.tsx
+================================================================================
+
+ADD import:
+
+    import { ReportExportButton } from "@/components/medico-legal-report";
+
+FIND the action buttons row at the bottom of the results section
+(currently has Copy, Print, and the old "Generate Incident Report" button).
+REPLACE with:
+
+    <div className="flex flex-wrap gap-2 pt-2">
+      {/* MONEY FEATURE — one tap medico-legal PDF */}
+      <ReportExportButton
+        complication={result.workflow_key?.replace(/_/g, " ") ?? ""}
+        treatment={
+          (result.workflow ?? [])
+            .filter((_: any, i: number) => completedSteps.has(i + 1))
+            .map((s: any) => s.action)
+            .join("; ")
+        }
+        outcome=""
+        procedure={undefined}
+        region={undefined}
+        evidenceRefs={result.evidence?.slice(0, 5).map((e: any) => ({
+          title: e.title,
+          source: e.source,
+          year: e.year,
+        }))}
+        size="default"
+      />
+      <Button variant="outline" size="sm" onClick={copyHandler}>
+        <Copy className="h-3.5 w-3.5 mr-1.5" /> Copy
+      </Button>
+      <Button variant="outline" size="sm" onClick={() => window.print()}>
+        <Printer className="h-3.5 w-3.5 mr-1.5" /> Print
+      </Button>
+    </div>
+
+
+================================================================================
+PATCH 4 — client/src/pages/workflow.tsx  (completion screen)
+================================================================================
+
+ADD import at top of workflow.tsx:
+
+    import { ReportExportButton } from "@/components/medico-legal-report";
+
+FIND the completion screen (the section that shows when `finished === true`).
+The current completion screen has a LogCaseButton. ADD ReportExportButton alongside it:
+
+    {/* Completion screen */}
+    <div className="text-center py-8 space-y-4">
+      ...
+      <div className="flex flex-col gap-2">
+        {/* Primary action — generate report */}
+        <ReportExportButton
+          complication={workflow.display_name}
+          treatment={
+            steps
+              .filter((_, i) => completedSteps.has(i) && steps[i].drug)
+              .map((s) => `${s.drug} ${s.dose ?? ""}`.trim())
+              .join("; ")
+          }
+          size="default"
+        />
+        {/* Secondary — log case */}
+        <LogCaseButton
+          complication={workflow.display_name}
+          ...
+        />
+      </div>
+      ...
+    </div>
+
+The report button is now ABOVE the case log button — report is the primary CTA.
+
+
+================================================================================
+PATCH 5 — client/src/pages/ask.tsx  (after complication answers)
+================================================================================
+
+After ComplicationProtocolAlert and SimilarCasesPanel, ADD:
+
+    {aciMeta?.query_meta?.is_complication && (
+      <ReportExportButton
+        complication={aciMeta.query_meta.complication_type ?? currentQuery}
+        size="sm"
+      />
+    )}
+
+
+================================================================================
+WHY THIS IS THE MONEY FEATURE
+================================================================================
+
+UK/EU aesthetic medicine requires documentation of every complication.
+GDPR requires retention of adverse event records.
+Medical Defence Organisations (MDO) — MDDUS, MDU, Cosmetic Surgery UK —
+all require written incident documentation within 24 hours.
+
+Currently, clinicians either:
+  a) Don't document at all (high risk)
+  b) Write a note in a practice management system (time-consuming)
+  c) Type something in Word (no standard format)
+
+AesthetiCite does it in one tap, pre-filled from the session.
+The output is 12 sections, structured to MDO standards, with:
+  - Report ID for retrieval
+  - Timestamp
+  - Clinician declaration
+  - Evidence basis (what AesthetiCite recommended)
+  - Disclaimer (legal protection)
+
+The PDF is professional — clinic header, section headings, typography.
+Not a text dump.
+
+THIS IS WHY CLINICS PAY:
+  "AesthetiCite generated the incident report automatically.
+   I just filled in the outcome. It took 2 minutes."
+
+Compare to typing a 1,000-word Word document at 11pm after a difficult case.
+
+The report also creates a feedback loop:
+  - Report stored in safety_reports table
+  - Outcome captured → feeds similar_cases statistics
+  - Over time: outcome data + documentation in one workflow
+
+
+================================================================================
+SECTION STRUCTURE — MDO STANDARD
+================================================================================
+
+  1.  Incident details        Clinic, date, time
+  2.  Treating clinician      Name, role, registration
+  3.  Patient reference       Non-identifiable only
+  4.  Procedure details       What was done, products used
+  5.  Complication            Type, onset, symptoms, diagnosis
+  6.  Timeline                Chronological sequence
+  7.  Treatment given         All interventions + doses
+  8.  Patient response        What happened after treatment
+  9.  Escalation & referrals  Any escalation actions
+  10. Follow-up plan          Next steps, review date
+  11. Evidence basis          What protocol was used
+  12. Clinician declaration   Signature block
+      Disclaimer              Legal protection
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  app/api/report_generator.py               — POST /generate-report, PDF builder
+  client/src/components/medico-legal-report.tsx — Form + PDF/Copy/Share UI
+
+FILES PATCHED (additions only):
+  app/main.py                              — register report_router
+  server/routes.ts                         — 3 routes (GET, POST, POST/pdf)
+  client/src/pages/complication-decision.tsx — replace old report button with ReportExportButton
+  client/src/pages/workflow.tsx            — add to completion screen
+  client/src/pages/ask.tsx                 — add after complication answers
+================================================================================

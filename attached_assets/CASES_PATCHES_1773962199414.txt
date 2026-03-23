@@ -1,0 +1,186 @@
+================================================================================
+DOXIMITY NETWORK EFFECT — INTEGRATION PATCHES
+================================================================================
+
+================================================================================
+PATCH 1 — app/main.py
+================================================================================
+
+ADD import:
+
+    from app.api.cases import router as cases_router
+
+ADD router registration:
+
+    app.include_router(cases_router)
+
+Registers:
+  POST /api/cases                      — log a case
+  GET  /api/cases?complication=...     — similar cases + outcome stats
+  GET  /api/cases/stats                — network-level stats
+  GET  /api/cases/outcomes/{comp}      — outcome breakdown
+  POST /api/cases/{id}/outcome         — update outcome
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD inside registerRoutes():
+
+    // ── Cases Network (Doximity-inspired) ────────────────────────────────
+    app.post("/api/cases",                      (req, res) => proxyToFastAPI(req, res, "/api/cases"));
+    app.get("/api/cases/stats",                 (req, res) => proxyToFastAPI(req, res, "/api/cases/stats"));
+    app.get("/api/cases/outcomes/:comp",        (req, res) => proxyToFastAPI(req, res, `/api/cases/outcomes/${req.params.comp}`));
+    app.get("/api/cases",                       (req, res) => proxyToFastAPI(req, res, "/api/cases"));
+    app.post("/api/cases/:id/outcome",          (req, res) => proxyToFastAPI(req, res, `/api/cases/${req.params.id}/outcome`));
+
+NOTE: Put /api/cases/stats and /api/cases/outcomes/:comp BEFORE /api/cases/:id/outcome
+to prevent Express route ambiguity. Order matters.
+
+
+================================================================================
+PATCH 3 — client/src/pages/complication-decision.tsx
+================================================================================
+
+ADD imports:
+
+    import { SimilarCasesPanel, LogCaseButton } from "@/components/similar-cases";
+
+FIND the results section — the div that holds all the numbered sections.
+ADD SimilarCasesPanel and LogCaseButton at the END (after evidence section,
+before the export buttons):
+
+    {/* SIMILAR CASES — network outcome statistics */}
+    {result && (
+      <SimilarCasesPanel
+        complication={result.workflow_key?.replace(/_/g, " ") ?? ""}
+        region={undefined}
+        defaultExpanded={false}
+      />
+    )}
+
+    {/* LOG THIS CASE button — add to the existing action buttons row */}
+    {result && (
+      <LogCaseButton
+        complication={result.workflow_key?.replace(/_/g, " ") ?? ""}
+        prefillTreatment={
+          // Pre-fill from workflow steps marked as completed
+          (result.workflow ?? [])
+            .filter((_: any, i: number) => completedSteps.has(i + 1))
+            .map((s: any) => s.action)
+            .join("; ")
+        }
+        onLogged={(caseId) => {
+          // Refresh similar cases after logging
+          queryClient.invalidateQueries({ queryKey: ["similar-cases"] });
+        }}
+      />
+    )}
+
+The LogCaseButton pre-fills the treatment field from the workflow steps
+the clinician marked as completed — so logging takes ~10 seconds.
+
+
+================================================================================
+PATCH 4 — client/src/pages/ask.tsx  (main search page)
+================================================================================
+
+ADD imports:
+
+    import { SimilarCasesPanel, LogCaseButton, NetworkStatsBar }
+      from "@/components/similar-cases";
+
+ADD NetworkStatsBar to the empty state (below the evidence quality badge):
+
+    {/* Network stats — shows data density to encourage contribution */}
+    <NetworkStatsBar className="mt-2" />
+
+ADD SimilarCasesPanel and LogCaseButton after any complication answer.
+Find where `aciMeta?.query_meta?.is_complication` is checked (or where
+ComplicationProtocolAlert renders):
+
+    {aciMeta?.query_meta?.is_complication && (
+      <>
+        <SimilarCasesPanel
+          complication={aciMeta.query_meta.complication_type ?? currentQuery}
+          className="my-4"
+        />
+        <LogCaseButton
+          complication={aciMeta.query_meta.complication_type ?? currentQuery}
+          size="sm"
+          variant="outline"
+          label="Log This Case"
+          className="mt-2"
+        />
+      </>
+    )}
+
+
+================================================================================
+WHAT "NETWORK EFFECT" MEANS IN PRACTICE
+================================================================================
+
+Doximity's defensibility comes from: more doctors → more cases →
+better data → more doctors want to use it.
+
+For AesthetiCite:
+
+  DAY 1  (0 cases):
+    "No cases yet. Be the first to contribute."
+
+  MONTH 1  (~50 cases):
+    "78% of 42 vascular occlusion cases resolved
+     Most used: hyaluronidase ×38, aspirin ×29
+     Median resolution: 90 min"
+
+  YEAR 1  (~500+ cases):
+    "78% of 412 cases resolved (n=412)
+     Hyaluronidase dose: 1500 IU ×283, 3000 IU ×87
+     Median resolution: 87 min · Fastest: 12 min
+     Urgent referral in 14% of cases"
+
+That final state is genuinely valuable clinical data that no published
+paper has — because it reflects real-world UK/EU aesthetic clinic outcomes,
+not trial populations.
+
+The LogCaseButton makes contributing take ~10 seconds:
+  - Complication is pre-filled from context
+  - Treatment is pre-filled from completed workflow steps
+  - Clinician only selects outcome + resolution time
+  - No patient data, no clinic name stored
+
+The friction must be this low or it won't happen.
+
+
+================================================================================
+RESOLUTION TIME — WHY IT MATTERS
+================================================================================
+
+The build plan spec stores "time" as a field. The implementation parses
+free-text ("2h", "90 min", "45 minutes") → integer minutes → aggregates to
+median/average. This matters because:
+
+  "Vascular occlusion — median resolution 87 min"
+
+is clinically useful data. It tells the next clinician: if you're at 90 min
+with no improvement, you are beyond the median. Escalate.
+
+The `/api/cases/{id}/outcome` endpoint lets clinicians update outcomes
+AFTER the fact — so they can log the case during treatment and update
+the resolution time when the patient is confirmed resolved.
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  app/api/cases.py                         — Clean POST/GET/stats endpoints
+  client/src/components/similar-cases.tsx  — SimilarCasesPanel + LogCaseButton + NetworkStatsBar
+
+FILES PATCHED (additions only):
+  app/main.py             — register cases_router
+  server/routes.ts        — 5 proxy routes
+  client/src/pages/complication-decision.tsx  — SimilarCasesPanel + LogCaseButton
+  client/src/pages/ask.tsx                    — NetworkStatsBar + SimilarCasesPanel
+================================================================================

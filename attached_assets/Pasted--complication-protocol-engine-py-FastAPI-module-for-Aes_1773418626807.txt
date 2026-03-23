@@ -1,0 +1,538 @@
+# complication_protocol_engine.py
+# FastAPI module for AesthetiCite
+#
+# What this adds:
+# - POST /api/complications/protocol
+# - returns structured emergency protocol for aesthetic complications
+# - first version uses curated protocol library
+# - later you can swap protocol texts / citations with RAG retrieval
+#
+# How to use:
+# 1) save as complication_protocol_engine.py
+# 2) import router into your FastAPI app:
+#       from complication_protocol_engine import router as complication_router
+#       app.include_router(complication_router)
+#
+# Example request:
+# POST /api/complications/protocol
+# {
+#   "query": "suspected vascular occlusion after hyaluronic acid filler",
+#   "context": {
+#     "region": "nasolabial fold",
+#     "product_type": "hyaluronic acid filler",
+#     "symptoms": ["pain", "blanching", "mottling"],
+#     "time_since_injection_minutes": 15
+#   }
+# }
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Literal, Optional
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+import re
+
+router = APIRouter(prefix="/api/complications", tags=["Complication Protocol Engine"])
+
+
+# ---------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------
+
+SeverityLevel = Literal["low", "moderate", "high", "critical"]
+UrgencyLevel = Literal["routine", "same_day", "urgent", "immediate"]
+
+
+class ClinicalContext(BaseModel):
+    region: Optional[str] = None
+    product_type: Optional[str] = None
+    symptoms: List[str] = Field(default_factory=list)
+    time_since_injection_minutes: Optional[int] = None
+    visual_symptoms: Optional[bool] = None
+    skin_color_change: Optional[str] = None
+    pain_score_10: Optional[int] = Field(default=None, ge=0, le=10)
+    free_text: Optional[str] = None
+
+
+class ProtocolRequest(BaseModel):
+    query: str = Field(..., min_length=3)
+    context: Optional[ClinicalContext] = None
+
+
+class EvidenceItem(BaseModel):
+    source_id: str
+    title: str
+    note: str
+
+
+class ProtocolStep(BaseModel):
+    step_number: int
+    action: str
+    rationale: str
+
+
+class DoseGuidance(BaseModel):
+    substance: str
+    recommendation: str
+    notes: str
+
+
+class ProtocolResponse(BaseModel):
+    matched_protocol: str
+    severity: SeverityLevel
+    urgency: UrgencyLevel
+    confidence: float
+    clinical_summary: str
+    immediate_actions: List[ProtocolStep]
+    dose_guidance: List[DoseGuidance]
+    red_flags: List[str]
+    escalation: List[str]
+    monitoring: List[str]
+    limitations: List[str]
+    follow_up_questions: List[str]
+    evidence: List[EvidenceItem]
+    disclaimer: str
+
+
+# ---------------------------------------------------------------------
+# Internal protocol library
+# First production version: curated expert rules.
+# Later you can replace evidence and text with database-backed content.
+# ---------------------------------------------------------------------
+
+PROTOCOL_LIBRARY: Dict[str, Dict[str, Any]] = {
+    "vascular_occlusion_ha_filler": {
+        "name": "Suspected vascular occlusion after hyaluronic acid filler",
+        "severity": "critical",
+        "urgency": "immediate",
+        "summary": (
+            "This presentation is concerning for impending or established vascular compromise "
+            "after hyaluronic acid filler. Time-critical intervention is required to restore "
+            "perfusion and reduce the risk of tissue necrosis. Visual symptoms require immediate "
+            "ophthalmologic emergency escalation."
+        ),
+        "keywords": [
+            "vascular occlusion",
+            "blanching",
+            "mottling",
+            "livedo",
+            "ischemia",
+            "pain after filler",
+            "dusky discoloration",
+            "delayed capillary refill",
+            "necrosis risk",
+            "hyaluronic acid filler",
+        ],
+        "steps": [
+            {
+                "action": "Stop injection immediately and do not place additional filler.",
+                "rationale": "Continuing injection may worsen intravascular obstruction and ischemia.",
+            },
+            {
+                "action": "Assess capillary refill, skin color, temperature, pain, and the extent of livedo or blanching.",
+                "rationale": "Defines severity, distribution, and progression of tissue compromise.",
+            },
+            {
+                "action": "Massage the area firmly and apply warm compresses if not contraindicated.",
+                "rationale": "May help disperse product and promote vasodilation.",
+            },
+            {
+                "action": "Administer high-dose hyaluronidase promptly throughout the affected vascular territory, not only at the injection point.",
+                "rationale": "Rapid enzymatic breakdown of hyaluronic acid filler is the main reversible intervention.",
+            },
+            {
+                "action": "Reassess perfusion repeatedly and repeat hyaluronidase if ischemic signs persist.",
+                "rationale": "Persistent blanching, pain, or livedo suggests ongoing obstruction.",
+            },
+            {
+                "action": "Document baseline photographs and all interventions with exact times.",
+                "rationale": "Critical for continuity, reassessment, and medicolegal documentation.",
+            },
+            {
+                "action": "Escalate immediately if visual symptoms, severe pain, or rapidly expanding discoloration are present.",
+                "rationale": "Retinal ischemia or extensive vascular compromise is an emergency.",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": (
+                    "Use high-dose pulsed treatment. A practical evidence-aligned approach is at least "
+                    "500 IU per affected ischemic area, with many expert protocols using 500 to 1500 IU "
+                    "or more depending on the extent and repeated at short intervals until reperfusion improves."
+                ),
+                "notes": (
+                    "Inject across the entire compromised vascular territory. Do not underdose focal or extensive ischemia. "
+                    "Repeat based on persistent blanching, pain, and capillary refill abnormalities."
+                ),
+            },
+            {
+                "substance": "Aspirin",
+                "recommendation": "Consider according to local protocol and clinician judgment when not contraindicated.",
+                "notes": "Use depends on patient-specific bleeding risk and local practice.",
+            },
+        ],
+        "red_flags": [
+            "Visual disturbance, blurred vision, diplopia, vision loss",
+            "Severe escalating pain",
+            "Rapidly spreading blanching or livedo",
+            "Delayed or absent capillary refill",
+            "Dusky or violaceous discoloration",
+        ],
+        "escalation": [
+            "Immediate ophthalmology / emergency referral for any visual symptom",
+            "Urgent senior clinician review if reperfusion does not improve after initial treatment",
+            "Emergency department referral if tissue compromise is progressive or extensive",
+        ],
+        "monitoring": [
+            "Reassess capillary refill every 15 to 30 minutes initially",
+            "Reassess pain progression and skin color",
+            "Repeat photographs and document response to each treatment cycle",
+            "Continue follow-up until ischemic signs clearly resolve or stabilize under specialist care",
+        ],
+        "limitations": [
+            "Evidence is based largely on expert consensus, reviews, and case-based practice rather than randomized trials",
+            "Optimal hyaluronidase dose and interval are not globally standardized",
+            "This protocol is specific to suspected hyaluronic acid filler-related vascular compromise",
+        ],
+        "follow_up_questions": [
+            "Was the product definitely hyaluronic acid filler?",
+            "Which anatomical region was injected?",
+            "Are there visual symptoms?",
+            "How many minutes have passed since injection?",
+            "Is capillary refill delayed or absent?",
+        ],
+        "evidence": [
+            {
+                "source_id": "S1",
+                "title": "Expert consensus and review literature on vascular occlusion management after HA fillers",
+                "note": "Supports urgent hyaluronidase-based management and repeated reassessment.",
+            },
+            {
+                "source_id": "S2",
+                "title": "Aesthetic medicine guidance on filler ischemia and vascular compromise",
+                "note": "Supports treating the affected vascular territory rather than a single focal point.",
+            },
+            {
+                "source_id": "S3",
+                "title": "Complication management references for retinal ischemia and visual symptoms after filler",
+                "note": "Supports emergency escalation for ocular symptoms.",
+            },
+        ],
+    },
+    "filler_nodules_inflammatory_or_noninflammatory": {
+        "name": "Suspected filler nodules after injectable treatment",
+        "severity": "moderate",
+        "urgency": "same_day",
+        "summary": (
+            "This presentation may represent noninflammatory filler deposition, inflammatory nodules, "
+            "or biofilm/infection-associated complications. Management depends on timing, tenderness, "
+            "erythema, warmth, fluctuance, and filler type."
+        ),
+        "keywords": [
+            "filler nodule",
+            "lump after filler",
+            "bump after filler",
+            "granuloma",
+            "biofilm",
+            "tender swelling",
+            "delayed nodule",
+        ],
+        "steps": [
+            {
+                "action": "Assess onset timing, tenderness, erythema, warmth, fluctuance, and filler type.",
+                "rationale": "Distinguishes early placement irregularity from inflammatory or infectious complications.",
+            },
+            {
+                "action": "Do not aggressively massage delayed tender or inflamed nodules without clarifying the cause.",
+                "rationale": "Could worsen inflammation or obscure diagnosis.",
+            },
+            {
+                "action": "If hyaluronic acid filler is confirmed and the nodule is noninfectious, consider targeted hyaluronidase.",
+                "rationale": "HA filler can often be enzymatically reduced.",
+            },
+            {
+                "action": "If infection is suspected, escalate for clinician review and infection-directed management.",
+                "rationale": "Antibiotic treatment and drainage decisions require clinical assessment.",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": "Use targeted dosing for confirmed HA filler when clinically appropriate.",
+                "notes": "Dose depends on filler type, volume, chronicity, and anatomical area.",
+            }
+        ],
+        "red_flags": [
+            "Rapid swelling with erythema and tenderness",
+            "Fluctuance or drainage",
+            "Systemic symptoms",
+            "Progressive inflammatory change",
+        ],
+        "escalation": [
+            "Urgent clinician review if infection or abscess is suspected",
+            "Senior review for recurrent or treatment-resistant nodules",
+        ],
+        "monitoring": [
+            "Document size, tenderness, erythema, and response to treatment",
+            "Reassess after each intervention",
+        ],
+        "limitations": [
+            "Precise management depends on confirmed filler type and whether inflammation or infection is present"
+        ],
+        "follow_up_questions": [
+            "Is the filler definitely HA?",
+            "How long after injection did the nodule appear?",
+            "Is it tender, red, or warm?",
+            "Is there fluctuance or drainage?",
+        ],
+        "evidence": [
+            {
+                "source_id": "S10",
+                "title": "Review guidance on delayed-onset nodules after fillers",
+                "note": "Supports differentiation between inflammatory, infectious, and placement-related nodules.",
+            }
+        ],
+    },
+    "tyndall_effect_ha_filler": {
+        "name": "Suspected Tyndall effect after superficial hyaluronic acid filler",
+        "severity": "low",
+        "urgency": "routine",
+        "summary": (
+            "This presentation is consistent with superficial placement of hyaluronic acid filler causing "
+            "bluish discoloration. It is usually not an emergency, but correction may be appropriate if "
+            "cosmetically significant."
+        ),
+        "keywords": [
+            "tyndall",
+            "blue discoloration",
+            "bluish under eyes",
+            "superficial filler",
+            "ha filler too superficial",
+        ],
+        "steps": [
+            {
+                "action": "Confirm there are no ischemic features such as pain, blanching, or livedo.",
+                "rationale": "Tyndall effect must be distinguished from vascular compromise.",
+            },
+            {
+                "action": "Assess whether filler is superficial and likely hyaluronic acid.",
+                "rationale": "Management depends on product identity and placement depth.",
+            },
+            {
+                "action": "Consider targeted low-volume hyaluronidase if correction is desired.",
+                "rationale": "HA filler can often be partially reversed.",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": "Use conservative targeted dosing based on area and aesthetic goal.",
+                "notes": "Avoid overcorrection. Reassess before repeating.",
+            }
+        ],
+        "red_flags": [
+            "Pain",
+            "Blanching",
+            "Livedo",
+            "Rapid progression",
+        ],
+        "escalation": [
+            "Escalate if vascular compromise is suspected instead of isolated discoloration",
+        ],
+        "monitoring": [
+            "Monitor cosmetic response and avoid overcorrection",
+        ],
+        "limitations": [
+            "Requires confirmation that the product is HA and the issue is superficial placement"
+        ],
+        "follow_up_questions": [
+            "Is the discoloration blue-gray rather than pale or mottled?",
+            "Was HA filler used?",
+            "Is there pain or blanching?",
+        ],
+        "evidence": [
+            {
+                "source_id": "S20",
+                "title": "Clinical review of superficial HA filler placement and Tyndall effect",
+                "note": "Supports targeted reversal when cosmetically appropriate.",
+            }
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------
+# Matching and protocol selection
+# ---------------------------------------------------------------------
+
+def normalize(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def score_protocol(query: str, context: Optional[ClinicalContext], protocol: Dict[str, Any]) -> float:
+    score = 0.0
+    q = normalize(query)
+
+    for kw in protocol["keywords"]:
+        if kw in q:
+            score += 1.0
+
+    if context:
+        joined_symptoms = " ".join(context.symptoms).lower()
+        for kw in protocol["keywords"]:
+            if kw in joined_symptoms:
+                score += 0.5
+
+        if context.visual_symptoms:
+            if "vascular" in protocol["name"].lower() or "occlusion" in protocol["name"].lower():
+                score += 2.0
+
+        if context.product_type and "hyaluronic" in context.product_type.lower():
+            if "hyaluronic acid filler" in protocol["name"].lower() or "ha filler" in protocol["name"].lower():
+                score += 1.0
+
+        if context.skin_color_change:
+            scc = context.skin_color_change.lower()
+            if scc in ("blanching", "mottling", "dusky", "violaceous"):
+                if "vascular" in protocol["name"].lower():
+                    score += 1.5
+            if "blue" in scc or "bluish" in scc:
+                if "tyndall" in protocol["name"].lower():
+                    score += 1.5
+
+    return score
+
+
+def select_protocol(query: str, context: Optional[ClinicalContext]) -> tuple[str, Dict[str, Any], float]:
+    best_key = ""
+    best_protocol: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+
+    for key, protocol in PROTOCOL_LIBRARY.items():
+        score = score_protocol(query, context, protocol)
+        if score > best_score:
+            best_key = key
+            best_protocol = protocol
+            best_score = score
+
+    if not best_protocol or best_score <= 0:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No matching complication protocol found. Add a broader protocol library or connect "
+                "this endpoint to your retrieval pipeline."
+            ),
+        )
+
+    confidence = min(0.99, 0.45 + 0.08 * best_score)
+    return best_key, best_protocol, round(confidence, 2)
+
+
+# ---------------------------------------------------------------------
+# Response builder
+# ---------------------------------------------------------------------
+
+def build_response(protocol_key: str, protocol: Dict[str, Any], confidence: float, context: Optional[ClinicalContext]) -> ProtocolResponse:
+    steps = [
+        ProtocolStep(step_number=i + 1, action=s["action"], rationale=s["rationale"])
+        for i, s in enumerate(protocol["steps"])
+    ]
+
+    dose_guidance = [
+        DoseGuidance(
+            substance=d["substance"],
+            recommendation=d["recommendation"],
+            notes=d["notes"],
+        )
+        for d in protocol["dose_guidance"]
+    ]
+
+    evidence = [
+        EvidenceItem(
+            source_id=e["source_id"],
+            title=e["title"],
+            note=e["note"],
+        )
+        for e in protocol["evidence"]
+    ]
+
+    # Context-sensitive escalation for ocular symptoms
+    escalation = list(protocol["escalation"])
+    red_flags = list(protocol["red_flags"])
+    monitoring = list(protocol["monitoring"])
+
+    if context and context.visual_symptoms:
+        if "Immediate ophthalmology / emergency referral for any visual symptom" not in escalation:
+            escalation.insert(0, "Immediate ophthalmology / emergency referral for any visual symptom")
+        if "Visual disturbance, blurred vision, diplopia, vision loss" not in red_flags:
+            red_flags.insert(0, "Visual disturbance, blurred vision, diplopia, vision loss")
+
+    return ProtocolResponse(
+        matched_protocol=protocol["name"],
+        severity=protocol["severity"],
+        urgency=protocol["urgency"],
+        confidence=confidence,
+        clinical_summary=protocol["summary"],
+        immediate_actions=steps,
+        dose_guidance=dose_guidance,
+        red_flags=red_flags,
+        escalation=escalation,
+        monitoring=monitoring,
+        limitations=protocol["limitations"],
+        follow_up_questions=protocol["follow_up_questions"],
+        evidence=evidence,
+        disclaimer=(
+            "This output is decision support, not a substitute for clinician judgment. "
+            "Escalate immediately for visual symptoms, rapidly progressive ischemia, suspected infection, "
+            "or diagnostic uncertainty."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
+# API endpoint
+# ---------------------------------------------------------------------
+
+@router.post("/protocol", response_model=ProtocolResponse)
+def generate_complication_protocol(payload: ProtocolRequest) -> ProtocolResponse:
+    protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
+    return build_response(protocol_key, protocol, confidence, payload.context)
+
+
+# ---------------------------------------------------------------------
+# Optional helper: programmatic engine call for internal services
+# ---------------------------------------------------------------------
+
+def run_complication_protocol_engine(query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = ClinicalContext(**context) if context else None
+    protocol_key, protocol, confidence = select_protocol(query, ctx)
+    response = build_response(protocol_key, protocol, confidence, ctx)
+    return response.model_dump()
+
+
+# ---------------------------------------------------------------------
+# Optional: simple local test
+# Run:
+#   uvicorn complication_protocol_engine:router --reload
+# Better:
+#   include router in main FastAPI app instead of serving router directly
+# ---------------------------------------------------------------------
+
+if __name__ == "__main__":
+    sample = run_complication_protocol_engine(
+        query="suspected vascular occlusion after hyaluronic acid filler",
+        context={
+            "region": "nasolabial fold",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["pain", "blanching", "mottling"],
+            "time_since_injection_minutes": 20,
+            "visual_symptoms": False,
+            "skin_color_change": "blanching",
+            "pain_score_10": 8,
+        },
+    )
+    import json
+    print(json.dumps(sample, indent=2, ensure_ascii=False))

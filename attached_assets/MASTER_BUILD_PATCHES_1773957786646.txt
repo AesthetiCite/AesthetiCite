@@ -1,0 +1,134 @@
+================================================================================
+MASTER BUILD PATCHES
+================================================================================
+
+================================================================================
+PATCH 1 — app/main.py
+================================================================================
+
+ADD import:
+
+    from app.api.clinical_decision import router as decision_router
+
+ADD router registration:
+
+    app.include_router(decision_router)
+
+That's it. All 7 endpoints are registered automatically:
+  POST /api/decide
+  POST /api/decide/reasoning
+  POST /api/decide/workflow
+  POST /api/decide/hyaluronidase
+  POST /api/decide/report
+  GET  /api/decide/protocols
+  GET  /api/decide/similar-cases
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD inside registerRoutes():
+
+    // ── Clinical Decision Engine (Master Build) ───────────────────────────
+    app.post("/api/decide",                   (req, res) => proxyToFastAPI(req, res, "/api/decide"));
+    app.post("/api/decide/reasoning",         (req, res) => proxyToFastAPI(req, res, "/api/decide/reasoning"));
+    app.post("/api/decide/workflow",          (req, res) => proxyToFastAPI(req, res, "/api/decide/workflow"));
+    app.post("/api/decide/hyaluronidase",     (req, res) => proxyToFastAPI(req, res, "/api/decide/hyaluronidase"));
+    app.get("/api/decide/protocols",          (req, res) => proxyToFastAPI(req, res, "/api/decide/protocols"));
+    app.get("/api/decide/similar-cases",      (req, res) => proxyToFastAPI(req, res, "/api/decide/similar-cases"));
+
+    // Report — streams a binary file (PDF)
+    app.post("/api/decide/report", async (req, res) => {
+      try {
+        const response = await fetch(`${PYTHON_API_BASE}/api/decide/report`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+          },
+          body: JSON.stringify(req.body),
+        });
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          return res.status(response.status).json(err);
+        }
+        const contentType = response.headers.get("content-type") || "application/octet-stream";
+        const disposition = response.headers.get("content-disposition") || "attachment";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", disposition);
+        const buf = await response.arrayBuffer();
+        res.send(Buffer.from(buf));
+      } catch (error) {
+        res.status(502).json({ detail: "Report generation failed" });
+      }
+    });
+
+
+================================================================================
+PATCH 3 — client/src/App.tsx
+================================================================================
+
+ADD import:
+
+    import ComplicationDecisionPage from "@/pages/complication-decision";
+
+ADD route (put this FIRST in the Switch, or at "/" as the default):
+
+    <Route path="/decide">
+      {() => <ProtectedRoute component={ComplicationDecisionPage} />}
+    </Route>
+
+OPTIONAL: Make /decide the default homepage by replacing the "/" route:
+
+    <Route path="/">
+      {() => <ProtectedRoute component={ComplicationDecisionPage} />}
+    </Route>
+
+
+================================================================================
+OPTIONAL NAVIGATION LINK
+================================================================================
+
+In your sidebar or nav, add:
+
+    { path: "/decide", label: "Clinical Decision", icon: Shield }
+
+Make it the TOP link — this is the primary product surface.
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  app/api/clinical_decision.py          — Unified backend (all 10 features)
+  client/src/pages/complication-decision.tsx — Master UI (one screen)
+
+FEATURES IMPLEMENTED:
+
+  1. Evidence hierarchy ranking          evidence_score() + rank_evidence()
+                                         Guideline → Consensus → Review → RCT
+  2. Clinical reasoning (Glass Health)   build_reasoning() → diagnosis + confidence
+                                         + key signs + differentials
+  3. Safety + escalation (UpToDate)      get_safety_block() → triggers + time window
+                                         + call_emergency flag
+  4. Visual diagnosis bridge             Existing /api/visual/upload — no change needed
+  5. Complication quick-select UI        8 buttons + symptom chips on main page
+  6. Hyaluronidase calculator            calc_hyaluronidase() → region × severity
+                                         + vascular occlusion override (min 1500 IU)
+  7. Quick protocol lookup               GET /api/decide/protocols → all 8 workflows
+  8. Workflow engine                     WORKFLOWS dict → 8 conditions × step-by-step
+                                         Tap-to-complete progress tracking in UI
+  9. Medico-legal report generator       generate_pdf_report() → reportlab PDF
+                                         + form in UI → download button
+  10. Similar cases (Doximity)           get_similar_cases() → queries case_logs table
+                                         Fully anonymised
+
+PERFORMANCE:
+  - LRU cache on /api/decide — cache_key = MD5(query + symptoms + region)
+  - TTL: 5 minutes, max 500 entries
+  - All logic is synchronous/in-memory — target latency < 300ms
+  - Cache hit returns in < 10ms
+
+NO NEW PACKAGES REQUIRED — reportlab already in stack.
+================================================================================

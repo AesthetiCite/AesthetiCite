@@ -1,0 +1,347 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+const API_BASE = import.meta.env.VITE_API_BASE || ""; // e.g. "https://your-backend"
+const getToken = () => localStorage.getItem("token") || "";
+
+function fmtTitle(conv) {
+  const t = (conv.title || "").trim();
+  if (t) return t;
+  const lm = (conv.last_message || "").trim();
+  if (lm) return lm.slice(0, 40) + (lm.length > 40 ? "…" : "");
+  return "New conversation";
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+async function api(path, { method = "GET", body } = {}) {
+  const token = getToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function ssePost(path, payload, onEvent) {
+  // Uses fetch + ReadableStream to parse SSE
+  const token = getToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let abort = new AbortController();
+
+  fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: abort.signal,
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`SSE HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // SSE frames separated by \n\n
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+
+        // parse event + data lines
+        let event = "message";
+        let dataStr = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+        }
+        if (!dataStr) continue;
+
+        let data;
+        try { data = JSON.parse(dataStr); } catch { data = dataStr; }
+        onEvent(event, data);
+      }
+    }
+  }).catch((e) => onEvent("error", { message: String(e) }));
+
+  return () => abort.abort();
+}
+
+export default function App() {
+  const [convos, setConvos] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [messages, setMessages] = useState([]); // [{role, content, created_at}]
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [statusLine, setStatusLine] = useState("");
+  const [sources, setSources] = useState([]); // from SSE "sources"
+  const [error, setError] = useState("");
+
+  const stopStreamRef = useRef(null);
+  const bottomRef = useRef(null);
+
+  const tokenPresent = useMemo(() => !!getToken(), []);
+
+  useEffect(() => {
+    if (!tokenPresent) {
+      setError("Missing token. Please login and store token in localStorage.token.");
+      return;
+    }
+    refreshConversations();
+    // eslint-disable-next-line
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  async function refreshConversations() {
+    try {
+      const data = await api("/conversations");
+      setConvos(data.conversations || []);
+      setError("");
+      // auto-select first conversation if none selected
+      if (!activeId && data.conversations?.length) {
+        await openConversation(data.conversations[0].id);
+      }
+    } catch (e) {
+      setError(String(e.message || e));
+    }
+  }
+
+  async function openConversation(id) {
+    try {
+      // stop current stream
+      if (stopStreamRef.current) stopStreamRef.current();
+      stopStreamRef.current = null;
+
+      setActiveId(id);
+      setLoading(false);
+      setStatusLine("");
+      setSources([]);
+      const data = await api(`/conversations/${id}/messages`);
+      setMessages((data.messages || []).map(m => ({
+        role: m.role,
+        content: m.content,
+        created_at: m.created_at,
+      })));
+      setError("");
+    } catch (e) {
+      setError(String(e.message || e));
+    }
+  }
+
+  async function newConversation() {
+    try {
+      if (stopStreamRef.current) stopStreamRef.current();
+      stopStreamRef.current = null;
+
+      const data = await api("/conversations/new", { method: "POST" });
+      const cid = data.conversation_id;
+      setActiveId(cid);
+      setMessages([]);
+      setSources([]);
+      setStatusLine("");
+      setInput("");
+      setLoading(false);
+      await refreshConversations();
+    } catch (e) {
+      setError(String(e.message || e));
+    }
+  }
+
+  function pushMessage(role, content) {
+    setMessages((prev) => [...prev, { role, content, created_at: new Date().toISOString() }]);
+  }
+
+  function updateLastAssistantAppend(text) {
+    setMessages((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === "assistant") {
+          next[i] = { ...next[i], content: (next[i].content || "") + text };
+          return next;
+        }
+      }
+      // if none exists, create one
+      next.push({ role: "assistant", content: text, created_at: new Date().toISOString() });
+      return next;
+    });
+  }
+
+  async function send() {
+    if (!activeId) return;
+    const q = input.trim();
+    if (!q) return;
+
+    setInput("");
+    setError("");
+    setSources([]);
+    setStatusLine("Searching evidence…");
+    setLoading(true);
+
+    // push user message and placeholder assistant
+    pushMessage("user", q);
+    pushMessage("assistant", "");
+
+    // stream
+    if (stopStreamRef.current) stopStreamRef.current();
+    stopStreamRef.current = ssePost(
+      "/ask/stream",
+      { q, conversation_id: activeId, k: 40 },
+      async (event, data) => {
+        if (event === "status") {
+          setStatusLine(data.message || "");
+        } else if (event === "sources") {
+          setSources(data.sources || []);
+        } else if (event === "replace") {
+          // optional: you could clear last assistant message when replace happens
+          // we'll keep it simple
+        } else if (event === "token") {
+          updateLastAssistantAppend(data.t || "");
+        } else if (event === "meta") {
+          setStatusLine(`Done • ${data.total_ms} ms`);
+          setLoading(false);
+          stopStreamRef.current = null;
+          await refreshConversations();
+        } else if (event === "done") {
+          setLoading(false);
+          stopStreamRef.current = null;
+        } else if (event === "error") {
+          setError(data.message || "Stream error");
+          setLoading(false);
+          stopStreamRef.current = null;
+        }
+      }
+    );
+  }
+
+  return (
+    <div className="h-screen w-screen flex bg-slate-950 text-slate-100">
+      {/* Sidebar */}
+      <div className="w-80 border-r border-slate-800 flex flex-col">
+        <div className="p-3 flex items-center justify-between gap-2 border-b border-slate-800">
+          <div className="font-semibold">AesthetiCite</div>
+          <button
+            onClick={newConversation}
+            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+          >
+            New
+          </button>
+        </div>
+
+        <div className="p-2 overflow-y-auto flex-1">
+          {convos.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => openConversation(c.id)}
+              className={[
+                "w-full text-left px-3 py-2 rounded-xl mb-1",
+                c.id === activeId ? "bg-slate-800" : "hover:bg-slate-900",
+              ].join(" ")}
+            >
+              <div className="text-sm font-medium truncate">{fmtTitle(c)}</div>
+              <div className="text-xs text-slate-400 flex justify-between">
+                <span className="truncate">{(c.last_message || "").slice(0, 30)}</span>
+                <span className="ml-2">{fmtTime(c.created_at)}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="p-2 border-t border-slate-800 text-xs text-slate-400">
+          {statusLine || "Ready"}
+        </div>
+      </div>
+
+      {/* Main */}
+      <div className="flex-1 flex flex-col">
+        {/* Sources ribbon */}
+        <div className="border-b border-slate-800 p-2 text-xs text-slate-300 flex gap-2 overflow-x-auto">
+          {sources?.length ? (
+            sources.slice(0, 12).map((s) => (
+              <a
+                key={s.sid}
+                href={s.url || s.doi_url || s.pubmed_url || "#"}
+                target="_blank"
+                rel="noreferrer"
+                className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 whitespace-nowrap"
+                title={`${s.title || ""} (${s.year || ""}) • ${s.evidence_type || ""}`}
+              >
+                {s.sid} • {s.evidence_type || "Source"} • {s.year || ""}
+              </a>
+            ))
+          ) : (
+            <span className="text-slate-500">Sources will appear here…</span>
+          )}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.map((m, idx) => (
+            <div key={idx} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+              <div
+                className={[
+                  "max-w-3xl rounded-2xl px-4 py-3 whitespace-pre-wrap leading-relaxed",
+                  m.role === "user" ? "bg-blue-600/30 border border-blue-500/30" : "bg-slate-900 border border-slate-800",
+                ].join(" ")}
+              >
+                {m.content}
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Composer */}
+        <div className="border-t border-slate-800 p-3 flex gap-2">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (!loading) send();
+              }
+            }}
+            placeholder={activeId ? "Ask a clinical question…" : "Create a conversation first…"}
+            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 outline-none focus:border-slate-600"
+            disabled={!activeId || loading}
+          />
+          <button
+            onClick={send}
+            disabled={!activeId || loading || !input.trim()}
+            className="px-4 py-2 rounded-xl bg-emerald-600/30 border border-emerald-500/30 hover:bg-emerald-600/40 disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
+
+        {error ? (
+          <div className="p-2 text-xs text-red-300 border-t border-slate-800 bg-red-950/30">
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,72 @@
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Documents: one row per source (guideline, review, IFU, etc.)
+CREATE TABLE IF NOT EXISTS documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_id TEXT UNIQUE NOT NULL,               -- stable external key (e.g., "consensus_2021_foo")
+  title TEXT NOT NULL,
+  authors TEXT,
+  organization_or_journal TEXT,
+  year INT,
+  document_type TEXT NOT NULL,                  -- guideline/review/rct/consensus/ifu/textbook
+  domain TEXT NOT NULL,                         -- medicine/dermatology/aesthetic_medicine
+  version TEXT,
+  status TEXT NOT NULL DEFAULT 'active',        -- active/superseded/archived
+  url TEXT,
+  file_path TEXT,                               -- if stored
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain);
+CREATE INDEX IF NOT EXISTS idx_documents_year ON documents(year);
+CREATE INDEX IF NOT EXISTS idx_documents_trgm_title ON documents USING gin (title gin_trgm_ops);
+
+-- Chunks: the retrievable units
+-- Choose embedding dimension to match your embedding model (e.g., 768, 1024, 1536)
+-- Start with 768 if unsure.
+CREATE TABLE IF NOT EXISTS chunks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  chunk_index INT NOT NULL,
+  text TEXT NOT NULL,
+  page_or_section TEXT,
+  evidence_level TEXT,                          -- guideline/review/consensus etc. (optional override)
+  embedding VECTOR(768),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chunks_doc_chunkindex ON chunks(document_id, chunk_index);
+
+-- Vector index (choose based on your scale; ivfflat is common)
+-- Note: For ivfflat, you should ANALYZE after loading data.
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_ivfflat
+ON chunks USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+
+-- Queries: for analytics & QA
+CREATE TABLE IF NOT EXISTS queries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT,
+  question TEXT NOT NULL,
+  domain TEXT,
+  mode TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  latency_ms INT,
+  citations_count INT,
+  refusal BOOLEAN NOT NULL DEFAULT false,
+  refusal_reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_queries_created_at ON queries(created_at);
+
+-- Optional: store answer + citations snapshot for auditability
+CREATE TABLE IF NOT EXISTS answers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  query_id UUID NOT NULL REFERENCES queries(id) ON DELETE CASCADE,
+  answer_text TEXT NOT NULL,
+  citations_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

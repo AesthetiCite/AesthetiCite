@@ -1,0 +1,233 @@
+# VERIDOC: Auto-build 120+ PMID list + generate top-15 ready-to-use metadata JSON
+# Paste into Replit AI Agent (Python Replit). Then run:
+#   python tools/veridoc_build_120_and_top15.py
+#
+# Requirements: requests (already ok in most setups). If missing:
+#   pip install requests
+
+set -e
+mkdir -p tools data/queue
+
+cat > tools/veridoc_build_120_and_top15.py <<'PY'
+import os
+import re
+import json
+import time
+import requests
+from typing import List, Dict, Any
+
+NCBI_EMAIL = os.getenv("NCBI_EMAIL", "veridoc@example.com")
+NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")  # optional but helps rate limits
+
+BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+
+def ncbi_get(endpoint: str, params: Dict[str, Any]) -> str:
+    params = dict(params)
+    params["email"] = NCBI_EMAIL
+    if NCBI_API_KEY:
+        params["api_key"] = NCBI_API_KEY
+    r = requests.get(BASE + endpoint, params=params, timeout=40)
+    r.raise_for_status()
+    return r.text
+
+def esearch_pubmed(term: str, retmax: int = 50) -> List[str]:
+    xml = ncbi_get("esearch.fcgi", {
+        "db": "pubmed",
+        "term": term,
+        "retmode": "xml",
+        "retmax": str(retmax),
+        "sort": "relevance",
+    })
+    return re.findall(r"<Id>(\d+)</Id>", xml)
+
+def esummary_pubmed(pmids: List[str]) -> List[Dict[str, Any]]:
+    if not pmids:
+        return []
+    # NCBI allows batching; keep batches of 100 to be safe
+    out = []
+    for i in range(0, len(pmids), 100):
+        batch = pmids[i:i+100]
+        xml = ncbi_get("esummary.fcgi", {
+            "db": "pubmed",
+            "id": ",".join(batch),
+            "retmode": "xml",
+        })
+        # Minimal parse (title, source, pubdate, DOI if present)
+        # This XML isn't trivial; for robustness we do lightweight regex extraction by DocSum blocks.
+        docs = re.split(r"</DocSum>", xml)
+        for d in docs:
+            m_id = re.search(r"<Id>(\d+)</Id>", d)
+            if not m_id:
+                continue
+            pmid = m_id.group(1)
+            def item(name: str) -> str:
+                m = re.search(rf'<Item Name="{re.escape(name)}" Type="[^"]+">(.+?)</Item>', d)
+                return re.sub("<.*?>", "", m.group(1)).strip() if m else ""
+            title = item("Title")
+            journal = item("Source")
+            pubdate = item("PubDate")
+            year_m = re.search(r"(\d{4})", pubdate or "")
+            year = int(year_m.group(1)) if year_m else None
+            doi = item("DOI")
+            out.append({
+                "pmid": pmid,
+                "title": title,
+                "journal": journal,
+                "year": year,
+                "doi": doi or None,
+                "pubdate": pubdate or None
+            })
+        time.sleep(0.34)
+    return out
+
+def score_title(title: str) -> int:
+    t = (title or "").lower()
+    score = 0
+    if any(k in t for k in ["guideline", "consensus", "position statement", "recommendation"]):
+        score += 50
+    if any(k in t for k in ["systematic review", "meta-analysis", "review"]):
+        score += 25
+    if any(k in t for k in ["vascular", "occlusion", "ischemia", "necrosis", "blindness", "vision loss", "laser", "burn", "hyaluronidase"]):
+        score += 25
+    return score
+
+def make_source_id(pmid: str, year: int | None) -> str:
+    return f"pubmed_{pmid}_{year or 'nd'}"
+
+def infer_document_type(title: str) -> str:
+    t = (title or "").lower()
+    if any(k in t for k in ["guideline", "consensus", "position statement", "recommendation"]):
+        return "consensus"
+    if "systematic review" in t or "meta-analysis" in t:
+        return "review"
+    if "review" in t:
+        return "review"
+    return "other"
+
+def main():
+    # Targeted queries to get high-value content
+    # These are tuned for: injectables complications, hyaluronidase, vision loss, laser safety, derm overlap
+    QUERIES = [
+        # Fillers / vascular complications
+        '(dermal filler[Title/Abstract] OR hyaluronic acid filler[Title/Abstract]) AND (vascular occlusion[Title/Abstract] OR ischemia[Title/Abstract] OR necrosis[Title/Abstract]) AND (review[Publication Type] OR guideline[Publication Type] OR consensus[Title/Abstract])',
+        # Hyaluronidase use
+        '(hyaluronidase[Title/Abstract]) AND (filler[Title/Abstract] OR hyaluronic acid[Title/Abstract]) AND (review[Publication Type] OR consensus[Title/Abstract])',
+        # Vision loss complications
+        '(facial filler[Title/Abstract] OR dermal filler[Title/Abstract]) AND (blindness[Title/Abstract] OR vision loss[Title/Abstract] OR ophthalmic[Title/Abstract])',
+        # Facial anatomy danger zones
+        '(facial anatomy[Title/Abstract] OR vascular anatomy[Title/Abstract]) AND (filler injection[Title/Abstract] OR injectable[Title/Abstract]) AND (review[Publication Type] OR anatomy[Title/Abstract])',
+        # Botulinum toxin complications
+        '(botulinum toxin[Title/Abstract]) AND (complication[Title/Abstract] OR adverse event[Title/Abstract]) AND (review[Publication Type] OR guideline[Publication Type])',
+        # Laser safety / burns
+        '(laser[Title/Abstract] OR IPL[Title/Abstract] OR intense pulsed light[Title/Abstract]) AND (safety[Title/Abstract] OR burn[Title/Abstract] OR complication[Title/Abstract]) AND (review[Publication Type] OR guideline[Publication Type])',
+        # Fitzpatrick / darker skin risk
+        '(Fitzpatrick[Title/Abstract] OR skin of color[Title/Abstract] OR darker skin[Title/Abstract]) AND (laser[Title/Abstract] OR IPL[Title/Abstract]) AND (risk[Title/Abstract] OR complication[Title/Abstract])',
+        # Derm overlap: isotretinoin + procedures
+        '(isotretinoin[Title/Abstract]) AND (laser[Title/Abstract] OR procedure[Title/Abstract]) AND (review[Publication Type] OR guideline[Publication Type])',
+        # Derm overlap: anticoagulants
+        '(anticoagulant[Title/Abstract] OR anticoagulation[Title/Abstract]) AND (dermal filler[Title/Abstract] OR cosmetic procedure[Title/Abstract])',
+        # Derm overlap: autoimmune
+        '(autoimmune[Title/Abstract] OR immunosuppress*[Title/Abstract]) AND (dermal filler[Title/Abstract] OR aesthetic procedure[Title/Abstract])',
+    ]
+
+    target_total = 120
+    pmids: List[str] = []
+    seen = set()
+
+    # Collect PMIDs
+    for q in QUERIES:
+        ids = esearch_pubmed(q, retmax=60)
+        for pid in ids:
+            if pid not in seen:
+                seen.add(pid)
+                pmids.append(pid)
+        time.sleep(0.34)
+
+    # Trim to target_total (by relevance order from combined queries)
+    pmids = pmids[: max(target_total, 120)]
+
+    # Write the “copy-paste list” (same format you used)
+    input_path = "data/queue/input_120.txt"
+    with open(input_path, "w", encoding="utf-8") as f:
+        f.write("# Auto-generated Veridoc list (PMIDs). Paste into your queue builder if you want.\n")
+        for pid in pmids[:target_total]:
+            f.write(pid + "\n")
+
+    # Fetch summaries for scoring + top 15 metadata JSON
+    meta = esummary_pubmed(pmids[:target_total])
+
+    # Score and sort
+    for m in meta:
+        m["score"] = score_title(m.get("title", ""))
+    meta.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    top15 = meta[:15]
+
+    # Output ready-to-use JSON lines for Veridoc ingestion (you still provide the PDF file)
+    # NOTE: You will download PDFs legally via ERAU, then upload with this metadata.
+    # The url field uses PubMed + DOI (if available).
+    out_jsonl = "data/queue/top15_metadata.jsonl"
+    with open(out_jsonl, "w", encoding="utf-8") as f:
+        for m in top15:
+            pmid = m["pmid"]
+            year = m.get("year")
+            title = m.get("title") or f"PubMed PMID {pmid}"
+            journal = m.get("journal") or "PubMed"
+            doi = m.get("doi")
+            url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+            if doi:
+                url = f"{url} | DOI:{doi}"
+
+            payload = {
+                "source_id": make_source_id(pmid, year),
+                "title": title,
+                "authors": None,
+                "organization_or_journal": journal,
+                "year": year,
+                "document_type": infer_document_type(title),
+                "domain": "aesthetic_medicine",
+                "version": "ERAU-access",
+                "url": url
+            }
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    # Also create a copy-paste friendly text block
+    out_txt = "data/queue/top15_metadata_compact.txt"
+    with open(out_txt, "w", encoding="utf-8") as f:
+        for m in top15:
+            pmid = m["pmid"]
+            year = m.get("year")
+            title = m.get("title") or f"PubMed PMID {pmid}"
+            journal = m.get("journal") or "PubMed"
+            doi = m.get("doi")
+            url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+            if doi:
+                url = f"{url} | DOI:{doi}"
+            payload = {
+                "source_id": make_source_id(pmid, year),
+                "title": title,
+                "authors": None,
+                "organization_or_journal": journal,
+                "year": year,
+                "document_type": infer_document_type(title),
+                "domain": "aesthetic_medicine",
+                "version": "ERAU-access",
+                "url": url
+            }
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    print("✅ Generated:")
+    print(f"- {input_path}  (120 PMIDs)")
+    print(f"- {out_jsonl}   (Top 15 metadata JSONL)")
+    print(f"- {out_txt}     (Top 15 metadata copy/paste)")
+    print("\nNext:")
+    print("1) Download the PDFs legally (via ERAU / society / IFU).")
+    print("2) Upload each PDF with its matching metadata_json using /admin/ingest_pdf.")
+    print("3) Use your bulk uploader once you add pdf_path entries.")
+
+if __name__ == "__main__":
+    main()
+PY
+
+echo "==> Run:"
+echo "python tools/veridoc_build_120_and_top15.py"

@@ -1,0 +1,160 @@
+"""
+DeepConsult Agent — PhD-level multi-study analysis
+=================================================
+
+Endpoint: POST /deepconsult
+
+Use ONLY for complex, multi-study questions.
+This agent is slow, conservative, and academic by design.
+"""
+
+from typing import List, Dict, Optional
+import json, re
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from openai import OpenAI
+
+# -----------------------------
+# OpenAI config (slower, smarter)
+# -----------------------------
+client = OpenAI()
+DEEP_MODEL = "gpt-4.1"   # deliberately slower & more rigorous
+
+# -----------------------------
+# Request schema
+# -----------------------------
+class DeepConsultRequest(BaseModel):
+    question: str
+    filters: Optional[dict] = None
+    max_sources: int = 40      # larger than /qa
+    min_meta_analyses: int = 1 # enforce rigor
+
+router = APIRouter()
+
+# -----------------------------
+# Helper: classify study type
+# -----------------------------
+def study_type(c: dict) -> str:
+    return (c.get("source_type") or "other").lower()
+
+# -----------------------------
+# Core DeepConsult pipeline
+# -----------------------------
+def run_deepconsult(
+    question: str,
+    retrieve_chunks,
+    filters: Optional[dict],
+    max_sources: int,
+    min_meta_analyses: int,
+) -> Dict:
+
+    # 1️⃣ Retrieve widely
+    chunks = retrieve_chunks(question, filters, max_sources)
+
+    if not chunks or len(chunks) < 5:
+        raise HTTPException(400, "Insufficient literature for deep analysis")
+
+    # 2️⃣ Enforce academic rigor
+    metas = [c for c in chunks if study_type(c) == "meta_analysis"]
+    rcts  = [c for c in chunks if study_type(c) == "rct"]
+
+    if len(metas) < min_meta_analyses and len(rcts) < 3:
+        return {
+            "refused": True,
+            "reason": "Insufficient high-level evidence (meta-analyses or RCTs)",
+            "citations": _format_citations(chunks),
+        }
+
+    # 3️⃣ Build evidence table
+    evidence_rows = []
+    for c in chunks[:max_sources]:
+        evidence_rows.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "type": study_type(c),
+            "key_findings": c.get("text", "")[:300],
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+        })
+
+    # 4️⃣ Ask the PhD-level agent
+    system = (
+        "You are DeepConsult, a PhD-level biomedical research analyst.\n"
+        "Your task is to synthesize multiple studies conservatively.\n\n"
+        "RULES:\n"
+        "- No guessing or extrapolation beyond evidence\n"
+        "- Explicitly compare studies\n"
+        "- Discuss bias, heterogeneity, and limitations\n"
+        "- If evidence conflicts, explain why\n"
+        "- Maintain academic tone\n\n"
+        "OUTPUT SECTIONS:\n"
+        "1. Research Question\n"
+        "2. Evidence Summary Table\n"
+        "3. Study-by-Study Analysis\n"
+        "4. Synthesis & Consensus\n"
+        "5. Limitations & Bias\n"
+        "6. Practical Implications\n"
+        "7. References\n"
+    )
+
+    user = (
+        f"Research question:\n{question}\n\n"
+        f"Evidence table:\n{json.dumps(evidence_rows, indent=2)}"
+    )
+
+    resp = client.responses.create(
+        model=DEEP_MODEL,
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.1,
+    )
+
+    text = resp.output_text
+
+    return {
+        "refused": False,
+        "analysis": text,
+        "evidence_table": evidence_rows,
+        "citations": _format_citations(chunks),
+        "meta": {
+            "model": DEEP_MODEL,
+            "sources_used": len(evidence_rows),
+            "meta_analyses": len(metas),
+            "rcts": len(rcts),
+        }
+    }
+
+# -----------------------------
+# Citation formatter
+# -----------------------------
+def _format_citations(chunks: List[dict]) -> List[dict]:
+    out = []
+    seen = set()
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "source_type": c.get("source_type"),
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+        })
+    return out[:20]
+
+# -----------------------------
+# FastAPI endpoint
+# -----------------------------
+@router.post("/deepconsult")
+async def deepconsult_endpoint(req: DeepConsultRequest):
+    return run_deepconsult(
+        question=req.question,
+        retrieve_chunks=retrieve_adapter,   # your existing retriever
+        filters=req.filters,
+        max_sources=req.max_sources,
+        min_meta_analyses=req.min_meta_analyses,
+    )

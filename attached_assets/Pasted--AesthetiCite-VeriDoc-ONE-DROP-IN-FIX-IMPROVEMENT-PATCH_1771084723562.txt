@@ -1,0 +1,150 @@
+# AesthetiCite / VeriDoc — ONE DROP-IN FIX + IMPROVEMENT PATCH
+# هدفه: يجعل FR/EN claim↔evidence matching قوي + أسرع + أكثر استقرارًا
+# ✅ Fix: Unicode tokenization + accent folding (é→e, ç→c)
+# ✅ Improve: bilingual token set (original + folded) + simple light stemming (optional)
+# ✅ Improve: cached tokenization + fast overlap scoring (saves latency a lot in benchmarks)
+#
+# How to use:
+# 1) Paste this in your engine file (where _WORD/_tokens/_select_support live).
+# 2) Replace calls to your old _tokens() with tokens = _tokens(text)
+# 3) Replace your old overlap scorer with score = support_score(claim, chunk_text)
+#
+# NOTE: Keep “no cite → no claim” gating unchanged. This patch only improves matching.
+
+import re
+import unicodedata
+from functools import lru_cache
+from typing import Iterable, List, Set, Tuple
+
+# --- 1) Unicode-safe word regex (fixes French accents) ---
+_WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
+
+# --- 2) Accent folding: NFD decomposition then drop diacritics ---
+def _fold_accents(s: str) -> str:
+    # "sécurité" -> "securite"
+    # safe for Arabic? It will keep Arabic letters as-is (no combining marks removed in most cases)
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", s)
+        if unicodedata.category(ch) != "Mn"
+    )
+
+# --- 3) Optional very-light stemming (keeps it safe; avoids aggressive NLP) ---
+# Helps matching: "précautions" ~ "precaution", "injections" ~ "injection"
+def _light_stem(tok: str) -> str:
+    # Only for Latin-ish tokens to avoid damaging Arabic, etc.
+    if not tok or not tok.isascii():
+        return tok
+    # conservative suffix strip
+    for suf in ("ments", "ment", "ations", "ation", "iques", "ique", "eurs", "eur", "ées", "ée", "es", "s"):
+        if tok.endswith(suf) and len(tok) > len(suf) + 3:
+            return tok[: -len(suf)]
+    return tok
+
+# --- 4) Tokenizer: returns BOTH original and accent-folded tokens, cached ---
+@lru_cache(maxsize=50_000)
+def _tokens(text: str) -> Tuple[str, ...]:
+    if not text:
+        return tuple()
+
+    t = text.lower()
+    raw = _WORD_RE.findall(t)
+
+    # original tokens
+    toks: List[str] = []
+    for w in raw:
+        if len(w) < 2:
+            continue
+        toks.append(w)
+
+    # folded tokens
+    folded = _fold_accents(" ".join(toks))
+    ftoks = _WORD_RE.findall(folded)
+
+    # include stems (very light)
+    out: List[str] = []
+    for w in toks:
+        out.append(w)
+        out.append(_light_stem(w))
+    for w in ftoks:
+        out.append(w)
+        out.append(_light_stem(w))
+
+    # de-dup but preserve some order
+    seen = set()
+    uniq = []
+    for w in out:
+        if not w or len(w) < 2:
+            continue
+        if w in seen:
+            continue
+        seen.add(w)
+        uniq.append(w)
+
+    return tuple(uniq)
+
+# --- 5) Fast overlap scoring for claim↔evidence support (cached) ---
+# Uses a robust overlap (soft Jaccard) with tiny bonuses for multi-word phrase hits
+@lru_cache(maxsize=50_000)
+def _token_set(text: str) -> frozenset:
+    return frozenset(_tokens(text))
+
+def support_score(claim: str, evidence: str) -> float:
+    """
+    Returns 0..1
+    - robust to accents (sécurité vs securite)
+    - robust to plural/suffix variations (light stem)
+    - fast due to caching
+    """
+    if not claim or not evidence:
+        return 0.0
+
+    cset = _token_set(claim)
+    eset = _token_set(evidence)
+
+    if not cset or not eset:
+        return 0.0
+
+    inter = len(cset & eset)
+    if inter == 0:
+        return 0.0
+
+    # soft Jaccard: weight towards claim coverage
+    claim_cov = inter / max(1, len(cset))
+    jacc = inter / max(1, len(cset | eset))
+
+    # phrase bonus (very small, safe)
+    bonus = 0.0
+    folded_claim = _fold_accents(claim.lower())
+    folded_ev = _fold_accents(evidence.lower())
+    # reward if a 2+ word sequence from claim appears in evidence
+    claim_words = _WORD_RE.findall(folded_claim)
+    if len(claim_words) >= 4:
+        phrase = " ".join(claim_words[:3])
+        if phrase and phrase in folded_ev:
+            bonus = 0.04
+
+    score = (0.72 * claim_cov) + (0.28 * jacc) + bonus
+    return float(max(0.0, min(1.0, score)))
+
+# --- 6) Drop-in replacement for your support selector ---
+def select_support(
+    claim: str,
+    candidate_evidence_texts: Iterable[str],
+    *,
+    min_score: float = 0.14,
+    top_k: int = 4,
+) -> List[Tuple[float, str]]:
+    """
+    Returns top_k evidence texts with their scores.
+    Tune min_score:
+      - FR is safer at ~0.12–0.16 after this patch
+      - EN usually fine at ~0.14–0.18
+    """
+    scored: List[Tuple[float, str]] = []
+    for ev in candidate_evidence_texts:
+        s = support_score(claim, ev)
+        if s >= min_score:
+            scored.append((s, ev))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:top_k]

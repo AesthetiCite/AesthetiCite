@@ -1,0 +1,214 @@
+import re
+from typing import List, Dict, Any, Optional, Tuple
+
+# -----------------------------
+# Config knobs
+# -----------------------------
+WIDE_K = 50            # initial fetch size (from vector/BM25/hybrid)
+FINAL_K = 18           # what you pass to the answer model
+MIN_PI_OR_GUIDELINE = 1
+MIN_TOTAL_SOURCES = 3  # unique sources
+MAX_VERIFY_CLAIMS = 6
+
+HIGH_STAKES_KEYWORDS = [
+    "dose", "dosing", "units", "mg", "mcg", "ml", "maximum", "max dose",
+    "vascular occlusion", "blindness", "necrosis", "anaphyl", "lidocaine"
+]
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def is_high_stakes(query: str) -> bool:
+    q = query.lower()
+    return any(k in q for k in HIGH_STAKES_KEYWORDS)
+
+def uniq_sources(chunks: List[dict]) -> List[dict]:
+    seen = set()
+    out = []
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title") or c.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+def quality_weight(source_type: str) -> float:
+    st = (source_type or "other").lower()
+    if st == "pi": return 1.00
+    if st == "guideline": return 0.95
+    if st == "meta_analysis": return 0.85
+    if st == "rct": return 0.80
+    if st == "case_series": return 0.55
+    if st == "review": return 0.50
+    return 0.35
+
+def rerank_simple(query: str, chunks: List[dict]) -> List[dict]:
+    """
+    Lightweight reranker: combines keyword overlap + quality weight.
+    If you already have a reranker model, plug it here instead.
+    """
+    q_terms = set(re.findall(r"[a-z0-9]+", query.lower()))
+    scored = []
+    for c in chunks:
+        text = (c.get("text") or "").lower()
+        overlap = sum(1 for t in q_terms if t in text)
+        qw = quality_weight(c.get("source_type"))
+        score = overlap * 1.0 + qw * 5.0
+        scored.append((score, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored]
+
+def evidence_gate(query: str, chunks: List[dict]) -> Tuple[bool, str]:
+    """
+    Returns (ok_to_answer, reason_if_not).
+    For high-stakes questions, require PI/guideline presence and enough unique sources.
+    """
+    u = uniq_sources(chunks)
+    if not u:
+        return False, "no_sources"
+
+    if not is_high_stakes(query):
+        # For non-high-stakes, require at least some sources
+        if len(u) < 2:
+            return False, "too_few_sources"
+        return True, ""
+
+    # High-stakes gating
+    pi_guideline = sum(1 for c in u if (c.get("source_type") or "").lower() in ("pi", "guideline"))
+    if pi_guideline < MIN_PI_OR_GUIDELINE:
+        return False, "no_pi_or_guideline_for_high_stakes"
+    if len(u) < MIN_TOTAL_SOURCES:
+        return False, "too_few_unique_sources_for_high_stakes"
+
+    return True, ""
+
+# -----------------------------
+# Claim extraction + verification
+# -----------------------------
+def extract_critical_claims_llm(query: str, draft_answer: str) -> List[str]:
+    """
+    Replace with your llm_json call if available.
+    If you already have llm_json(), do:
+      system = "... return JSON {'claims':[...]} ..."
+      return llm_json(...).get('claims', [])[:MAX_VERIFY_CLAIMS]
+    """
+    # Minimal heuristic fallback: extract numeric-looking lines
+    claims = []
+    for line in draft_answer.splitlines():
+        if re.search(r"\b(\d+(\.\d+)?)\b", line) and len(line.strip()) > 10:
+            claims.append(line.strip())
+    return claims[:MAX_VERIFY_CLAIMS]
+
+def claim_supported(claim: str, evidence_texts: List[str]) -> bool:
+    """
+    Deterministic check: tries to find key numbers/phrases from claim in evidence text.
+    This is conservative: if we can't match, treat as unsupported.
+    """
+    c = claim.lower()
+    nums = re.findall(r"\b\d+(\.\d+)?\b", c)
+    # Require at least one number to be found for numeric claims; else keyword check
+    for ev in evidence_texts:
+        evl = ev.lower()
+        if nums:
+            # all numbers in claim must appear somewhere (strict)
+            if all(n in evl for n in nums):
+                # also require at least one medical keyword overlap
+                kw = [w for w in re.findall(r"[a-z]{4,}", c) if w not in ("this", "that", "with", "from", "into")]
+                if any(k in evl for k in kw[:6]):
+                    return True
+        else:
+            # non-numeric claim: require 2+ key tokens present
+            kw = [w for w in re.findall(r"[a-z]{4,}", c)]
+            hit = sum(1 for k in set(kw[:10]) if k in evl)
+            if hit >= 2:
+                return True
+    return False
+
+def verify_or_downgrade_answer(draft_answer: str, chunks: List[dict], claims: List[str]) -> Tuple[str, Dict[str, Any]]:
+    evidence_texts = [(c.get("text") or "") for c in chunks]
+    supported = []
+    unsupported = []
+    for cl in claims:
+        if claim_supported(cl, evidence_texts):
+            supported.append(cl)
+        else:
+            unsupported.append(cl)
+
+    # If any critical numeric claims are unsupported, force conservative revision note.
+    if unsupported:
+        # Append a conservative disclaimer and remove over-specific numbers when possible.
+        # (You can replace this with an LLM rewrite step if you want.)
+        revised = draft_answer.strip()
+        revised += "\n\nEvidence Check:\n"
+        revised += "Some specific details could not be directly verified in the retrieved sources. Where uncertainty exists, follow the product prescribing information and local protocol."
+        meta = {"claims_supported": supported, "claims_unsupported": unsupported}
+        return revised, meta
+
+    return draft_answer, {"claims_supported": supported, "claims_unsupported": []}
+
+# -----------------------------
+# MAIN: improved QA flow
+# -----------------------------
+def improved_qa_pipeline(query: str, filters: Optional[dict], retrieve_chunks, llm_text) -> Dict[str, Any]:
+    """
+    Plug into your /qa endpoint.
+    retrieve_chunks(query, filters, k=...) should return candidate chunks.
+    If your retrieve_chunks doesn't accept k, call it twice or modify it.
+    """
+
+    # 1) Wide retrieval
+    # If your retrieve_chunks doesn't support k, just retrieve and slice.
+    wide = retrieve_chunks(query, filters=filters)
+    if len(wide) > WIDE_K:
+        wide = wide[:WIDE_K]
+
+    # 2) Rerank + take top FINAL_K
+    reranked = rerank_simple(query, wide)
+    top = reranked[:FINAL_K]
+
+    # 3) Evidence gate (refuse or proceed)
+    ok, reason = evidence_gate(query, top)
+    if not ok:
+        return {
+            "answer": (
+                "Clinical Summary:\n"
+                "Insufficient high-quality evidence was retrieved to provide a reliable, specific answer to this question.\n\n"
+                "Practical Steps:\n"
+                "• Use prescribing information / guidelines for the exact product and indication.\n"
+                "• If this is a high-risk scenario, follow emergency and escalation protocols.\n\n"
+                "Evidence Notes:\n"
+                f"Refusal reason: {reason}."
+            ),
+            "meta": {"refused": True, "reason": reason, "wide_k": len(wide), "final_k": len(top)},
+            "citations": [{"title": c.get("title"), "year": c.get("year"), "source_type": c.get("source_type"), "doi": c.get("doi"), "url": c.get("url")} for c in uniq_sources(top)[:8]],
+        }
+
+    # 4) Draft answer (single call)
+    cite_lines = "\n".join(
+        [f"- {c.get('title','')} ({c.get('year','')}) [{c.get('source_type','')}] {c.get('doi') or c.get('url') or ''}".strip()
+         for c in uniq_sources(top)[:8]]
+    )
+
+    system = (
+        "You are AesthetiCite, clinician-facing decision support for aesthetic medicine.\n"
+        "Be conservative. Prefer PI/guidelines. If uncertain, say 'insufficient evidence'.\n"
+        "Return sections: Clinical Summary, Practical Steps, Complications & Red Flags, What can go wrong next?, Evidence Notes."
+    )
+    user = f"Question: {query}\n\nSources:\n{cite_lines}\n"
+    draft = llm_text(system, user, temperature=0.2)
+
+    # 5) Claim verification (deterministic)
+    claims = extract_critical_claims_llm(query, draft)
+    final, verify_meta = verify_or_downgrade_answer(draft, top, claims)
+
+    return {
+        "answer": final,
+        "meta": {
+            "refused": False,
+            "wide_k": len(wide),
+            "final_k": len(top),
+            "verification": verify_meta,
+        },
+        "citations": [{"title": c.get("title"), "year": c.get("year"), "source_type": c.get("source_type"), "doi": c.get("doi"), "url": c.get("url")} for c in uniq_sources(top)[:8]],
+    }

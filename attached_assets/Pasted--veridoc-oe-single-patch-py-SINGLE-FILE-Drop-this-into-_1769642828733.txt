@@ -1,0 +1,523 @@
+"""
+veridoc_oe_single_patch.py  (SINGLE FILE)
+
+Drop this into your FastAPI backend and include its router.
+It provides an OpenEvidence-like /ask endpoint with:
+
+✅ OpenEvidence-like answer structure:
+   - Clinical Summary + Answer + Safety + Evidence Strength
+
+✅ Better accuracy:
+   - Evidence scoring (tier/recency/overlap)
+   - Claim planning (JSON) BEFORE writing
+   - Tier gating (Tier A required for dosing/contraindications)
+   - Conflict guard (refuse if safety-critical conflict)
+
+✅ Lower hallucinations:
+   - Hard "no cite -> no claim" (each paragraph must include [S#])
+   - Numeric verification (numbers+units must appear in sources)
+
+✅ OpenEvidence-like product features:
+   - Related follow-up questions (safe)
+   - Inline tool objects (deterministic calculators), optional
+
+⚠️ You MUST plug in ONLY 3 functions:
+   1) retrieve_chunks(query, k, lang) -> list[Chunk]
+   2) llm_json(system, user, schema_hint) -> dict
+   3) llm_text(system, user) -> str
+   4) execute_tool(name, args) -> dict   (optional but recommended)
+
+Everything else is included.
+
+USAGE
+-----
+from fastapi import FastAPI
+from veridoc_oe_single_patch import router as oe_router
+app = FastAPI()
+app.include_router(oe_router)
+
+ENV (recommended)
+-----------------
+- OE_TOP_K=14
+- OE_EVIDENCE_K=10
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Literal
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
+
+
+# =============================================================================
+# YOU PLUG THESE 3 FUNCTIONS (and optionally execute_tool)
+# =============================================================================
+
+@dataclass
+class Chunk:
+    source_id: str
+    title: str
+    text: str
+    url: Optional[str] = None
+    page: Optional[int] = None
+    section: Optional[str] = None
+    year: Optional[int] = None
+    source_language: Optional[str] = None
+
+
+async def retrieve_chunks(query: str, k: int, lang: str) -> List[Chunk]:
+    """
+    PLUG IN: Your existing hybrid retrieval.
+    Must return best chunks with metadata (at least source_id/title/text).
+    """
+    raise NotImplementedError
+
+
+async def llm_json(system: str, user: str, schema_hint: str) -> Dict[str, Any]:
+    """
+    PLUG IN: Your existing LLM JSON call (strict JSON mode if possible).
+    Temperature = 0 recommended.
+    """
+    raise NotImplementedError
+
+
+async def llm_text(system: str, user: str) -> str:
+    """
+    PLUG IN: Your existing LLM text call.
+    Temperature = 0 recommended.
+    """
+    raise NotImplementedError
+
+
+async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    OPTIONAL PLUG IN: Call your deterministic tool registry.
+    Return a dict like:
+    {
+      "name": "...",
+      "args": {...},
+      "output": {...},
+      "warnings": [...],
+      "evidence": [{"source_id":"...", "label":"..."}]
+    }
+    If you don't want tools now, keep NotImplementedError and it will be skipped.
+    """
+    raise NotImplementedError
+
+
+# =============================================================================
+# PATCH IMPLEMENTATION (no other dependencies)
+# =============================================================================
+
+router = APIRouter(tags=["openEvidence-style"])
+
+EvidenceTier = Literal["A", "B", "C", "UNKNOWN"]
+StudyType = Literal["guideline", "rct", "labeling", "review", "observational", "expert", "unknown"]
+
+class AskRequest(BaseModel):
+    query: str
+    lang: Optional[str] = None
+    user_id: Optional[str] = None
+    include_related_questions: bool = True
+    include_inline_tools: bool = True
+
+
+class Citation(BaseModel):
+    source_id: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    page: Optional[int] = None
+    section: Optional[str] = None
+    quote: Optional[str] = None  # short excerpt
+    year: Optional[int] = None
+    tier: EvidenceTier = "UNKNOWN"
+    study_type: StudyType = "unknown"
+    score: Optional[float] = None
+    source_language: Optional[str] = None
+
+
+class InlineToolObject(BaseModel):
+    name: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+    output: Dict[str, Any] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+    evidence: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class AskResponse(BaseModel):
+    status: Literal["ok", "refuse", "error"]
+    answer: Optional[str] = None
+    clinical_summary: Optional[str] = None
+    evidence_strength: Optional[str] = None
+    refusal_code: Optional[str] = None
+    refusal_reason: Optional[str] = None
+    citations: List[Citation] = Field(default_factory=list)
+    inline_tools: List[InlineToolObject] = Field(default_factory=list)
+    related_questions: List[str] = Field(default_factory=list)
+    debug: Optional[Dict[str, Any]] = None
+
+
+# -------------------------
+# Evidence heuristics
+# -------------------------
+
+_TIER_A = ("fda", "ema", "smPC".lower(), "prescribing information", "label", "randomized", "rct", "guideline")
+_TIER_B = ("consensus", "position statement", "society", "practice guideline")
+_TIER_C = ("review", "expert opinion", "case report", "narrative")
+
+def infer_study_type(ch: Chunk) -> StudyType:
+    t = (ch.title + " " + (ch.section or "") + " " + ch.text[:400]).lower()
+    if "prescribing information" in t or "smPC".lower() in t or "label" in t:
+        return "labeling"
+    if "guideline" in t or "practice guideline" in t:
+        return "guideline"
+    if "randomized" in t or "rct" in t:
+        return "rct"
+    if "review" in t:
+        return "review"
+    if "cohort" in t or "observational" in t:
+        return "observational"
+    if "expert" in t or "opinion" in t:
+        return "expert"
+    return "unknown"
+
+def infer_tier(ch: Chunk) -> EvidenceTier:
+    t = (ch.title + " " + (ch.section or "") + " " + ch.text[:400]).lower()
+    if any(k in t for k in _TIER_A):
+        return "A"
+    if any(k in t for k in _TIER_B):
+        return "B"
+    if any(k in t for k in _TIER_C):
+        return "C"
+    return "UNKNOWN"
+
+def score_chunk(ch: Chunk, query: str) -> float:
+    tier = infer_tier(ch)
+    tier_score = {"A": 1.0, "B": 0.72, "C": 0.45, "UNKNOWN": 0.55}[tier]
+
+    year_score = 0.0
+    if ch.year:
+        age = max(0, time.gmtime().tm_year - ch.year)
+        year_score = max(0.0, 1.0 - (age / 15.0))  # fade over 15y
+
+    q_terms = {w for w in re.findall(r"[a-zA-Z]{3,}", query.lower())}
+    c_terms = set(re.findall(r"[a-zA-Z]{3,}", (ch.title + " " + ch.text[:900]).lower()))
+    overlap = len(q_terms & c_terms) / max(1, len(q_terms))
+    overlap_score = min(1.0, overlap)
+
+    return round(0.55 * tier_score + 0.25 * year_score + 0.20 * overlap_score, 4)
+
+def detect_conflict(top_chunks: List[Chunk]) -> bool:
+    pos = 0
+    neg = 0
+    for ch in top_chunks[:12]:
+        t = ch.text.lower()
+        if any(x in t for x in ("recommended", "effective", "safe", "supports", "improves")):
+            pos += 1
+        if any(x in t for x in ("not recommended", "insufficient", "no evidence", "contraindicated", "avoid")):
+            neg += 1
+    return pos > 0 and neg > 0
+
+def best_tier_available(chunks: List[Chunk]) -> EvidenceTier:
+    tiers = [infer_tier(c) for c in chunks]
+    if "A" in tiers: return "A"
+    if "B" in tiers: return "B"
+    if "C" in tiers: return "C"
+    return "UNKNOWN"
+
+
+# -------------------------
+# Numeric verification (strict)
+# -------------------------
+
+_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mg|mcg|g|ml|mL|iu|IU|units|%)")
+
+def extract_numbers(text: str) -> List[str]:
+    return [f"{m.group(1)}{m.group(2).lower()}" for m in _NUM_RE.finditer(text or "")]
+
+def numbers_supported(answer_text: str, chunks: List[Chunk]) -> bool:
+    nums = extract_numbers(answer_text)
+    if not nums:
+        return True
+    corpus = " ".join(ch.text.lower() for ch in chunks[:10])
+    return all(n in corpus for n in nums)
+
+
+# -------------------------
+# Evidence pack builder
+# -------------------------
+
+def make_evidence_pack(scored: List[Tuple[Chunk, float]]) -> Tuple[str, List[Citation]]:
+    citations: List[Citation] = []
+    blocks: List[str] = []
+    for i, (ch, sc) in enumerate(scored, start=1):
+        sid = f"S{i}"
+        tier = infer_tier(ch)
+        st = infer_study_type(ch)
+        words = ch.text.strip().split()
+        quote = " ".join(words[:25]) if words else None
+        citations.append(Citation(
+            source_id=ch.source_id,
+            title=ch.title,
+            url=ch.url,
+            page=ch.page,
+            section=ch.section,
+            quote=quote,
+            year=ch.year,
+            tier=tier,
+            study_type=st,
+            score=sc,
+            source_language=ch.source_language
+        ))
+        blocks.append(
+            f"[{sid}] (tier={tier}, type={st}, year={ch.year})\n"
+            f"TITLE: {ch.title}\n"
+            f"TEXT: {ch.text}\n"
+        )
+    return "\n\n".join(blocks), citations
+
+
+# -------------------------
+# Planner + Synthesizer prompts
+# -------------------------
+
+PLAN_SCHEMA_HINT = """
+Return JSON only:
+{
+  "claims": [
+    {
+      "claim_id": "C1",
+      "text": "...",
+      "required_evidence_tier": "A|B|C",
+      "must_refuse_if_missing": true|false,
+      "category": "dosing|contraindication|safety|efficacy|workflow|other"
+    }
+  ],
+  "required_tools": ["interaction_check","local_anesthetic_max_dose", "..."],
+  "high_risk": true|false,
+  "refusal_if": ["NO_TIER_A_FOR_DOSING","CONFLICTING_EVIDENCE","INSUFFICIENT_EVIDENCE"]
+}
+Rules:
+- Do not invent facts.
+- Dosing/contraindications require Tier A.
+- If evidence likely insufficient for a safety-critical question, set must_refuse_if_missing=true.
+"""
+
+SYSTEM_PLANNER = (
+    "You are VeriDoc Planner (evidence-first, safety-first).\n"
+    "You must create a claim plan fully supported by the Evidence Pack.\n"
+    "If the user asks for dosing/contraindications and Tier A is missing, request refusal.\n"
+    "Return STRICT JSON only."
+)
+
+SYSTEM_SYNTH = (
+    "You are VeriDoc Synthesizer.\n"
+    "Hard rules:\n"
+    "- Use ONLY the Evidence Pack.\n"
+    "- Every paragraph MUST include at least one citation marker like [S1].\n"
+    "- Do NOT add numbers that are not present in the Evidence Pack.\n"
+    "- Output in this structure (headers required):\n"
+    "  Clinical Summary:\n"
+    "  Answer:\n"
+    "  Safety & Contraindications:\n"
+    "  Evidence Strength:\n"
+    "- If you cannot answer without guessing, output EXACTLY: INSUFFICIENT_EVIDENCE\n"
+)
+
+SYSTEM_RELATED = (
+    "Generate safe clinician follow-up questions.\n"
+    "Return JSON only: {\"questions\": [\"...\", ...]}.\n"
+    "Do not encourage unsafe actions."
+)
+
+
+def evidence_strength_label(best_tier: EvidenceTier, conflict: bool) -> str:
+    if conflict:
+        return "Limited"
+    return {"A": "High", "B": "Moderate", "C": "Limited", "UNKNOWN": "Limited"}[best_tier]
+
+
+def extract_section(text: str, header: str) -> Optional[str]:
+    # capture content after "Header:" until next header-like line
+    pattern = rf"{header}\s*:\s*(.*?)(?:\n[A-Za-z &]+:\s*|\Z)"
+    m = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+    return m.group(1).strip() if m else None
+
+
+def ensure_each_paragraph_has_cite(answer_text: str) -> bool:
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_text.strip()) if p.strip()]
+    for p in paragraphs:
+        if not re.search(r"\[S\d+\]", p):
+            return False
+    return True
+
+
+# =============================================================================
+# The upgraded endpoint
+# =============================================================================
+
+@router.post("/ask", response_model=AskResponse)
+async def ask(request: Request, body: AskRequest) -> AskResponse:
+    t0 = time.time()
+    query = body.query.strip()
+    if not query:
+        return AskResponse(status="refuse", refusal_code="EMPTY_QUERY", refusal_reason="Empty query.")
+
+    lang = (body.lang or "en").lower().split("-")[0]
+
+    # 1) Retrieval
+    top_k = 14
+    evidence_k = 10
+    chunks = await retrieve_chunks(query=query, k=top_k, lang=lang)
+
+    if not chunks:
+        return AskResponse(
+            status="refuse",
+            refusal_code="NO_EVIDENCE",
+            refusal_reason="Insufficient evidence retrieved to answer reliably.",
+            citations=[],
+        )
+
+    # 2) Evidence scoring + selection
+    scored = [(ch, score_chunk(ch, query)) for ch in chunks]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    selected = scored[:evidence_k]
+    selected_chunks = [c for c, _ in selected]
+
+    conflict = detect_conflict(selected_chunks)
+    best_tier = best_tier_available(selected_chunks)
+    strength = evidence_strength_label(best_tier, conflict)
+
+    evidence_pack, citations = make_evidence_pack(selected)
+
+    # 3) Claim planning (JSON)
+    planner_user = f"USER QUESTION:\n{query}\n\nEVIDENCE PACK:\n{evidence_pack}\n\nReturn the claim plan."
+    try:
+        plan = await llm_json(SYSTEM_PLANNER, planner_user, PLAN_SCHEMA_HINT)
+    except Exception as e:
+        return AskResponse(
+            status="refuse",
+            refusal_code="PLANNER_FAILED",
+            refusal_reason="Unable to construct a safe evidence-grounded plan.",
+            citations=citations,
+            debug={"planner_error": repr(e)},
+        )
+
+    claims = plan.get("claims", [])
+    required_tools = plan.get("required_tools", []) or []
+    high_risk = bool(plan.get("high_risk", False))
+    refusal_if = set(plan.get("refusal_if", []) or [])
+
+    # 4) Tier gating + conflict guard (safety-first)
+    if conflict and ("CONFLICTING_EVIDENCE" in refusal_if or high_risk):
+        return AskResponse(
+            status="refuse",
+            refusal_code="CONFLICTING_EVIDENCE",
+            refusal_reason="Available medical evidence is conflicting or inconsistent for a safety-relevant conclusion.",
+            citations=citations,
+        )
+
+    # If any dosing/contraindication claim requires Tier A but Tier A absent -> refuse
+    for c in claims:
+        cat = str(c.get("category", "other")).lower()
+        req = str(c.get("required_evidence_tier", "UNKNOWN")).upper()
+        must = bool(c.get("must_refuse_if_missing", False))
+        if cat in ("dosing", "contraindication", "safety") and req == "A":
+            if best_tier != "A" and must:
+                return AskResponse(
+                    status="refuse",
+                    refusal_code="NO_TIER_A_EVIDENCE",
+                    refusal_reason="High-quality primary evidence is required for dosing/contraindication guidance, but Tier A sources were not found in the retrieved evidence set.",
+                    citations=citations,
+                )
+
+    # 5) Inline tool objects (optional, deterministic)
+    inline_tools: List[InlineToolObject] = []
+    if body.include_inline_tools and required_tools:
+        for tool_name in required_tools[:4]:  # cap to keep latency sane
+            try:
+                # You should map args from query/context in your pipeline.
+                # Here we call with empty args; your execute_tool should refuse if args missing.
+                tool_res = await execute_tool(tool_name, {})
+                if isinstance(tool_res, dict) and tool_res.get("name"):
+                    inline_tools.append(InlineToolObject(**tool_res))
+            except NotImplementedError:
+                break
+            except Exception:
+                continue
+
+    # 6) Final synthesis
+    synth_user = (
+        f"USER QUESTION:\n{query}\n\n"
+        f"EVIDENCE PACK (use citation markers [S1],[S2],...):\n{evidence_pack}\n\n"
+        f"CLAIM PLAN JSON:\n{json.dumps(plan, ensure_ascii=False)}\n\n"
+        "Write the response now."
+    )
+    answer_text = await llm_text(SYSTEM_SYNTH, synth_user)
+
+    if answer_text.strip() == "INSUFFICIENT_EVIDENCE":
+        return AskResponse(
+            status="refuse",
+            refusal_code="INSUFFICIENT_EVIDENCE",
+            refusal_reason="Insufficient evidence to answer this question reliably from the retrieved sources.",
+            citations=citations,
+        )
+
+    # 7) Hard gates: citations per paragraph + numeric verification
+    if not ensure_each_paragraph_has_cite(answer_text):
+        return AskResponse(
+            status="refuse",
+            refusal_code="MISSING_CITATIONS",
+            refusal_reason="Draft answer contains statements without required citation markers.",
+            citations=citations,
+        )
+
+    if not numbers_supported(answer_text, selected_chunks):
+        return AskResponse(
+            status="refuse",
+            refusal_code="NUMERIC_UNSUPPORTED",
+            refusal_reason="A numeric statement in the draft answer could not be verified against the retrieved evidence.",
+            citations=citations,
+        )
+
+    # 8) Related questions (OpenEvidence-like)
+    related_questions: List[str] = []
+    if body.include_related_questions:
+        related_user = (
+            f"USER QUESTION:\n{query}\n\n"
+            "Return 4–6 safe follow-up questions for a clinician."
+        )
+        try:
+            rj = await llm_json(SYSTEM_RELATED, related_user, '{"questions":[...]}')
+            qs = rj.get("questions", [])
+            if isinstance(qs, list):
+                related_questions = [str(x)[:160] for x in qs][:6]
+        except Exception:
+            related_questions = []
+
+    # 9) Extract Clinical Summary for UI parity
+    clinical_summary = extract_section(answer_text, "Clinical Summary")
+
+    dt_ms = int((time.time() - t0) * 1000)
+    debug = {"latency_ms": dt_ms, "best_tier": best_tier, "conflict": conflict}
+
+    return AskResponse(
+        status="ok",
+        answer=answer_text,
+        clinical_summary=clinical_summary,
+        evidence_strength=strength,
+        citations=citations,
+        inline_tools=inline_tools,
+        related_questions=related_questions,
+        debug=debug,
+    )
+
+
+@router.get("/ask/health")
+def health() -> Dict[str, str]:
+    return {"status": "ok", "patch": "veridoc_oe_single_patch"}

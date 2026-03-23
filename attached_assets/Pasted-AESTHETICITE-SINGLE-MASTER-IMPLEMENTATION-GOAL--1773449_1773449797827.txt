@@ -1,0 +1,379 @@
+AESTHETICITE — SINGLE MASTER IMPLEMENTATION
+===========================================
+
+GOAL
+----
+Make AesthetiCite clinic-pilot operational now.
+
+THIS IS THE 10X VALUE MOVE
+--------------------------
+Do NOT build another generic AI feature first.
+Build the operational clinic layer now.
+
+This turns AesthetiCite from:
+- impressive demo
+into:
+- clinic-ready pilot platform
+
+WHY THIS IS THE HIGHEST-VALUE MOVE
+----------------------------------
+Because clinics, pilot partners, and acquirers care less about “one more answer feature”
+and more about whether AesthetiCite can actually function as:
+- a safety workflow
+- a persistent clinic system
+- an exportable reporting platform
+- an installable tool
+- a measurable operational product
+
+FILES TO REPLACE / ADD
+======================
+
+1) BACKEND — Growth Engine
+--------------------------
+REPLACE:
+    app/api/growth_engine.py
+
+WITH:
+    the uploaded file:
+    growth_engine_pg.py
+
+WHY:
+- moves growth features from SQLite to PostgreSQL
+- preserves route compatibility
+- keeps bookmarks
+- keeps session safety reports
+- keeps dashboard logging
+- keeps patient-readable export
+- keeps API keys
+- keeps paper alerts
+- keeps drug interactions
+- adds production persistence
+
+SOURCE:
+- growth_engine_pg.py :contentReference[oaicite:4]{index=4}
+
+2) BACKEND — Main FastAPI app
+-----------------------------
+REPLACE:
+    app/main.py
+
+WITH:
+    the uploaded file:
+    main_complete.py
+
+WHY:
+- wires in the PostgreSQL growth engine
+- preserves existing routers
+- adds safety v2 router
+- adds operational router
+- applies startup patches
+- adds clinic_id migration on users
+- adds email_verified support
+- keeps startup and shutdown flow consistent
+
+SOURCE:
+- main_complete.py :contentReference[oaicite:5]{index=5}
+
+3) FRONT/BFF — Express routes additions
+---------------------------------------
+ADD:
+    the uploaded block from routes_additions.ts
+    into:
+    server/routes.ts
+
+WHERE:
+- inside registerRoutes()
+- just before final:
+    return httpServer;
+
+ALSO ADD AT TOP OF server/routes.ts:
+    import rateLimit from "express-rate-limit";
+
+ALSO ADD TO package.json:
+    dependencies:
+      "express-rate-limit": "^7.0.0"
+
+    devDependencies:
+      "@types/express-rate-limit": "^6.0.0"
+
+THEN RUN:
+    npm install express-rate-limit
+
+WHY:
+- adds rate limiting for search, safety, and auth
+- exposes operational endpoints
+- exposes safety v2 endpoints
+- serves real /sw.js
+- serves manifest.json
+- adds safer clinic logging path
+- prepares proper production traffic handling
+
+SOURCE:
+- routes_additions.ts :contentReference[oaicite:6]{index=6}
+
+4) FRONTEND PWA — Service Worker
+--------------------------------
+CREATE / REPLACE:
+    client/public/sw.js
+
+WITH:
+    the uploaded file:
+    sw_production.js
+
+WHY:
+- real PWA worker
+- cache-first for assets
+- network-first for pages
+- network-only for API
+- offline page support
+- service worker lifecycle handling
+- push notification support
+- background sync hooks
+- safer offline behavior for clinical app shell
+
+SOURCE:
+- sw_production.js :contentReference[oaicite:7]{index=7}
+
+5) FRONTEND — Register the service worker
+-----------------------------------------
+ADD this to:
+    client/src/main.tsx
+
+AFTER app mount:
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/" })
+      .then((reg) => console.log("[PWA] Service worker registered", reg.scope))
+      .catch((err) => console.warn("[PWA] Service worker registration failed", err));
+  });
+}
+
+WHY:
+- without this, the production service worker will not activate
+
+6) FRONTEND — Fix clinic query logging
+--------------------------------------
+IN:
+    client/src/pages/ask.tsx
+
+FIND the old function:
+    logQueryToClinic(question, answerPreview, aci, durationMs)
+
+REPLACE with:
+
+function logQueryToClinic(question: string, aci: number | null, durationMs: number) {
+  const token = getToken();
+  if (!token) return;
+
+  fetch("/api/ops/dashboard/log-query", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      query_text: question,
+      answer_type: "evidence_search",
+      aci_score: aci ?? undefined,
+      response_time_ms: Math.round(durationMs),
+      domain: "aesthetic_medicine",
+    }),
+  }).catch(() => {});
+}
+
+UPDATE the call sites to:
+    logQueryToClinic(question, aciScore, Date.now() - queryStartTimeRef.current);
+
+WHY:
+- clinic logging must derive clinic identity server-side from authenticated user
+- do not trust localStorage clinic_id
+
+7) FRONTEND — Safety navigation
+-------------------------------
+MAKE /safety-workspace the single safety hub
+
+HEADER:
+- point Safety button to:
+    /safety-workspace
+
+REMOVE fragmented navigation emphasis on:
+- /safety-check
+- /session-report
+
+KEEP these as supporting tools:
+- /drug-interactions
+- /patient-export
+- /visual-counsel
+
+ALSO ADD redirects:
+- /safety-check -> /safety-workspace
+- /session-report -> /safety-workspace
+
+WHY:
+- one clinic-facing safety workflow is more valuable than multiple fragmented pages
+
+8) BACKEND ENVIRONMENT
+----------------------
+SET these environment variables in production:
+
+DATABASE_URL=<your postgres connection>
+AESTHETICITE_EXPORT_DIR=exports
+AESTHETICITE_PGVECTOR_ENABLED=1
+NCBI_API_KEY=<optional but recommended>
+OPENAI_API_KEY=<your key if already used>
+SENTRY_DSN=<recommended if operational.py uses it>
+
+WHY:
+- PostgreSQL is mandatory now
+- pgvector path should be enabled when available
+- paper alerts improve with PubMed key
+- exports need persistent directory
+
+9) POSTGRESQL REQUIREMENTS
+--------------------------
+MAKE SURE your PostgreSQL has:
+- pgcrypto extension for gen_random_uuid() if needed
+- pgvector extension if using vector search
+
+RECOMMENDED SQL:
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+WHY:
+- growth_engine_pg.py uses UUID defaults in PostgreSQL
+- vector retrieval will need vector extension when activated
+
+10) STATIC FILES / EXPORTS
+--------------------------
+MAKE SURE your deployment serves:
+- /exports/*
+- /manifest.json
+- /sw.js
+- /icons/icon-192.png
+- /icons/icon-512.png
+- /offline.html
+
+WHY:
+- PDF links
+- PWA install
+- service worker
+- offline fallback
+all depend on these assets
+
+11) DEPLOYMENT ORDER
+--------------------
+DO THIS IN THIS ORDER:
+
+STEP 1
+Replace:
+- app/api/growth_engine.py
+- app/main.py
+
+STEP 2
+Add:
+- routes_additions.ts block into server/routes.ts
+- import rateLimit
+- install express-rate-limit
+
+STEP 3
+Create:
+- client/public/sw.js using sw_production.js
+
+STEP 4
+Add service worker registration to:
+- client/src/main.tsx
+
+STEP 5
+Update:
+- ask.tsx clinic logging function
+
+STEP 6
+Update navigation:
+- point Safety to /safety-workspace
+- add redirects
+
+STEP 7
+Set production env variables
+
+STEP 8
+Restart backend and frontend
+
+12) SMOKE TEST CHECKLIST
+------------------------
+AFTER DEPLOYMENT, TEST THESE IN ORDER:
+
+A. Health / Ops
+- GET /health
+- GET /api/ops/health/full
+
+B. Safety
+- POST /api/safety/v2/preprocedure-check
+- POST /api/safety/preprocedure-check
+- POST /api/safety/v2/preprocedure-check/export-pdf
+
+C. Session reports
+- POST /api/growth/session-reports
+- POST /api/growth/session-reports/{id}/items
+- POST /api/growth/session-reports/{id}/export-pdf
+
+D. Dashboard
+- POST /api/ops/dashboard/log-query
+- GET /api/growth/dashboard/{clinic_id}
+
+E. PWA
+- open site
+- confirm /manifest.json loads
+- confirm /sw.js loads
+- check service worker registers in browser devtools
+
+F. Navigation
+- Safety button opens /safety-workspace
+- old /safety-check redirects correctly
+- old /session-report redirects correctly
+
+13) WHAT THIS GIVES YOU IMMEDIATELY
+-----------------------------------
+After this implementation, AesthetiCite becomes much stronger in 6 ways:
+
+1. Persistent clinic data
+2. Session workflow that clinics understand
+3. Exportable PDF outputs
+4. Dashboard metrics for pilots
+5. Installable PWA shell
+6. Production-grade operational skeleton
+
+THIS is why this is the 10x value move.
+
+14) WHAT IT STILL DOES NOT COMPLETE
+-----------------------------------
+Even after this, AesthetiCite is not yet “fully deployed clinical software” because you still need:
+- full auth UX polish
+- role model / permissions
+- hardened production database ops
+- full ingestion pipeline
+- deeper retrieval quality
+- security review
+- clinical validation
+- enterprise onboarding polish
+
+But after this bundle, it becomes:
+- very strong for clinic demo
+- strong for pilot discussion
+- much closer to paid pilot readiness
+
+15) FINAL RECOMMENDATION
+------------------------
+Your next highest-priority milestone after applying this master bundle is:
+
+MAKE THE SAFETY WORKSPACE PERFECT
+
+Meaning:
+- flawless pre-procedure safety flow
+- flawless session report flow
+- flawless PDF exports
+- clean dashboard visibility for clinic owners
+
+That is the fastest path from “interesting product” to “paid pilot candidate”.

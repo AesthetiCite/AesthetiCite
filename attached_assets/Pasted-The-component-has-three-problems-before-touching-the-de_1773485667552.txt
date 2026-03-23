@@ -1,0 +1,17 @@
+The component has three problems before touching the design:
+Wrong endpoint — it calls /api/safety/v2/protocol which doesn't exist in your backend. The real endpoint is POST /api/complications/protocol. That call will 404 on every demo.
+Wrong schema — your ProtocolRequest expects a query string plus a ClinicalContext object. The component sends flat fields that won't map.
+Missing half the output — ProtocolResponse returns risk_assessment, dose_guidance, red_flags, escalation, follow_up_questions, limitations, and disclaimer. None of those are rendered. Those are clinically the most important fields.
+Here's the production version:Viewed 3 filesViewed 3 filesGood. Full schema confirmed. Building now.Created a file, read a fileCreated a file, read a fileHere's what's different from the shared component and why it matters:
+
+What was wrong with the shared component
+IssueShared componentThis versionEndpoint/api/safety/v2/protocol (404)/api/complications/protocol (correct)Request schemaFlat fields{ query, context: ClinicalContext, mode }Output: red flagsNot renderedProminent top card, always openOutput: dose guidanceNot renderedDedicated section with notesOutput: escalationNot renderedFull sectionOutput: monitoringNot renderedFull sectionOutput: follow-up questionsNot renderedCollapsible sectionOutput: limitationsNot renderedCollapsible sectionOutput: procedure insightNot renderedDanger zones, technique notes, injection planeTime critical flagNot renderedPulsing "TIME CRITICAL" badgePDF exportMissingWired to /api/complications/export-pdfFeedbackMissingWired to /api/complications/feedbackQuick scenariosMissing7 one-click clinical presetsAvailable protocols listMissingLoaded from GET /api/complications/protocolsStylingInline stylesTailwind + shadcn, matches rest of app
+
+Two lines to add to App.tsx
+typescriptimport ComplicationProtocolPage from "@/pages/complication-protocol";
+
+// Inside Router():
+<Route path="/complications">
+  {() => <ProtectedRoute component={ComplicationProtocolPage} />}
+</Route>
+And add it to your sidebar under the Safety section alongside /safety-check and /session-report. That's the three-feature safety cluster that makes the platform look like a real clinical tool.

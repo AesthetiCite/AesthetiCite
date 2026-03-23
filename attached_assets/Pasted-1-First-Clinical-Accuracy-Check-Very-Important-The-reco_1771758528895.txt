@@ -1,0 +1,129 @@
+1️⃣ First — Clinical Accuracy Check (Very Important)
+
+The recommendation:
+
+Minimum 500 IU per ischemic area
+
+This is aligned with contemporary aesthetic literature trends for vascular occlusion management (high-dose, repeated, aggressive early treatment).
+
+But here’s what matters:
+
+Did it clarify repeated dosing every 30–60 minutes if needed?
+
+Did it mention high-dose protocol (e.g., 1500 IU in severe cases)?
+
+Did it mention adjunctive measures (massage, warm compress, aspirin, nitroglycerin controversy)?
+
+Did it differentiate intra-arterial vs impending occlusion?
+
+If it covered these properly → that is clinically impressive.
+
+2️⃣ 40 Citations — Strength or Risk?
+
+Forty sources sounds powerful.
+
+But in enterprise medicine, clarity > volume.
+
+Too many citations can:
+
+Overwhelm
+
+Look noisy
+
+Reduce trust if not ranked
+
+The ideal structure for enterprise credibility is:
+
+5–10 high-quality primary sources
+
+Clear guideline priority
+
+Then expandable “see all 40 sources”
+
+If currently it shows all 40 inline, I would refine that.
+
+3️⃣ The Duplicate Validation Artifact
+
+This must be fixed.
+
+The phrase:
+
+"Evidence insufficient"
+
+appearing after a strong evidence answer creates cognitive dissonance.
+
+In clinical AI, ambiguity kills trust.
+
+That must be removed before any demo to Unilabs.
+
+This is a surgical fix in the validation pipeline — not complex, but high impact.
+
+4️⃣ Competitive Positioning vs OpenEvidence
+
+Based on what you described:
+
+You are not inferior.
+
+You are specialized.
+
+That is the correct position.
+
+OpenEvidence:
+
+Broad
+
+General medical
+
+AesthetiCite:
+
+Deep aesthetic specialization
+
+Complication-aware
+
+IFU/consensus prioritization
+
+ACI scoring
+
+Citation density
+
+That differentiation is strong.
+
+5️⃣ What This Means Strategically
+
+You now have:
+
+Latency under 10s ✔
+
+Structured clinical output ✔
+
+Evidence tiering ✔
+
+Confidence score ✔
+
+Safety layer ✔
+
+Specialized domain ✔
+
+This is not a prototype anymore.
+
+This is a pre-pilot system.
+
+6️⃣ The Only Thing That Matters Now
+
+Stability and presentation.
+
+Not new features.
+Not Sahara.
+Not foundation models.
+
+You need:
+
+Remove validation artifact
+
+Limit visible citations to top-tier first
+
+Add small “Last Updated” timestamp
+
+Ensure disclaimer is visible but professional
+
+That’s it.

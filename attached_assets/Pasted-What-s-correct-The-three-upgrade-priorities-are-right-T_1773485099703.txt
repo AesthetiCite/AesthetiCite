@@ -1,0 +1,33 @@
+What's correct
+The three upgrade priorities are right. The competitive framing is right. The "AI chatbot vs AI clinical workflow" distinction is the correct strategic lens.
+The enforceEvidenceGuarantee function is functionally sound but it is a subset of sanitizeGroundedResponse you already have. It doesn't strip inline citation markers from the answer text — it only rebuilds the citations array. If the LLM writes [1] in the answer body and there's no evidence, that marker survives. The full sanitizer from the previous patch handles both. Use that one, not this.
+
+What's overstated
+"Demo ready — you are already here."
+Not quite. You are demo-ready after the citation patches are applied and the fake generateCitations() function is removed. Before those patches, showing AesthetiCite to a clinician carries real risk of displaying fabricated PubMed URLs. That's not a minor caveat — it's a trust-destroying moment in a clinical context.
+"Gap is 3–4 weeks of work"
+HNSW retrieval is not 3–4 weeks. The SQL index line shown (CREATE INDEX ... USING hnsw) is one line. The work around it is not:
+
+Re-embedding your 206K document corpus with a consistent model
+Tuning ef_construction and m parameters for recall vs latency
+Validating retrieval quality on aesthetic medicine queries
+Ensuring the async retriever pool handles the new index correctly
+
+Realistic estimate: 3–4 weeks for a solid implementation, longer if embedding quality needs improvement.
+"40–60% chance of first paying clinic within 6 months"
+Probability estimates on B2B healthcare sales are not meaningful at this stage. What's meaningful: the first clinic conversation will be won or lost on the pre-procedure safety demo, not on literature retrieval quality. Focus there first.
+
+The HNSW index line for reference
+When you're ready, this is the correct migration for pgvector:
+sql-- Run once against your chunks/embeddings table
+CREATE INDEX idx_chunks_hnsw
+ON chunks
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+-- Then update your retriever query
+SELECT id, title, text, source_type
+FROM chunks
+ORDER BY embedding <=> $1::vector
+LIMIT $2;
+The <=> operator uses cosine distance. Current flat scan with pgvector works up to ~50K rows before latency degrades noticeably. At 206K documents you are likely already past that threshold — this is not a future optimisation, it is a current performance fix.

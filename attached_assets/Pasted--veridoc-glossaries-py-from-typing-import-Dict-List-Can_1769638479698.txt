@@ -1,0 +1,63 @@
+# veridoc_glossaries.py
+
+from typing import Dict, List
+
+# Canonical term = English medical standard
+# Values = language-specific clinician-facing equivalents
+
+AESTHETIC_GLOSSARIES: Dict[str, Dict[str, List[str]]] = {
+
+    "fr": {
+        "botulinum toxin": ["toxine botulique", "botox"],
+        "dermal filler": ["produit de comblement", "filler"],
+        "hyaluronic acid": ["acide hyaluronique"],
+        "vascular occlusion": ["occlusion vasculaire"],
+        "necrosis": ["nécrose"],
+        "laser resurfacing": ["laser ablatif", "resurfaçage laser"],
+        "chemical peel": ["peeling chimique"],
+        "thread lift": ["fils tenseurs"],
+        "local anesthetic": ["anesthésique local"],
+        "lidocaine": ["lidocaïne"],
+        "epinephrine": ["adrénaline"],
+        "bruise": ["ecchymose", "hématome"],
+        "infection": ["infection"],
+    },
+
+    "ar": {
+        "botulinum toxin": ["توكسين البوتولينوم", "بوتوكس"],
+        "dermal filler": ["الفيلر", "مواد الحشو"],
+        "hyaluronic acid": ["حمض الهيالورونيك"],
+        "vascular occlusion": ["انسداد وعائي"],
+        "necrosis": ["نخر"],
+        "laser resurfacing": ["إعادة تسطيح الجلد بالليزر"],
+        "chemical peel": ["تقشير كيميائي"],
+        "thread lift": ["شد بالخيوط"],
+        "local anesthetic": ["مخدر موضعي"],
+        "lidocaine": ["ليدوكايين"],
+        "epinephrine": ["إبينفرين", "أدرينالين"],
+        "bruise": ["كدمة"],
+        "infection": ["عدوى"],
+    }
+}
+
+
+def expand_query_with_glossary(query: str, lang: str) -> str:
+    """
+    Enriches query with canonical English terms for better retrieval.
+    """
+    if lang not in AESTHETIC_GLOSSARIES:
+        return query
+
+    additions = []
+    q_lower = query.lower()
+
+    for canonical, variants in AESTHETIC_GLOSSARIES[lang].items():
+        for v in variants:
+            if v.lower() in q_lower:
+                additions.append(canonical)
+                break
+
+    if not additions:
+        return query
+
+    return f"{query} ({', '.join(additions)})"

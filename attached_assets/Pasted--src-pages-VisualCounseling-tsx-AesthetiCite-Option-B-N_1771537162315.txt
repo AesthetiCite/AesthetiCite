@@ -1,0 +1,426 @@
+// src/pages/VisualCounseling.tsx
+// AesthetiCite — Option B (No-GPU) Visual Counseling UI (OpenEvidence-like minimalism)
+// Features:
+// - Upload image -> /visual/upload (multipart form)
+// - Slider preview -> /visual/preview (returns PNG)
+// - Stream counseling note -> /ask/visual/stream (SSE over fetch)
+// Assumes:
+// - Auth token in localStorage under "token"
+// - A conversation_id exists OR you create it here via POST /conversations/new
+//
+// Add route "/visual" -> <VisualCounseling />
+
+import React, { useEffect, useMemo, useState } from "react";
+
+type Lang = "en" | "fr" | "es" | "ar";
+const LANG_LABEL: Record<Lang, string> = { en: "English", fr: "Français", es: "Español", ar: "العربية" };
+const isRTL = (l: Lang) => l === "ar";
+
+type Source = {
+  sid?: string;
+  title?: string;
+  year?: number;
+  url?: string;
+  evidence_type?: string;
+};
+
+function getToken() {
+  return localStorage.getItem("token") || "";
+}
+
+async function ensureConversationId(): Promise<string> {
+  const token = getToken();
+  const r = await fetch("/conversations/new", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const j = await r.json();
+  if (!j?.conversation_id) throw new Error("Failed to create conversation");
+  return j.conversation_id as string;
+}
+
+export default function VisualCounseling() {
+  const [lang, setLang] = useState<Lang>("en");
+  const dir = useMemo(() => (isRTL(lang) ? "rtl" : "ltr"), [lang]);
+
+  const [conversationId, setConversationId] = useState<string>("");
+  const [uploading, setUploading] = useState(false);
+  const [visualId, setVisualId] = useState<string>("");
+
+  const [file, setFile] = useState<File | null>(null);
+  const [localPreviewUrl, setLocalPreviewUrl] = useState<string>("");
+
+  const [intensity, setIntensity] = useState(0.5);
+  const [serverPreviewUrl, setServerPreviewUrl] = useState<string>("");
+
+  const [question, setQuestion] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [finalText, setFinalText] = useState("");
+  const [sources, setSources] = useState<Source[]>([]);
+  const [status, setStatus] = useState<string>("");
+
+  // Create conversation on mount (minimal)
+  useEffect(() => {
+    (async () => {
+      try {
+        const cid = await ensureConversationId();
+        setConversationId(cid);
+      } catch {
+        // ignore (user may not be logged in yet)
+      }
+    })();
+    return () => {
+      if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
+      if (serverPreviewUrl) URL.revokeObjectURL(serverPreviewUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Local preview when file chosen
+  useEffect(() => {
+    if (!file) return;
+    if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
+    const url = URL.createObjectURL(file);
+    setLocalPreviewUrl(url);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file]);
+
+  async function handleUpload() {
+    if (!file) return;
+    if (!conversationId) {
+      const cid = await ensureConversationId();
+      setConversationId(cid);
+    }
+
+    setUploading(true);
+    setStatus("");
+    try {
+      const token = getToken();
+      const form = new FormData();
+      form.append("conversation_id", conversationId);
+      form.append("kind", "breast_front_photo");
+      form.append("file", file);
+
+      const r = await fetch("/visual/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.detail || "Upload failed");
+      setVisualId(j.visual_id);
+      setStatus(lang === "fr" ? "Photo importée." : lang === "es" ? "Foto subida." : lang === "ar" ? "تم رفع الصورة." : "Photo uploaded.");
+    } catch (e: any) {
+      setStatus(e?.message || "Upload error");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function fetchServerPreview(nextIntensity: number) {
+    if (!visualId) return;
+
+    setStatus("");
+    try {
+      const token = getToken();
+      const r = await fetch("/visual/preview", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ visual_id: visualId, intensity_0_1: nextIntensity }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error(j?.detail || "Preview failed");
+      }
+      const blob = await r.blob();
+      if (serverPreviewUrl) URL.revokeObjectURL(serverPreviewUrl);
+      const url = URL.createObjectURL(blob);
+      setServerPreviewUrl(url);
+    } catch (e: any) {
+      setStatus(e?.message || "Preview error");
+    }
+  }
+
+  // Debounce preview calls
+  useEffect(() => {
+    if (!visualId) return;
+    const t = setTimeout(() => fetchServerPreview(intensity), 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intensity, visualId]);
+
+  async function streamCounseling() {
+    const q = question.trim();
+    if (!q) return;
+    if (!conversationId) throw new Error("Missing conversation_id");
+
+    setStreaming(true);
+    setFinalText("");
+    setSources([]);
+    setStatus(lang === "fr" ? "Démarrage…" : lang === "es" ? "Iniciando…" : lang === "ar" ? "بدء…" : "Starting…");
+
+    const token = getToken();
+    const resp = await fetch("/ask/visual/stream", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        q,
+        conversation_id: conversationId,
+        visual_id: visualId || null,
+        k: 40,
+        lang, // ensures answer language (backend also auto-detects if missing)
+      }),
+    });
+
+    if (!resp.ok || !resp.body) {
+      setStreaming(false);
+      const j = await resp.json().catch(() => null);
+      setFinalText(j?.detail || "Failed to start stream.");
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    const append = (t: string) => setFinalText((prev) => prev + t);
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let idx;
+        while ((idx = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+
+          let eventName = "message";
+          let dataStr = "";
+
+          for (const line of rawEvent.split("\n")) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+          }
+          if (!dataStr) continue;
+
+          const payload = JSON.parse(dataStr);
+
+          if (eventName === "status") {
+            setStatus(payload?.message || "");
+          }
+          if (eventName === "sources") {
+            setSources(payload?.sources || []);
+          }
+          if (eventName === "replace") {
+            if (payload?.channel === "final") setFinalText("");
+          }
+          if (eventName === "token") {
+            if (payload?.channel === "final" && payload?.t) append(payload.t);
+          }
+          if (eventName === "error") {
+            setFinalText(payload?.message || "Error");
+            setStreaming(false);
+          }
+          if (eventName === "done") {
+            setStreaming(false);
+            setStatus(lang === "fr" ? "Terminé." : lang === "es" ? "Listo." : lang === "ar" ? "تم." : "Done.");
+          }
+        }
+      }
+    } catch (e: any) {
+      setFinalText(e?.message || "Stream error");
+    } finally {
+      setStreaming(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-white text-slate-900" dir={dir} lang={lang}>
+      {/* Header (OpenEvidence-like minimal) */}
+      <header className="border-b border-slate-200">
+        <div className="mx-auto max-w-5xl px-4 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="text-lg font-semibold">AesthetiCite</div>
+            <div className="text-sm text-slate-500 hidden sm:block">Visual Counseling (illustrative)</div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 hidden sm:block">Language</label>
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              aria-label="Select language"
+            >
+              {(Object.keys(LANG_LABEL) as Lang[]).map((k) => (
+                <option key={k} value={k}>
+                  {LANG_LABEL[k]}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-5xl px-4 py-8">
+        {/* Two-column practical layout */}
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* LEFT: Image upload + preview */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="text-sm font-semibold">1) Upload a photo (front view)</div>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              This preview is illustrative for counseling only. It is not a guaranteed outcome and is not a 3D simulation.
+            </p>
+
+            <div className="mt-4 flex flex-col gap-3">
+              <input
+                type="file"
+                accept="image/*"
+                className="block w-full text-sm"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleUpload}
+                  disabled={!file || uploading}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50 hover:bg-slate-800"
+                >
+                  {uploading ? "Uploading…" : "Upload"}
+                </button>
+                <div className="text-xs text-slate-500">
+                  {visualId ? `visual_id: ${visualId}` : "No upload yet"}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <div className="text-sm font-semibold">2) Preview (illustrative)</div>
+              <div className="mt-3 flex items-center gap-3">
+                <div className="text-xs text-slate-500">Subtle</div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={intensity}
+                  disabled={!visualId}
+                  onChange={(e) => setIntensity(parseFloat(e.target.value))}
+                  className="w-full"
+                />
+                <div className="text-xs text-slate-500">Larger</div>
+              </div>
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <div className="text-xs text-slate-500 mb-2">Original</div>
+                  <div className="aspect-[3/4] w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-50 grid place-items-center">
+                    {localPreviewUrl ? (
+                      <img src={localPreviewUrl} alt="Local preview" className="h-full w-full object-contain" />
+                    ) : (
+                      <div className="text-xs text-slate-400">No image</div>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs text-slate-500 mb-2">Illustrative preview</div>
+                  <div className="aspect-[3/4] w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-50 grid place-items-center">
+                    {serverPreviewUrl ? (
+                      <img src={serverPreviewUrl} alt="Server preview" className="h-full w-full object-contain" />
+                    ) : (
+                      <div className="text-xs text-slate-400">{visualId ? "Adjust slider…" : "Upload first"}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 text-xs text-slate-500">
+                Tip: keep lighting consistent and use a neutral background for clearer counseling visuals.
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT: Question + streaming answer */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="text-sm font-semibold">3) Ask for long-term counseling + complications</div>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              AesthetiCite will respond with evidence-grounded, scenario-based long-term trajectories and complication/revision
+              considerations, with strict inline citations.
+            </p>
+
+            <div className="mt-4 flex gap-3">
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder={
+                  lang === "fr"
+                    ? "Ex: À quoi ressemble l’évolution à 10 ans après augmentation mammaire ? Complications ?"
+                    : lang === "es"
+                    ? "Ej: ¿Cómo evoluciona a 10 años tras aumento mamario? ¿Complicaciones?"
+                    : lang === "ar"
+                    ? "مثال: كيف يمكن أن تتغير النتيجة بعد 10 سنوات من تكبير الثدي؟ ما المضاعفات؟"
+                    : "e.g., After breast augmentation, what are common 10-year trajectories and complications?"
+                }
+                className="flex-1 rounded-xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              />
+              <button
+                onClick={streamCounseling}
+                disabled={streaming || !question.trim() || !conversationId}
+                className="rounded-xl bg-slate-900 px-5 py-3 text-sm text-white disabled:opacity-50 hover:bg-slate-800"
+              >
+                {streaming ? "Streaming…" : "Ask"}
+              </button>
+            </div>
+
+            <div className="mt-3 text-xs text-slate-500">
+              {status ? status : "Structured output with citations. No cite → no claim."}
+            </div>
+
+            {/* Sources ribbon */}
+            {sources.length > 0 && (
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-xs font-semibold text-slate-700">Sources</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {sources.slice(0, 10).map((s) => (
+                    <a
+                      key={(s.sid || "") + (s.url || "")}
+                      href={s.url || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                      title={`${s.title || ""}${s.year ? ` (${s.year})` : ""}`}
+                    >
+                      <span className="font-mono">{s.sid || "S?"}</span>
+                      <span className="truncate max-w-[240px]">{s.title || "Untitled"}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Answer */}
+            {finalText && (
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm whitespace-pre-wrap text-sm leading-6">
+                {finalText}
+              </div>
+            )}
+
+            <div className="mt-6 text-xs text-slate-500 border-t pt-4">
+              Educational decision support. Illustrative preview only. Not a substitute for clinical judgment.
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}

@@ -1,0 +1,340 @@
+# ============================
+# AesthetiCite — Option B (No-GPU Visual Counseling) SINGLE CODE PACK
+# Adds:
+# 1) /visual/upload  (store photo)
+# 2) /visual/preview (returns simple 2D overlay preview as PNG)
+# 3) /ask/visual/stream (SSE) -> evidence-grounded long-term scenarios + complications
+# Requirements: pip install pillow python-multipart
+# ============================
+
+import io
+from PIL import Image, ImageDraw, ImageEnhance
+from fastapi import UploadFile, File, Form
+from fastapi.responses import StreamingResponse
+
+# -----------------------------
+# DB: add a table to store visuals (run once at startup with your CREATE_TABLES_SQL)
+# -----------------------------
+VISUALS_TABLE_SQL = r"""
+CREATE TABLE IF NOT EXISTS visuals (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL, -- e.g. 'breast_front_photo'
+  image_bytes   BYTEA NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_visuals_user_created ON visuals(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_visuals_conv_created ON visuals(conversation_id, created_at DESC);
+"""
+
+# In your startup(): after CREATE_TABLES_SQL execute, also execute:
+# await con.execute(VISUALS_TABLE_SQL)
+
+def _img_to_png_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+def _make_2d_projection_preview(img: Image.Image, intensity: float) -> Image.Image:
+    """
+    Illustrative-only overlay:
+    - Draws two soft ellipses in upper torso region to simulate relative size change.
+    - This is NOT a medical prediction. It's a counseling visual aid.
+    intensity: 0..1 (maps to subtle -> larger overlay)
+    """
+    base = img.convert("RGBA")
+    w, h = base.size
+
+    # overlay layer
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+
+    # heuristic placement: upper-mid torso
+    # adjust positions based on image dimensions
+    cx1 = int(w * 0.38)
+    cx2 = int(w * 0.62)
+    cy  = int(h * 0.42)
+
+    # radius scales with intensity
+    rx = int(w * (0.11 + 0.07 * intensity))
+    ry = int(h * (0.09 + 0.06 * intensity))
+
+    # soft alpha
+    alpha = int(55 + 90 * intensity)
+
+    # draw two ellipses
+    for cx in (cx1, cx2):
+        bbox = (cx - rx, cy - ry, cx + rx, cy + ry)
+        d.ellipse(bbox, fill=(255, 255, 255, alpha), outline=(255, 255, 255, min(180, alpha + 40)))
+
+    # blend overlay
+    out = Image.alpha_composite(base, overlay)
+
+    # mild contrast to make it feel "preview-like"
+    out = ImageEnhance.Contrast(out.convert("RGB")).enhance(1.03)
+    return out
+
+async def _save_visual(user_id: str, conversation_id: str, kind: str, image_bytes: bytes) -> str:
+    vid = "v_" + secrets.token_hex(10)
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        await con.execute(
+            "INSERT INTO visuals(id, user_id, conversation_id, kind, image_bytes) VALUES($1,$2,$3,$4,$5)",
+            vid, user_id, conversation_id, kind, image_bytes
+        )
+    return vid
+
+async def _load_visual(visual_id: str, user_id: str) -> Dict[str, Any]:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        row = await con.fetchrow(
+            "SELECT id, kind, image_bytes, conversation_id FROM visuals WHERE id=$1 AND user_id=$2",
+            visual_id, user_id
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Visual not found")
+    return dict(row)
+
+# -----------------------------
+# 1) Upload photo
+# -----------------------------
+@app.post("/visual/upload")
+async def visual_upload(
+    conversation_id: str = Form(...),
+    kind: str = Form("breast_front_photo"),
+    file: UploadFile = File(...),
+    user=Depends(get_user),
+):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image uploads are supported")
+
+    # ensure conversation ownership
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        own = await con.fetchval("SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2", conversation_id, user["id"])
+        if not own:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+    data = await file.read()
+    if len(data) > 7_000_000:  # 7 MB cap
+        raise HTTPException(status_code=400, detail="Image too large (max 7MB)")
+
+    # validate image
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.verify()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image")
+
+    vid = await _save_visual(user["id"], conversation_id, kind, data)
+    return {"ok": True, "visual_id": vid, "kind": kind}
+
+# -----------------------------
+# 2) Generate 2D preview (CPU only)
+# -----------------------------
+class PreviewBody(BaseModel):
+    visual_id: str
+    intensity_0_1: float = 0.5  # 0..1
+
+@app.post("/visual/preview")
+async def visual_preview(body: PreviewBody, user=Depends(get_user)):
+    v = await _load_visual(body.visual_id, user["id"])
+    intensity = float(body.intensity_0_1)
+    if intensity < 0.0 or intensity > 1.0:
+        raise HTTPException(status_code=400, detail="intensity_0_1 must be between 0 and 1")
+
+    img = Image.open(io.BytesIO(v["image_bytes"])).convert("RGB")
+    # resize for responsiveness
+    max_w = 900
+    if img.size[0] > max_w:
+        ratio = max_w / img.size[0]
+        img = img.resize((max_w, int(img.size[1] * ratio)))
+
+    out = _make_2d_projection_preview(img, intensity)
+    png = _img_to_png_bytes(out)
+
+    return Response(content=png, media_type="image/png")
+
+# -----------------------------
+# 3) Visual counseling ask endpoint (SSE): long-term scenarios + complications, in user's language
+# -----------------------------
+class AskVisualBody(BaseModel):
+    q: str
+    conversation_id: str
+    visual_id: Optional[str] = None
+    k: int = K_DEFAULT
+    lang: Optional[str] = None
+
+def build_visual_counseling_prompt(question: str, conversation_context: str, chunks: List[Dict[str, Any]], lang: str) -> str:
+    compact = []
+    for c in chunks[:MAX_SOURCES_TO_LLM]:
+        compact.append({
+            "sid": c.get("sid"),
+            "t": (c.get("title") or "")[:160],
+            "y": c.get("year"),
+            "id": c.get("doi") or c.get("url"),
+            "x": (c.get("text") or "")[:CHUNK_CHAR_CAP],
+        })
+
+    lang_name = {"en":"English","fr":"French","es":"Spanish","ar":"Arabic"}.get(lang, "English")
+
+    return f"""
+You are AesthetiCite (evidence-grounded clinical assistant for aesthetic medicine).
+
+IMPORTANT CLINICAL GOVERNANCE RULES:
+- This is patient counseling support. Do NOT promise outcomes.
+- Do NOT predict exact appearance at 10 years. Provide scenario-based ranges and drivers of change.
+- EVERY factual claim MUST include citations like [S1][S3]. No cite → no claim.
+- If evidence is insufficient, say "Evidence insufficient" (in {lang_name}).
+- Write the entire answer in {lang_name}.
+
+Write exactly in this structure:
+
+Evidence Strength Summary
+- Overall confidence (0–10)
+- Highest evidence level found
+- Supporting sources used
+- Evidence gaps
+
+Counseling Summary (2–3 lines)
+
+Expected Long-Term Trajectories (5–10 years) — scenario-based, not deterministic
+- Scenario 1 (drivers + what may change) [S#]
+- Scenario 2 ... [S#]
+
+Complications & Revision Considerations
+- Early complications (examples only if supported) [S#]
+- Late complications (capsular contracture, rupture, reoperation/revision considerations) [S#]
+
+Safety / Informed Consent Notes
+- What must be explicitly discussed (if supported) [S#]
+
+Limitations / Uncertainty
+
+Suggested Follow-up Questions
+- Q1
+- Q2
+- Q3
+
+User question: {question}
+
+Conversation context:
+{conversation_context}
+
+Sources (JSON):
+{json.dumps(compact, ensure_ascii=False)}
+""".strip()
+
+@app.post("/ask/visual/stream")
+async def ask_visual_stream(body: AskVisualBody, request: Request, user=Depends(get_user)):
+    q = (body.q or "").strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]), media_type="text/event-stream")
+
+    cid = body.conversation_id.strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id required")
+
+    # ensure conversation belongs to user
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        own = await con.fetchval("SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2", cid, user["id"])
+        if not own:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+    async def gen():
+        t0 = time.perf_counter()
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+        await add_message(cid, "user", q)
+
+        recent = await fetch_recent_messages(cid, limit=MEMORY_MAX_TURNS)
+        ctx = compress_context(recent)
+
+        # language: explicit override else auto-detect from question
+        lang = (body.lang or "").strip().lower() if body.lang else None
+        if lang not in ("en","fr","es","ar"):
+            lang = detect_lang_from_text(q)
+
+        # retrieval
+        t_r0 = time.perf_counter()
+        qvec = await embed_query(q)
+        r = await retrieve_chunks_unified(q, qvec, body.k)
+        chunks = r["chunks"]
+        sources = r["sources"]
+        t_r1 = time.perf_counter()
+
+        # enrich + rerank (use your existing enrichment + hybrid rerank if installed)
+        enriched = []
+        for s in sources:
+            s2 = dict(s)
+            et = infer_evidence_type(s2.get("document_type"), s2.get("organization_or_journal") or s2.get("journal"))
+            s2["evidence_type"] = et
+            s2["evidence_rank"] = evidence_rank(et)
+            if not s2.get("url") and s2.get("source_id"):
+                meta = await fetch_doc_meta(s2["source_id"])
+                if meta:
+                    s2["doi"] = s2.get("doi") or meta.get("doi")
+                    s2["pmid"] = s2.get("pmid") or meta.get("pmid")
+                    s2["url"] = s2.get("url") or meta.get("url")
+            s2 = _ensure_source_links(s2)
+            enriched.append(s2)
+
+        # evidence-first rerank
+        enriched.sort(key=lambda s: (int(s.get("evidence_rank") or 9), -int(s.get("year") or 0)))
+
+        # authority header
+        aci = compute_aci_v2(enriched) if "compute_aci_v2" in globals() else compute_aci_lightweight(enriched)
+        header = build_authority_header(enriched, {
+            "overall_confidence_0_10": aci.get("overall_confidence_0_10") if isinstance(aci, dict) else 7.0,
+            "highest_level": aci.get("highest_level") if isinstance(aci, dict) else "N/A",
+            "supporting_count": aci.get("supporting_count") if isinstance(aci, dict) else len(enriched),
+            "gaps": aci.get("gaps") if isinstance(aci, dict) else [],
+        } if isinstance(aci, dict) else {"overall_confidence_0_10":7.0,"highest_level":"N/A","supporting_count":len(enriched),"gaps":[]})
+
+        yield sse("sources", {"sources": enriched, "ms": int((t_r1 - t0) * 1000)})
+        yield sse("replace", {"channel": "final", "message": "Answer (streaming)…"})
+        yield sse("token", {"t": header, "channel": "final"})
+        yield sse("token", {"t": skeleton(enriched), "channel": "final"})
+
+        if await request.is_disconnected():
+            return
+
+        prompt = build_visual_counseling_prompt(q, ctx, chunks, lang)
+        yield sse("status", {"phase": "answer", "message": "Generating grounded counseling note..."})
+
+        t_c0 = time.perf_counter()
+        first_tok_ms = None
+        buf = []
+
+        async for tok in llm_stream(prompt):
+            if first_tok_ms is None:
+                first_tok_ms = int((time.perf_counter() - t_c0) * 1000)
+            buf.append(tok)
+            yield sse("token", {"t": tok, "channel": "final"})
+            if await request.is_disconnected():
+                return
+
+        answer_text = "".join(buf).strip()
+
+        # strict citation enforcement
+        if "validate_citations" in globals() and not validate_citations(answer_text):
+            answer_text = (
+                "Counseling Summary\n"
+                "Evidence insufficient based on retrieved sources.\n\n"
+                "Limitations / Uncertainty\n"
+                "Retrieved sources do not support a grounded long-term counseling statement at the requested specificity.\n"
+            )
+
+        await add_message(cid, "assistant", answer_text)
+
+        t1 = time.perf_counter()
+        yield sse("meta", {
+            "retrieval_ms": int((t_r1 - t_r0) * 1000),
+            "compose_first_token_ms": first_tok_ms,
+            "compose_total_ms": int((t1 - t_c0) * 1000),
+            "total_ms": int((t1 - t0) * 1000),
+        })
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

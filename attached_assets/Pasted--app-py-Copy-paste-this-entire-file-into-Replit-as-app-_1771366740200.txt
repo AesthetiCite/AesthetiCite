@@ -1,0 +1,326 @@
+# app.py
+# Copy-paste this entire file into Replit as app.py
+# Then:
+#   pip install fastapi uvicorn httpx asyncpg
+#   export DATABASE_URL="postgres://..."
+#   export AI_PROXY_URL="http://localhost:1106/modelfarm/openai/chat/completions"
+#   export COMPOSE_MODEL="gpt-4o-mini"
+#   uvicorn app:app --host 0.0.0.0 --port 8000
+#
+# This implements:
+# ✅ pgvector retrieval (asyncpg pool) using your SQL_UNIFIED_ALL
+# ✅ single-call streaming answer (no plan call)
+# ✅ immediate sources + instant skeleton
+# ✅ strict "no cite => no claim" enforced in the prompt
+# ✅ timing meta in SSE
+
+import os, json, time, asyncio
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+import asyncpg
+import httpx
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+# -----------------------------
+# ENV
+# -----------------------------
+DATABASE_URL   = os.getenv("DATABASE_URL")
+AI_PROXY_URL   = os.getenv("AI_PROXY_URL", "http://localhost:1106/modelfarm/openai/chat/completions")
+COMPOSE_MODEL  = os.getenv("COMPOSE_MODEL", "gpt-4o-mini")
+
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL")
+
+# Retrieval/Prompt caps
+K_DEFAULT          = int(os.getenv("K_DEFAULT", "40"))
+CHUNK_CHAR_CAP     = int(os.getenv("CHUNK_CHAR_CAP", "650"))
+MAX_SOURCES_TO_LLM = int(os.getenv("MAX_SOURCES_TO_LLM", "10"))
+
+# LLM caps
+COMPOSE_MAX_TOKENS = int(os.getenv("COMPOSE_MAX_TOKENS", "1100"))
+COMPOSE_TEMP       = float(os.getenv("COMPOSE_TEMPERATURE", "0.2"))
+HEARTBEAT_SECONDS  = float(os.getenv("HEARTBEAT_SECONDS", "0.8"))
+
+# -----------------------------
+# DB pool
+# -----------------------------
+POOL: Optional[asyncpg.Pool] = None
+
+# Your SQL (converted to $1/$2/$3 params for asyncpg)
+SQL_UNIFIED_ALL = r"""
+WITH
+v AS (
+  SELECT c.id,
+         (c.embedding <=> CAST($2 AS vector(384))) AS vdist
+  FROM chunks c
+  JOIN documents d ON d.id = c.document_id
+  WHERE d.status = 'active'
+    AND c.embedding IS NOT NULL
+  ORDER BY c.embedding <=> CAST($2 AS vector(384))
+  LIMIT 120
+),
+f AS (
+  SELECT c.id,
+         ts_rank_cd(c.tsv, websearch_to_tsquery('english', $1)) AS fts
+  FROM chunks c
+  JOIN documents d ON d.id = c.document_id
+  WHERE d.status = 'active'
+    AND c.tsv @@ websearch_to_tsquery('english', $1)
+  ORDER BY fts DESC
+  LIMIT 120
+),
+u AS (
+  SELECT id,
+         min(vdist) AS vdist,
+         max(fts)   AS fts
+  FROM (
+    SELECT id, vdist, NULL::float AS fts FROM v
+    UNION ALL
+    SELECT id, NULL::float, fts FROM f
+  ) s
+  GROUP BY id
+),
+ranked AS (
+  SELECT *
+  FROM u
+  ORDER BY
+    COALESCE(vdist, 1e9) ASC,
+    COALESCE(fts, 0) DESC
+  LIMIT $3
+)
+SELECT
+  d.source_id, d.title, d.year, d.organization_or_journal,
+  d.document_type, d.domain, c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text, r.vdist, r.fts AS krank
+FROM ranked r
+JOIN chunks c ON c.id = r.id
+JOIN documents d ON d.id = c.document_id
+ORDER BY COALESCE(r.vdist, 1e9) ASC, COALESCE(r.fts, 0) DESC;
+"""
+
+app = FastAPI(title="AesthetiCite Ask (OpenEvidence-speed feel)", version="1.0")
+
+@app.on_event("startup")
+async def startup():
+    global POOL
+    POOL = await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=2,
+        max_size=20,
+        max_inactive_connection_lifetime=300,
+        command_timeout=30,
+    )
+
+@app.on_event("shutdown")
+async def shutdown():
+    global POOL
+    if POOL:
+        await POOL.close()
+        POOL = None
+
+# -----------------------------
+# SSE helpers
+# -----------------------------
+def sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+def skeleton(sources: List[Dict[str, Any]]) -> str:
+    top = sources[:5]
+    cites = " ".join([f"[{s.get('sid','S?')}]" for s in top])
+    return (
+        "Clinical summary (loading grounded answer…)\n"
+        "- Evidence retrieved; generating a grounded answer with inline citations.\n"
+        "- Claims will only be stated when supported by the provided sources.\n\n"
+        f"Top sources: {cites}\n\n"
+    )
+
+# -----------------------------
+# Embedding hook (PLUG YOURS)
+# -----------------------------
+async def embed_query(q: str) -> List[float]:
+    """
+    Plug your existing fastembed call here.
+    Must return 384 floats.
+    """
+    raise NotImplementedError("Plug your embed_query() implementation here")
+
+# -----------------------------
+# Retrieval (DB)
+# -----------------------------
+async def retrieve_chunks_unified(q: str, qvec: List[float], k: int) -> Dict[str, Any]:
+    if len(qvec) != 384:
+        raise HTTPException(status_code=400, detail="qvec must be 384-dim")
+    assert POOL is not None
+
+    async with POOL.acquire() as con:
+        rows = await con.fetch(SQL_UNIFIED_ALL, q, qvec, int(k))
+
+    chunks: List[Dict[str, Any]] = []
+    sources: List[Dict[str, Any]] = []
+
+    for i, r in enumerate(rows):
+        sid = f"S{i+1}"
+        title = r.get("title")
+        year  = r.get("year")
+        doi_or_url = r.get("source_id")  # you store source_id; keep as identifier
+        # If you have URL field in docs, map it here; else omit
+        url = None
+
+        chunks.append({
+            "sid": sid,
+            "title": title,
+            "year": year,
+            "doi": doi_or_url,
+            "url": url,
+            "text": (r.get("text") or ""),
+        })
+        sources.append({
+            "sid": sid,
+            "title": title,
+            "year": year,
+            "doi": doi_or_url,
+            "url": url,
+            "journal": r.get("organization_or_journal"),
+            "type": r.get("document_type"),
+            "domain": r.get("domain"),
+        })
+
+    return {"chunks": chunks, "sources": sources}
+
+# -----------------------------
+# Single-call grounded prompt
+# -----------------------------
+def build_single_call_prompt(question: str, chunks: List[Dict[str, Any]]) -> str:
+    compact = []
+    for c in chunks[:MAX_SOURCES_TO_LLM]:
+        compact.append({
+            "sid": c["sid"],
+            "t": (c.get("title") or "")[:180],
+            "y": c.get("year"),
+            "id": c.get("doi") or c.get("url"),
+            "x": (c.get("text") or "")[:CHUNK_CHAR_CAP],
+        })
+
+    return f"""
+You are AesthetiCite (evidence-grounded clinical assistant).
+
+Hard rules (must follow):
+1) EVERY factual claim MUST include at least one inline citation like [S1] or [S2].
+2) If sources do not support a claim, DO NOT state it. Write "Evidence insufficient" instead.
+3) Do NOT use outside knowledge for factual claims.
+4) Prefer fewer, stronger, cited points over many weak points.
+
+Write exactly in this format:
+Clinical Summary (2–3 lines)
+Key Points (bullets; each bullet ends with citations)
+Limitations / Uncertainty (bullets; cite if source-based)
+Suggested Follow-ups (bullets)
+
+Question: {question}
+
+Sources (JSON):
+{json.dumps(compact, ensure_ascii=False)}
+""".strip()
+
+# -----------------------------
+# Proxy stream call
+# -----------------------------
+async def llm_stream(prompt: str) -> AsyncGenerator[str, None]:
+    payload = {
+        "model": COMPOSE_MODEL,
+        "messages": [
+            {"role": "system", "content": "Be concise. Follow citation rules exactly. No invented facts."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": COMPOSE_TEMP,
+        "max_tokens": COMPOSE_MAX_TOKENS,
+        "stream": True,
+    }
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", AI_PROXY_URL, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                chunk = line[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                    delta = obj["choices"][0].get("delta", {})
+                    tok = delta.get("content")
+                    if tok:
+                        yield tok
+                except Exception:
+                    continue
+
+# -----------------------------
+# API
+# -----------------------------
+class AskBody(BaseModel):
+    q: str
+    k: int = K_DEFAULT
+
+@app.post("/ask/stream")
+async def ask_stream(body: AskBody, request: Request):
+    q = body.q.strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]),
+                                 media_type="text/event-stream")
+
+    async def gen() -> AsyncGenerator[str, None]:
+        t0 = time.perf_counter()
+
+        # Retrieval
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+        t_r0 = time.perf_counter()
+        qvec = await embed_query(q)
+        r = await retrieve_chunks_unified(q, qvec, body.k)
+        chunks = r["chunks"]
+        sources = r["sources"]
+        t_r1 = time.perf_counter()
+
+        # Immediate UX: sources + skeleton
+        yield sse("sources", {"sources": sources, "ms": int((t_r1 - t0) * 1000)})
+        yield sse("replace", {"channel": "final", "message": "Answer (streaming)..."})
+        yield sse("token", {"t": skeleton(sources), "channel": "final"})
+
+        if await request.is_disconnected():
+            return
+
+        # Single-call grounded stream
+        prompt = build_single_call_prompt(q, chunks)
+        yield sse("status", {"phase": "answer", "message": "Generating grounded answer..."})
+        t_c0 = time.perf_counter()
+        first_tok_ms: Optional[int] = None
+
+        async for tok in llm_stream(prompt):
+            if first_tok_ms is None:
+                first_tok_ms = int((time.perf_counter() - t_c0) * 1000)
+            yield sse("token", {"t": tok, "channel": "final"})
+            if await request.is_disconnected():
+                return
+
+        t1 = time.perf_counter()
+
+        yield sse("meta", {
+            "retrieval_ms": int((t_r1 - t_r0) * 1000),
+            "compose_first_token_ms": first_tok_ms,
+            "compose_total_ms": int((t1 - t_c0) * 1000),
+            "total_ms": int((t1 - t0) * 1000),
+            "model": COMPOSE_MODEL,
+            "caps": {
+                "k": body.k,
+                "chunk_char_cap": CHUNK_CHAR_CAP,
+                "max_sources_to_llm": MAX_SOURCES_TO_LLM,
+                "compose_max_tokens": COMPOSE_MAX_TOKENS,
+                "compose_temp": COMPOSE_TEMP,
+            }
+        })
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

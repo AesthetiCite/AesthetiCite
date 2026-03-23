@@ -1,0 +1,109 @@
+================================================================================
+FINAL UI — INTEGRATION PATCHES
+================================================================================
+New file: complication-decision-v2.tsx
+Route:    /decide  (new, alongside existing /complication-decision)
+
+================================================================================
+PATCH 1 — client/src/App.tsx
+================================================================================
+
+ADD import:
+
+    import ComplicationDecisionV2 from "@/pages/complication-decision-v2";
+
+ADD route:
+
+    <Route path="/decide">
+      {() => <ProtectedRoute component={ComplicationDecisionV2} />}
+    </Route>
+
+Keeps /complication-decision for backward compat.
+The nav "Complication" button and any "Run Protocol" link should point to /decide.
+
+UPDATE any "Run Protocol" link from:
+    href="/complication-decision"
+TO:
+    href="/decide"
+
+UPDATE the quick-start "Run Protocol" button in ask.tsx from:
+    href={`/workflow?complication=...`}
+TO:
+    href={`/decide?complication=...`}
+
+The /decide page handles ?complication= query param and auto-fires the query.
+
+
+================================================================================
+PATCH 2 — client/src/pages/ask.tsx  (nav header)
+================================================================================
+
+FIND the "Safety" header button. ADD alongside it a "Decide" button:
+
+    <Link href="/decide">
+      <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs h-8"
+        title="Complication Decision">
+        <Shield className="w-3.5 h-3.5" />
+        <span>Decide</span>
+      </Button>
+    </Link>
+
+Also update the mobile nav menu item:
+
+    <Link href="/decide" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors">
+      <Shield className="h-4 w-4" />
+      Complication Protocol
+    </Link>
+
+
+================================================================================
+THE 6-SECTION STRUCTURE — WHY THIS ORDER
+================================================================================
+
+The order follows the actual clinical thought process:
+
+  1. DIAGNOSIS     — "What is this?" — before anything else, confirm the diagnosis
+  2. ACTIONS       — "What do I do RIGHT NOW?" — the workflow runner
+  3. TREATMENT     — "What do I give and how much?" — drug doses, technique
+  4. SAFETY        — "When do I escalate? When do I stop?" — always present
+  5. EVIDENCE      — "What does the literature say?" — collapsed by default (not urgent)
+  6. DOCUMENTATION — "I need to document this." — at the end after care is given
+
+Sections 1–4 are open by default.
+Section 5 (Evidence) is collapsed — during a live complication, you don't need it.
+Section 6 (Documentation) is collapsed — fill this after the patient is stable.
+
+This is the core UX insight: every other platform puts evidence first.
+AesthetiCite puts ACTIONS first. Evidence is section 5, not section 1.
+
+
+================================================================================
+WHAT THIS PAGE REPLACES
+================================================================================
+
+The old complication-decision.tsx had:
+  - Complication selector (8 quick buttons + text input) ✓ preserved
+  - Numbered sections (1–6) — but inconsistently collapsed
+  - WorkflowRunner — now embedded in Section 2
+  - Evidence panel — now Section 5, collapsed
+  - Export buttons — now consolidated in Section 6
+  - Safety block — now Section 4 with SafetyEscalationBlock component
+  - SimilarCasesPanel — moved into Section 6
+  - ReportExportButton — moved into Section 6
+
+Key change: dark theme throughout (slate-950 background).
+Key change: Section 6 groups documentation, case log, and similar cases together.
+Key change: Evidence is collapsed by default.
+Key change: Workflow fills the full width of Section 2.
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  client/src/pages/complication-decision-v2.tsx  — New unified 6-section page
+
+FILES PATCHED:
+  client/src/App.tsx       — add /decide route
+  client/src/pages/ask.tsx — update nav links
+================================================================================

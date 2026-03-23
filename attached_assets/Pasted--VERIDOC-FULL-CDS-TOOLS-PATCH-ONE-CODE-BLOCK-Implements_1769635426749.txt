@@ -1,0 +1,760 @@
+# VERIDOC “FULL CDS TOOLS” PATCH (ONE CODE BLOCK)
+# Implements the best, OpenEvidence-style clinical tools bundle for Aesthetic Medicine:
+#
+# ✅ Drug–drug interactions (RxNav)  [free baseline]
+# ✅ Core calculators: BMI, BSA, Cockcroft–Gault, eGFR (CKD-EPI 2021 creatinine)
+# ✅ Dosing math: mg/kg → mg, mcg/kg/min → mL/hr, concentration/dilution, % ↔ mg/mL, unit conversions
+# ✅ Botox tools: reconstitution (U/mL), session dose totals
+# ✅ Steroid equivalents (math only)
+# ✅ Evidence-LOCKED “dose limits” tools (local anesthetics, tumescent, etc.) via dosing_rules table:
+#    - If no rule exists in your library: REFUSAL (no guessing)
+#    - Admin can add rules with citation/source_id and optional excerpt
+#
+# ✅ Students have SAME access as doctors (no role gating)
+#
+# Includes a minimal FRONTEND tools page upgrade IF it finds ./veridoc-frontend (optional).
+#
+# Paste into BACKEND Replit AI Agent (root of backend). It will patch backend and,
+# if a sibling folder "veridoc-frontend" exists, it will also add a /tools page there.
+
+set -e
+
+echo "=============================="
+echo "1) BACKEND: dependencies"
+echo "=============================="
+python - <<'PY'
+from pathlib import Path
+p = Path("requirements.txt")
+req = p.read_text().splitlines() if p.exists() else []
+need = ["httpx==0.27.2"]
+for n in need:
+    if n not in req:
+        req.append(n)
+p.write_text("\n".join([x for x in req if x.strip()]) + "\n")
+print("✅ Added httpx")
+PY
+
+mkdir -p app/api app/schemas app/core
+
+echo "=============================="
+echo "2) BACKEND: extend DB (dosing_rules)"
+echo "=============================="
+# Patch startup to include dosing_rules table (idempotent)
+python - <<'PY'
+from pathlib import Path
+p = Path("app/core/startup.py")
+txt = p.read_text()
+
+if "dosing_rules" not in txt:
+    insert = """
+-- Evidence-locked dosing rules (admin-managed, sourced)
+CREATE TABLE IF NOT EXISTS dosing_rules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,                 -- e.g., "Lidocaine max dose (plain)"
+  category TEXT NOT NULL,             -- e.g., "local_anesthetic", "tumescent", "steroid_equiv"
+  rule_json JSONB NOT NULL,           -- structured parameters
+  source_id TEXT,                     -- link to documents.source_id (optional but recommended)
+  source_excerpt TEXT,                -- small excerpt (optional)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dosing_rules_category ON dosing_rules(category);
+"""
+    # Put it before the closing triple quote in DDL
+    txt = txt.replace('"""\n\ndef ensure_users_table():', insert + '\n"""\n\ndef ensure_users_table():')
+    p.write_text(txt)
+    print("✅ dosing_rules table added to startup DDL")
+else:
+    print("✅ dosing_rules already present")
+PY
+
+echo "=============================="
+echo "3) BACKEND: schemas for tools + dosing rules"
+echo "=============================="
+cat > app/schemas/tools.py <<'PY'
+from pydantic import BaseModel, Field
+from typing import List, Literal, Optional, Dict, Any
+
+# -------- Interactions --------
+class InteractionRequest(BaseModel):
+    drugs: List[str] = Field(..., min_length=2, max_length=12)
+
+class InteractionFinding(BaseModel):
+    severity: Optional[str] = None
+    description: str
+    source: Optional[str] = None
+
+class InteractionResponse(BaseModel):
+    ok: bool
+    drugs: List[str]
+    findings: List[InteractionFinding]
+    disclaimer: str
+
+# -------- Core calculators --------
+class BMIRequest(BaseModel):
+    weight_kg: float = Field(..., gt=0)
+    height_cm: float = Field(..., gt=0)
+
+class BSARequest(BaseModel):
+    weight_kg: float = Field(..., gt=0)
+    height_cm: float = Field(..., gt=0)
+
+class CockcroftGaultRequest(BaseModel):
+    age_years: int = Field(..., ge=1, le=120)
+    weight_kg: float = Field(..., gt=0)
+    serum_creatinine_mg_dl: float = Field(..., gt=0)
+    sex: Literal["male","female"]
+
+class EgfrCkdEpi2021Request(BaseModel):
+    age_years: int = Field(..., ge=1, le=120)
+    serum_creatinine_mg_dl: float = Field(..., gt=0)
+    sex: Literal["male","female"]
+
+# -------- Units / concentrations --------
+class UnitConvertRequest(BaseModel):
+    value: float
+    from_unit: Literal["mcg","mg","g","iu","units","ml","l","percent"]
+    to_unit: Literal["mcg","mg","g","iu","units","ml","l","percent"]
+
+class ConcentrationRequest(BaseModel):
+    # Either provide mg and mL, or percent and use density assumptions (1% = 10 mg/mL)
+    amount_mg: Optional[float] = None
+    volume_ml: Optional[float] = None
+    percent: Optional[float] = None
+
+class DilutionRequest(BaseModel):
+    # Given a stock concentration and desired concentration, compute needed volumes
+    stock_value: float
+    stock_unit: Literal["mg_per_ml","units_per_ml"]
+    desired_value: float
+    desired_unit: Literal["mg_per_ml","units_per_ml"]
+    final_volume_ml: float = Field(..., gt=0)
+
+# -------- Dosing math --------
+class MgKgDoseRequest(BaseModel):
+    dose_mg_per_kg: float = Field(..., gt=0)
+    weight_kg: float = Field(..., gt=0)
+
+class McgKgMinInfusionRequest(BaseModel):
+    dose_mcg_per_kg_min: float = Field(..., gt=0)
+    weight_kg: float = Field(..., gt=0)
+    concentration_mcg_per_ml: float = Field(..., gt=0)
+
+# -------- Botox tools --------
+class BotoxReconstitutionRequest(BaseModel):
+    vial_units: float = Field(..., gt=0)       # e.g., 100 U
+    diluent_ml: float = Field(..., gt=0)       # e.g., 2.5 mL
+
+class BotoxSessionTotalRequest(BaseModel):
+    injection_points_units: List[float] = Field(..., min_length=1, max_length=200)
+
+# -------- Steroid equivalents --------
+class SteroidEquivalentRequest(BaseModel):
+    value_mg: float = Field(..., gt=0)
+    from_steroid: Literal["prednisone","methylprednisolone","dexamethasone","hydrocortisone"]
+    to_steroid: Literal["prednisone","methylprednisolone","dexamethasone","hydrocortisone"]
+
+# -------- Evidence-locked rules --------
+class CreateDosingRuleRequest(BaseModel):
+    name: str = Field(..., min_length=3, max_length=200)
+    category: str = Field(..., min_length=3, max_length=80)
+    rule_json: Dict[str, Any]
+    source_id: Optional[str] = None
+    source_excerpt: Optional[str] = None
+
+class DosingRuleOut(BaseModel):
+    id: str
+    name: str
+    category: str
+    rule_json: Dict[str, Any]
+    source_id: Optional[str] = None
+    source_excerpt: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class EvidenceLockedRequest(BaseModel):
+    rule_id: str
+    weight_kg: float = Field(..., gt=0)
+    # optional parameters
+    with_epinephrine: Optional[bool] = None
+
+class GenericResponse(BaseModel):
+    ok: bool
+    result: float | str | Dict[str, Any]
+    unit: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    disclaimer: str
+PY
+
+echo "=============================="
+echo "4) BACKEND: tools router + admin dosing-rules endpoints"
+echo "=============================="
+cat > app/api/tools.py <<'PY'
+from __future__ import annotations
+import math
+import os
+import httpx
+from typing import List, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from app.db.session import get_db
+from app.schemas.tools import (
+    InteractionRequest, InteractionResponse, InteractionFinding,
+    BMIRequest, BSARequest, CockcroftGaultRequest, EgfrCkdEpi2021Request,
+    UnitConvertRequest, ConcentrationRequest, DilutionRequest,
+    MgKgDoseRequest, McgKgMinInfusionRequest,
+    BotoxReconstitutionRequest, BotoxSessionTotalRequest,
+    SteroidEquivalentRequest,
+    CreateDosingRuleRequest, DosingRuleOut, EvidenceLockedRequest, GenericResponse
+)
+from app.core.admin_auth import require_admin  # already exists
+
+router = APIRouter(prefix="/tools", tags=["tools"])
+
+DISCLAIMER = (
+    "Clinical decision support only. Verify with local protocols and authoritative sources. "
+    "VeriDoc does not replace clinical judgment."
+)
+
+# ---------------------------
+# Drug–drug interactions (RxNav baseline)
+# ---------------------------
+RXNAV_BASE = "https://rxnav.nlm.nih.gov/REST"
+
+async def _rxnorm_ids_for_name(name: str) -> List[str]:
+    url = f"{RXNAV_BASE}/approximateTerm.json"
+    params = {"term": name, "maxEntries": 3}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+    ids = []
+    for cand in data.get("approximateGroup", {}).get("candidate", []) or []:
+        rid = cand.get("rxcui")
+        if rid:
+            ids.append(rid)
+    return ids
+
+async def _interactions_for_rxcuis(rxcuis: List[str]) -> List[InteractionFinding]:
+    url = f"{RXNAV_BASE}/interaction/list.json"
+    params = {"rxcuis": "+".join(rxcuis)}
+    async with httpx.AsyncClient(timeout=25) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+    findings: List[InteractionFinding] = []
+    groups = data.get("fullInteractionTypeGroup", []) or []
+    for g in groups:
+        src = g.get("sourceName")
+        for fit in g.get("fullInteractionType", []) or []:
+            for pair in fit.get("interactionPair", []) or []:
+                desc = pair.get("description") or ""
+                sev = pair.get("severity") or None
+                if desc:
+                    findings.append(InteractionFinding(severity=sev, description=desc, source=src))
+    return findings
+
+@router.post("/interactions", response_model=InteractionResponse)
+async def interactions(payload: InteractionRequest):
+    all_rxcuis: List[str] = []
+    for d in payload.drugs:
+        ids = await _rxnorm_ids_for_name(d)
+        if ids:
+            all_rxcuis.append(ids[0])  # best match
+    if len(all_rxcuis) < 2:
+        raise HTTPException(status_code=400, detail="Could not resolve enough drugs to RxNorm identifiers.")
+
+    findings = await _interactions_for_rxcuis(all_rxcuis)
+    seen = set()
+    deduped = []
+    for f in findings:
+        key = (f.severity, f.description)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+
+    return InteractionResponse(ok=True, drugs=payload.drugs, findings=deduped, disclaimer=DISCLAIMER)
+
+# ---------------------------
+# Core calculators
+# ---------------------------
+@router.post("/calculators/bmi", response_model=GenericResponse)
+def bmi(payload: BMIRequest):
+    h_m = payload.height_cm / 100.0
+    v = payload.weight_kg / (h_m*h_m)
+    return GenericResponse(ok=True, result=round(v, 2), unit="kg/m^2", disclaimer=DISCLAIMER)
+
+@router.post("/calculators/bsa", response_model=GenericResponse)
+def bsa(payload: BSARequest):
+    v = math.sqrt((payload.height_cm * payload.weight_kg) / 3600.0)
+    return GenericResponse(ok=True, result=round(v, 3), unit="m^2", disclaimer=DISCLAIMER)
+
+@router.post("/calculators/cockcroft-gault", response_model=GenericResponse)
+def cockcroft_gault(payload: CockcroftGaultRequest):
+    crcl = ((140 - payload.age_years) * payload.weight_kg) / (72.0 * payload.serum_creatinine_mg_dl)
+    if payload.sex == "female":
+        crcl *= 0.85
+    return GenericResponse(ok=True, result=round(crcl, 1), unit="mL/min", details={"formula":"Cockcroft–Gault"}, disclaimer=DISCLAIMER)
+
+@router.post("/calculators/egfr-ckd-epi-2021", response_model=GenericResponse)
+def egfr_ckd_epi_2021(payload: EgfrCkdEpi2021Request):
+    # CKD-EPI 2021 (creatinine), simplified adult formula.
+    # This is a calculator, not a dosing recommendation.
+    Scr = payload.serum_creatinine_mg_dl
+    age = payload.age_years
+    female = payload.sex == "female"
+    k = 0.7 if female else 0.9
+    a = -0.241 if female else -0.302
+    min_ratio = min(Scr/k, 1.0)
+    max_ratio = max(Scr/k, 1.0)
+    egfr = 142 * (min_ratio ** a) * (max_ratio ** -1.200) * (0.9938 ** age) * (1.012 if female else 1.0)
+    return GenericResponse(ok=True, result=round(egfr, 1), unit="mL/min/1.73m^2", details={"formula":"CKD-EPI 2021 (Cr)"}, disclaimer=DISCLAIMER)
+
+# ---------------------------
+# Units / concentrations
+# ---------------------------
+@router.post("/calc/unit-convert", response_model=GenericResponse)
+def unit_convert(payload: UnitConvertRequest):
+    # mass conversions
+    mass = {"mcg": 1e-6, "mg": 1e-3, "g": 1.0}
+    vol = {"ml": 1e-3, "l": 1.0}
+    # IU/Units: treat as same family (identity) for math-only conversions; clinical meaning depends on drug.
+    iu = {"iu": 1.0, "units": 1.0}
+
+    fu, tu = payload.from_unit, payload.to_unit
+    v = payload.value
+
+    if fu in mass and tu in mass:
+        base_g = v * mass[fu]
+        out = base_g / mass[tu]
+        return GenericResponse(ok=True, result=out, unit=tu, disclaimer=DISCLAIMER)
+
+    if fu in vol and tu in vol:
+        base_l = v * vol[fu]
+        out = base_l / vol[tu]
+        return GenericResponse(ok=True, result=out, unit=tu, disclaimer=DISCLAIMER)
+
+    if fu in iu and tu in iu:
+        return GenericResponse(ok=True, result=v, unit=tu, disclaimer=DISCLAIMER)
+
+    if fu == "percent" and tu == "mg":
+        raise HTTPException(status_code=400, detail="Percent must be converted with volume (use /calc/concentration).")
+
+    raise HTTPException(status_code=400, detail="Incompatible units.")
+
+@router.post("/calc/concentration", response_model=GenericResponse)
+def concentration(payload: ConcentrationRequest):
+    # If percent provided: common clinical convention for aqueous solutions: 1% = 10 mg/mL
+    if payload.percent is not None:
+        mg_per_ml = payload.percent * 10.0
+        return GenericResponse(ok=True, result=mg_per_ml, unit="mg/mL", details={"assumption":"1% = 10 mg/mL"}, disclaimer=DISCLAIMER)
+    if payload.amount_mg is None or payload.volume_ml is None or payload.volume_ml <= 0:
+        raise HTTPException(status_code=400, detail="Provide (amount_mg and volume_ml) or percent.")
+    mg_per_ml = payload.amount_mg / payload.volume_ml
+    return GenericResponse(ok=True, result=mg_per_ml, unit="mg/mL", disclaimer=DISCLAIMER)
+
+@router.post("/calc/dilution", response_model=GenericResponse)
+def dilution(payload: DilutionRequest):
+    if payload.final_volume_ml <= 0:
+        raise HTTPException(status_code=400, detail="final_volume_ml must be > 0")
+    if payload.stock_unit != payload.desired_unit:
+        raise HTTPException(status_code=400, detail="Units must match (mg_per_ml or units_per_ml).")
+
+    # C1V1 = C2V2
+    v1 = (payload.desired_value * payload.final_volume_ml) / payload.stock_value
+    v2 = payload.final_volume_ml - v1
+    if v1 < 0 or v2 < 0:
+        raise HTTPException(status_code=400, detail="Invalid dilution values.")
+    return GenericResponse(
+        ok=True,
+        result={"stock_volume_ml": round(v1, 3), "diluent_volume_ml": round(v2, 3), "final_volume_ml": payload.final_volume_ml},
+        unit="mL",
+        details={"formula":"C1V1=C2V2"},
+        disclaimer=DISCLAIMER
+    )
+
+# ---------------------------
+# Dosing math
+# ---------------------------
+@router.post("/dose/mgkg", response_model=GenericResponse)
+def dose_mgkg(payload: MgKgDoseRequest):
+    total_mg = payload.dose_mg_per_kg * payload.weight_kg
+    return GenericResponse(ok=True, result=round(total_mg, 3), unit="mg", details=payload.model_dump(), disclaimer=DISCLAIMER)
+
+@router.post("/dose/mcgkgmin-mlhr", response_model=GenericResponse)
+def mcgkgmin_to_mlhr(payload: McgKgMinInfusionRequest):
+    # dose (mcg/kg/min) * weight (kg) = mcg/min
+    mcg_per_min = payload.dose_mcg_per_kg_min * payload.weight_kg
+    # mcg/min / (mcg/mL) = mL/min
+    ml_per_min = mcg_per_min / payload.concentration_mcg_per_ml
+    ml_per_hr = ml_per_min * 60.0
+    return GenericResponse(ok=True, result=round(ml_per_hr, 3), unit="mL/hr", details=payload.model_dump(), disclaimer=DISCLAIMER)
+
+# ---------------------------
+# Botox tools (math only)
+# ---------------------------
+@router.post("/botox/reconstitution", response_model=GenericResponse)
+def botox_reconstitution(payload: BotoxReconstitutionRequest):
+    units_per_ml = payload.vial_units / payload.diluent_ml
+    units_per_0_1ml = units_per_ml * 0.1
+    return GenericResponse(
+        ok=True,
+        result={"units_per_ml": round(units_per_ml, 3), "units_per_0_1ml": round(units_per_0_1ml, 3)},
+        unit="U/mL",
+        details=payload.model_dump(),
+        disclaimer=DISCLAIMER
+    )
+
+@router.post("/botox/session-total", response_model=GenericResponse)
+def botox_session_total(payload: BotoxSessionTotalRequest):
+    total = sum(payload.injection_points_units)
+    return GenericResponse(ok=True, result=round(total, 3), unit="Units", details={"points": len(payload.injection_points_units)}, disclaimer=DISCLAIMER)
+
+# ---------------------------
+# Steroid equivalents (math-only conversions)
+# Common equivalence factors (typical reference): prednisone 5 mg ~= methylpred 4 mg ~= hydrocortisone 20 mg ~= dexamethasone 0.75 mg
+# ---------------------------
+_EQ = {
+    "prednisone": 5.0,
+    "methylprednisolone": 4.0,
+    "hydrocortisone": 20.0,
+    "dexamethasone": 0.75
+}
+
+@router.post("/steroids/equivalent", response_model=GenericResponse)
+def steroid_equivalent(payload: SteroidEquivalentRequest):
+    from_ref = _EQ[payload.from_steroid]
+    to_ref = _EQ[payload.to_steroid]
+    # Convert to "reference units" then to target
+    ref_units = payload.value_mg / from_ref
+    out_mg = ref_units * to_ref
+    return GenericResponse(ok=True, result=round(out_mg, 3), unit="mg", details=payload.model_dump(), disclaimer=DISCLAIMER)
+
+# ---------------------------
+# Evidence-LOCKED dose limits (no guessing)
+# Admin stores a rule like:
+# category: "local_anesthetic"
+# rule_json:
+#   {"drug":"lidocaine","max_mg_per_kg_plain":4.5,"max_mg_per_kg_epi":7.0}
+# ---------------------------
+@router.post("/evidence/limit", response_model=GenericResponse)
+def evidence_locked_limit(payload: EvidenceLockedRequest, db: Session = Depends(get_db)):
+    row = db.execute(text("""
+      SELECT id::text, name, category, rule_json, source_id, source_excerpt
+      FROM dosing_rules
+      WHERE id = :id
+    """), {"id": payload.rule_id}).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Rule not found. (Evidence-locked calculator requires a stored rule.)")
+
+    rule = row["rule_json"] or {}
+    # expected keys depend on category; we handle common local anesthetic rule
+    if row["category"] == "local_anesthetic":
+        with_epi = bool(payload.with_epinephrine)
+        key = "max_mg_per_kg_epi" if with_epi else "max_mg_per_kg_plain"
+        if key not in rule:
+            raise HTTPException(status_code=400, detail=f"Rule missing '{key}'.")
+        max_mg = float(rule[key]) * payload.weight_kg
+        details = {
+            "rule_name": row["name"],
+            "category": row["category"],
+            "max_mg_per_kg": float(rule[key]),
+            "with_epinephrine": with_epi,
+            "source_id": row.get("source_id"),
+            "source_excerpt": row.get("source_excerpt"),
+        }
+        return GenericResponse(ok=True, result=round(max_mg, 2), unit="mg", details=details, disclaimer=DISCLAIMER)
+
+    raise HTTPException(status_code=400, detail="Unsupported category for evidence/limit endpoint.")
+
+# ---------------------------
+# ADMIN endpoints to manage dosing rules
+# ---------------------------
+admin = APIRouter(prefix="/admin/dosing-rules", tags=["admin-dosing"])
+
+@admin.get("", response_model=List[DosingRuleOut])
+def list_rules(_: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+      SELECT id::text, name, category, rule_json, source_id, source_excerpt, updated_at::text
+      FROM dosing_rules
+      ORDER BY updated_at DESC
+      LIMIT 500;
+    """)).mappings().all()
+    return [dict(r) for r in rows]
+
+@admin.post("", response_model=DosingRuleOut)
+def create_rule(payload: CreateDosingRuleRequest, _: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    row = db.execute(text("""
+      INSERT INTO dosing_rules (name, category, rule_json, source_id, source_excerpt, updated_at)
+      VALUES (:name, :category, :rule_json, :source_id, :source_excerpt, now())
+      RETURNING id::text, name, category, rule_json, source_id, source_excerpt, updated_at::text;
+    """), {
+        "name": payload.name,
+        "category": payload.category,
+        "rule_json": payload.rule_json,
+        "source_id": payload.source_id,
+        "source_excerpt": payload.source_excerpt
+    }).mappings().first()
+    db.commit()
+    return dict(row)
+
+@admin.delete("/{rule_id}")
+def delete_rule(rule_id: str, _: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM dosing_rules WHERE id = :id"), {"id": rule_id})
+    db.commit()
+    return {"ok": True}
+PY
+
+echo "=============================="
+echo "5) BACKEND: wire routers into main.py"
+echo "=============================="
+python - <<'PY'
+from pathlib import Path
+p = Path("app/main.py")
+txt = p.read_text()
+
+if "from app.api.tools import router as tools_router" not in txt:
+    # insert near other imports
+    txt = txt.replace("from app.api.analytics import router as analytics_router",
+                      "from app.api.analytics import router as analytics_router\nfrom app.api.tools import router as tools_router\nfrom app.api.tools import admin as dosing_admin_router")
+
+if "app.include_router(tools_router)" not in txt:
+    txt = txt.replace("app.include_router(analytics_router)",
+                      "app.include_router(analytics_router)\napp.include_router(tools_router)\napp.include_router(dosing_admin_router)")
+
+p.write_text(txt)
+print("✅ main.py wired tools + admin dosing rules")
+PY
+
+echo "=============================="
+echo "6) FRONTEND (optional): add a /tools page if veridoc-frontend exists"
+echo "=============================="
+if [ -d "../veridoc-frontend" ]; then
+  echo "Frontend folder found: ../veridoc-frontend — patching UI"
+  cd ../veridoc-frontend
+  mkdir -p pages
+
+  cat > pages/tools.js <<'JS'
+import { useEffect, useState } from "react";
+import Layout from "../components/Layout";
+import { clearToken, getToken, me } from "../lib/api";
+import { useRouter } from "next/router";
+
+const API = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+async function post(token, path, body){
+  const res = await fetch(`${API}${path}`, {
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(body)
+  });
+  const txt = await res.text();
+  let data = {};
+  try{ data = JSON.parse(txt); } catch { data = { raw: txt }; }
+  if(!res.ok) throw new Error(data?.detail || data?.raw || "Request failed");
+  return data;
+}
+
+export default function Tools(){
+  const router = useRouter();
+  const [token,setTok]=useState(null);
+  const [user,setUser]=useState(null);
+
+  const [drugA,setDrugA]=useState("warfarin");
+  const [drugB,setDrugB]=useState("ibuprofen");
+  const [ddi,setDdi]=useState(null);
+
+  const [wt,setWt]=useState(70);
+  const [ht,setHt]=useState(175);
+  const [bmiRes,setBmiRes]=useState(null);
+
+  const [doseMgKg,setDoseMgKg]=useState(1);
+  const [mgkgRes,setMgkgRes]=useState(null);
+
+  const [botU,setBotU]=useState(100);
+  const [botMl,setBotMl]=useState(2.5);
+  const [botRes,setBotRes]=useState(null);
+
+  const [err,setErr]=useState("");
+
+  useEffect(()=>{
+    const t=getToken();
+    if(!t){ router.replace("/login"); return; }
+    setTok(t);
+    me(t).then(setUser).catch(()=>{ clearToken(); router.replace("/login"); });
+  },[router]);
+
+  return (
+    <Layout right={<span className="badge">{user?.email || "…"}</span>}>
+      <div className="h1">Tools</div>
+      <p className="p">Decision-support calculators and checks. Results are for support only — verify with local protocols.</p>
+
+      {err ? <div className="error">{err}</div> : null}
+
+      <div className="grid">
+        <div className="card">
+          <div className="badge"><span className="dot" /> Drug interactions</div>
+          <div className="hr" />
+          <div className="row">
+            <div>
+              <label className="label">Drug 1</label>
+              <input value={drugA} onChange={e=>setDrugA(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Drug 2</label>
+              <input value={drugB} onChange={e=>setDrugB(e.target.value)} />
+            </div>
+          </div>
+          <div style={{height:10}} />
+          <button className="btn btnPrimary" onClick={async()=>{
+            try{ setErr(""); setDdi(null);
+              const r=await post(token,"/tools/interactions",{drugs:[drugA,drugB]});
+              setDdi(r);
+            }catch(e){ setErr(e.message); }
+          }}>Check interactions</button>
+
+          {ddi ? (
+            <div style={{marginTop:12}} className="answerBox">
+              <div className="small">{ddi.disclaimer}</div>
+              <div className="hr" />
+              {ddi.findings?.length ? ddi.findings.slice(0,8).map((f,i)=>(
+                <div key={i} className="citation" style={{marginBottom:10}}>
+                  <div className="citationTitle">{f.severity || "Interaction"}</div>
+                  <div className="snippet">{f.description}</div>
+                  <div className="citationMeta">{f.source || "RxNav"}</div>
+                </div>
+              )) : <div className="small">No interactions returned.</div>}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="card">
+          <div className="badge"><span className="dot" /> Core calculators</div>
+          <div className="hr" />
+          <div className="row">
+            <div>
+              <label className="label">Weight (kg)</label>
+              <input type="number" value={wt} onChange={e=>setWt(Number(e.target.value))}/>
+            </div>
+            <div>
+              <label className="label">Height (cm)</label>
+              <input type="number" value={ht} onChange={e=>setHt(Number(e.target.value))}/>
+            </div>
+          </div>
+          <div style={{height:10}} />
+          <button className="btn" onClick={async()=>{
+            try{ setErr(""); setBmiRes(null);
+              const r=await post(token,"/tools/calculators/bmi",{weight_kg:wt,height_cm:ht});
+              setBmiRes(r);
+            }catch(e){ setErr(e.message); }
+          }}>BMI</button>
+
+          {bmiRes ? (
+            <div style={{marginTop:12}} className="answerBox">
+              <div className="kpi">BMI: {bmiRes.result} {bmiRes.unit}</div>
+              <div className="small">{bmiRes.disclaimer}</div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="grid">
+        <div className="card">
+          <div className="badge"><span className="dot" /> Dosing math</div>
+          <div className="hr" />
+          <label className="label">Dose (mg/kg)</label>
+          <input type="number" value={doseMgKg} onChange={e=>setDoseMgKg(Number(e.target.value))}/>
+          <div style={{height:10}} />
+          <button className="btn btnPrimary" onClick={async()=>{
+            try{ setErr(""); setMgkgRes(null);
+              const r=await post(token,"/tools/dose/mgkg",{dose_mg_per_kg:doseMgKg,weight_kg:wt});
+              setMgkgRes(r);
+            }catch(e){ setErr(e.message); }
+          }}>Compute total mg</button>
+
+          {mgkgRes ? (
+            <div style={{marginTop:12}} className="answerBox">
+              <div className="kpi">Total: {mgkgRes.result} {mgkgRes.unit}</div>
+              <div className="small">{mgkgRes.disclaimer}</div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="card">
+          <div className="badge"><span className="dot" /> Botox</div>
+          <div className="hr" />
+          <div className="row">
+            <div>
+              <label className="label">Vial (Units)</label>
+              <input type="number" value={botU} onChange={e=>setBotU(Number(e.target.value))}/>
+            </div>
+            <div>
+              <label className="label">Diluent (mL)</label>
+              <input type="number" value={botMl} onChange={e=>setBotMl(Number(e.target.value))}/>
+            </div>
+          </div>
+          <div style={{height:10}} />
+          <button className="btn btnPrimary" onClick={async()=>{
+            try{ setErr(""); setBotRes(null);
+              const r=await post(token,"/tools/botox/reconstitution",{vial_units:botU,diluent_ml:botMl});
+              setBotRes(r);
+            }catch(e){ setErr(e.message); }
+          }}>Reconstitution</button>
+
+          {botRes ? (
+            <div style={{marginTop:12}} className="answerBox">
+              <div className="kpi">{botRes.result.units_per_ml} U/mL</div>
+              <div className="kpi">{botRes.result.units_per_0_1ml} U per 0.1 mL</div>
+              <div className="small">{botRes.disclaimer}</div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </Layout>
+  );
+}
+JS
+
+  # Add a link to /tools in the header nav (Layout)
+  python - <<'PY'
+from pathlib import Path
+p = Path("components/Layout.js")
+txt = p.read_text()
+if 'href="/tools"' not in txt:
+    txt = txt.replace(
+        '{!hideNav ? (',
+        '{!hideNav ? ('
+    )
+    # Insert a Tools link before the badges
+    txt = txt.replace(
+        '<div className="nav">',
+        '<div className="nav">\n            <a className="badge" href="/tools">Tools</a>'
+    )
+p.write_text(txt)
+print("✅ Frontend: /tools page added + nav link")
+PY
+
+  cd -
+else
+  echo "No ../veridoc-frontend folder found; backend tools installed only."
+fi
+
+echo "=============================="
+echo "7) DONE — restart backend now"
+echo "=============================="
+echo "Backend: uvicorn app.main:app --host 0.0.0.0 --port 8000"
+echo ""
+echo "Admin dosing rules examples (use X-API-Key):"
+echo "POST /admin/dosing-rules  {"
+echo '  "name":"Lidocaine max dose (plain/epi)","category":"local_anesthetic",'
+echo '  "rule_json":{"drug":"lidocaine","max_mg_per_kg_plain":4.5,"max_mg_per_kg_epi":7.0},'
+echo '  "source_id":"<your_guideline_source_id>","source_excerpt":"<short excerpt>" }'
+echo ""
+echo "Then compute evidence-locked max:"
+echo 'POST /tools/evidence/limit  {"rule_id":"<id>","weight_kg":70,"with_epinephrine":false}'

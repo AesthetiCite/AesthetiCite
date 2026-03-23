@@ -1,0 +1,671 @@
+# aestheticite_preprocedure_safety_engine.py
+#
+# Single-file FastAPI module for AesthetiCite
+#
+# MAIN FEATURE
+# - Pre-Procedure Safety Check
+#
+# WHAT IT DOES
+# - predicts risk before treatment
+# - identifies likely complications
+# - shows anatomical danger zones
+# - suggests mitigation steps
+# - returns a structured go/caution/high-risk decision
+# - includes evidence hook
+# - supports one-click PDF export
+#
+# ENDPOINTS
+# POST /api/safety/preprocedure-check
+# POST /api/safety/preprocedure-check/export-pdf
+#
+# INSTALL
+# pip install fastapi pydantic reportlab
+#
+# INTEGRATION
+# from aestheticite_preprocedure_safety_engine import router as safety_router
+# app.include_router(safety_router)
+
+from __future__ import annotations
+
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen import canvas
+
+router = APIRouter(prefix="/api/safety", tags=["AesthetiCite Pre-Procedure Safety"])
+
+ENGINE_VERSION = "1.0.0"
+KNOWLEDGE_REVISION = "2026-03-13"
+EXPORT_DIR = os.environ.get("AESTHETICITE_EXPORT_DIR", "exports")
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+RiskLevel = Literal["low", "moderate", "high", "very_high"]
+DecisionLevel = Literal["go", "caution", "high_risk"]
+EvidenceStrength = Literal["limited", "moderate", "strong"]
+
+
+# ---------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------
+
+class PatientFactors(BaseModel):
+    prior_filler_in_same_area: Optional[bool] = None
+    prior_vascular_event: Optional[bool] = None
+    autoimmune_history: Optional[bool] = None
+    allergy_history: Optional[bool] = None
+    active_infection_near_site: Optional[bool] = None
+    anticoagulation: Optional[bool] = None
+    vascular_disease: Optional[bool] = None
+    smoking: Optional[bool] = None
+
+
+class PreProcedureRequest(BaseModel):
+    procedure: str = Field(..., min_length=2)
+    region: str = Field(..., min_length=2)
+    product_type: str = Field(..., min_length=2)
+    technique: Optional[str] = None  # needle / cannula / mixed
+    injector_experience_level: Optional[Literal["junior", "intermediate", "senior"]] = None
+    patient_factors: Optional[PatientFactors] = None
+    clinician_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+
+
+class EvidenceItem(BaseModel):
+    source_id: str
+    title: str
+    note: str
+    citation_text: Optional[str] = None
+    source_type: Optional[str] = None
+    relevance_score: Optional[float] = None
+
+
+class RiskItem(BaseModel):
+    complication: str
+    risk_score: int = Field(..., ge=0, le=100)
+    risk_level: RiskLevel
+    why_it_matters: str
+
+
+class SafetyAssessment(BaseModel):
+    overall_risk_score: int = Field(..., ge=0, le=100)
+    overall_risk_level: RiskLevel
+    decision: DecisionLevel
+    rationale: str
+
+
+class ProcedureInsight(BaseModel):
+    procedure_name: str
+    region: str
+    likely_plane_or_target: Optional[str] = None
+    danger_zones: List[str] = Field(default_factory=list)
+    technical_notes: List[str] = Field(default_factory=list)
+
+
+class PreProcedureResponse(BaseModel):
+    request_id: str
+    generated_at_utc: str
+    engine_version: str
+    knowledge_revision: str
+
+    safety_assessment: SafetyAssessment
+    top_risks: List[RiskItem]
+    procedure_insight: ProcedureInsight
+    mitigation_steps: List[str]
+    caution_flags: List[str]
+    evidence: List[EvidenceItem]
+    disclaimer: str
+
+
+class ExportPDFResponse(BaseModel):
+    request_id: str
+    filename: str
+    pdf_path: str
+
+
+# ---------------------------------------------------------------------
+# Knowledge base
+# ---------------------------------------------------------------------
+
+PROCEDURE_RULES: List[Dict[str, Any]] = [
+    {
+        "procedure_aliases": ["nasolabial fold filler", "nlf filler", "ha filler"],
+        "region_aliases": ["nasolabial fold", "nlf"],
+        "product_aliases": ["hyaluronic acid filler", "ha filler", "filler"],
+        "base_risk": 42,
+        "complications": [
+            ("vascular occlusion", 58, "This region is associated with important arterial territory and ischemic risk."),
+            ("skin necrosis", 40, "Untreated vascular compromise can progress to tissue injury."),
+            ("bruising", 28, "Vascular trauma risk is procedure- and technique-dependent."),
+        ],
+        "danger_zones": ["Angular artery territory", "Facial artery branches"],
+        "plane": "Technique varies by anatomy and product; vascular awareness is critical.",
+        "tech_notes": [
+            "Small aliquots reduce catastrophic bolus risk.",
+            "High suspicion is required for pain, blanching, or mottling.",
+        ],
+        "mitigation": [
+            "Consider cannula when appropriate to reduce vessel penetration risk.",
+            "Use small aliquots and avoid high-pressure injection.",
+            "Inject slowly and reassess continuously.",
+            "Have hyaluronidase immediately available if HA filler is used.",
+        ],
+        "evidence_strength": "moderate",
+    },
+    {
+        "procedure_aliases": ["tear trough filler", "under eye filler"],
+        "region_aliases": ["tear trough", "under eye", "infraorbital"],
+        "product_aliases": ["hyaluronic acid filler", "ha filler", "filler"],
+        "base_risk": 48,
+        "complications": [
+            ("vascular occlusion", 52, "Periorbital anatomy makes vascular complications especially sensitive."),
+            ("tyndall effect", 54, "Superficial HA placement can produce blue-gray discoloration."),
+            ("edema", 45, "This area is prone to persistent swelling."),
+        ],
+        "danger_zones": ["Periorbital vascular territory", "Infraorbital region"],
+        "plane": "Usually deeper, controlled placement is preferred; superficial placement increases Tyndall risk.",
+        "tech_notes": [
+            "Avoid superficial deposition.",
+            "Product selection and volume discipline are critical.",
+        ],
+        "mitigation": [
+            "Avoid superficial placement.",
+            "Use conservative volume.",
+            "Reassess symmetry before further product placement.",
+            "Escalate immediately for pain, blanching, or visual symptoms.",
+        ],
+        "evidence_strength": "moderate",
+    },
+    {
+        "procedure_aliases": ["lip filler", "lip augmentation"],
+        "region_aliases": ["lip", "lips"],
+        "product_aliases": ["hyaluronic acid filler", "ha filler", "filler"],
+        "base_risk": 38,
+        "complications": [
+            ("vascular occlusion", 47, "Lip vascularity requires careful injection planning."),
+            ("swelling", 44, "Post-procedure swelling is common and can be significant."),
+            ("bruising", 34, "The lip is highly vascular."),
+        ],
+        "danger_zones": ["Labial vascular territory"],
+        "plane": "Technique varies by lip subunit and aesthetic objective.",
+        "tech_notes": [
+            "Avoid large bolus deposition.",
+            "Careful reassessment helps avoid overcorrection.",
+        ],
+        "mitigation": [
+            "Use controlled volume and slow injection.",
+            "Avoid large boluses.",
+            "Monitor for disproportionate pain or blanching.",
+        ],
+        "evidence_strength": "moderate",
+    },
+    {
+        "procedure_aliases": ["glabellar toxin", "frown line botox", "glabella botox"],
+        "region_aliases": ["glabella", "frown lines"],
+        "product_aliases": ["botulinum toxin", "toxin", "botox"],
+        "base_risk": 24,
+        "complications": [
+            ("ptosis", 46, "Unwanted toxin diffusion can affect eyelid or brow function."),
+            ("asymmetry", 32, "Uneven muscle effect may alter brow balance."),
+            ("headache", 18, "Transient treatment-related symptoms can occur."),
+        ],
+        "danger_zones": ["Unwanted diffusion toward eyelid elevators"],
+        "plane": "Target muscles and dose pattern vary by anatomy and facial dynamics.",
+        "tech_notes": [
+            "Differentiate brow heaviness from true eyelid ptosis.",
+            "Precise placement matters more than total dose alone.",
+        ],
+        "mitigation": [
+            "Respect diffusion risk near structures affecting eyelid position.",
+            "Use conservative placement strategy in higher-risk anatomy.",
+            "Document exact injection points and dose.",
+        ],
+        "evidence_strength": "moderate",
+    },
+    {
+        "procedure_aliases": ["jawline filler", "chin filler", "cheek filler"],
+        "region_aliases": ["jawline", "chin", "cheek"],
+        "product_aliases": ["hyaluronic acid filler", "ha filler", "calcium hydroxylapatite", "filler"],
+        "base_risk": 34,
+        "complications": [
+            ("vascular occlusion", 36, "Deep structural injection still requires vascular awareness."),
+            ("asymmetry", 29, "Volumetric imbalance can become apparent after swelling settles."),
+            ("nodules", 24, "Product placement and tissue plane influence palpability."),
+        ],
+        "danger_zones": ["Regional arterial branches vary by area"],
+        "plane": "Plane depends on aesthetic goal, product, and anatomy.",
+        "tech_notes": [
+            "Respect regional anatomy and product rheology.",
+            "Reassess after each increment.",
+        ],
+        "mitigation": [
+            "Inject incrementally.",
+            "Use anatomy-driven technique selection.",
+            "Reassess projection and symmetry before additional product.",
+        ],
+        "evidence_strength": "limited",
+    },
+]
+
+
+# ---------------------------------------------------------------------
+# Evidence hook
+# ---------------------------------------------------------------------
+
+class EvidenceRetriever:
+    def retrieve(self, request: PreProcedureRequest, matched_rule: Dict[str, Any]) -> List[EvidenceItem]:
+        raise NotImplementedError
+
+
+class DummyEvidenceRetriever(EvidenceRetriever):
+    def retrieve(self, request: PreProcedureRequest, matched_rule: Dict[str, Any]) -> List[EvidenceItem]:
+        proc = normalize(request.procedure)
+        region = normalize(request.region)
+        if "toxin" in normalize(request.product_type) or "botox" in proc:
+            return [
+                EvidenceItem(
+                    source_id="S30",
+                    title="Botulinum toxin adverse effects and ptosis management",
+                    note="Supports awareness of diffusion-related eyelid or brow effects.",
+                    citation_text="Ptosis after botulinum toxin is usually related to diffusion and is often temporary.",
+                    source_type="review",
+                    relevance_score=0.91,
+                )
+            ]
+        if "tear trough" in region:
+            return [
+                EvidenceItem(
+                    source_id="S20",
+                    title="Superficial HA filler placement and Tyndall effect",
+                    note="Supports caution about superficial placement in the tear trough.",
+                    citation_text="Superficial HA placement in the tear trough may produce blue-gray discoloration.",
+                    source_type="review",
+                    relevance_score=0.90,
+                )
+            ]
+        return [
+            EvidenceItem(
+                source_id="S1",
+                title="Expert consensus on vascular occlusion after HA filler",
+                note="Supports strong preparation for ischemic complications in higher-risk filler regions.",
+                citation_text="Rapid recognition and access to hyaluronidase are central to HA filler safety.",
+                source_type="consensus_review",
+                relevance_score=0.96,
+            )
+        ]
+
+
+evidence_retriever: EvidenceRetriever = DummyEvidenceRetriever()
+
+
+# ---------------------------------------------------------------------
+# Matching
+# ---------------------------------------------------------------------
+
+def alias_match(value: str, aliases: List[str]) -> bool:
+    v = normalize(value)
+    return any(a in v for a in aliases)
+
+
+def match_rule(request: PreProcedureRequest) -> Dict[str, Any]:
+    procedure = request.procedure
+    region = request.region
+    product = request.product_type
+
+    best_rule: Optional[Dict[str, Any]] = None
+    best_score = -1
+
+    for rule in PROCEDURE_RULES:
+        score = 0
+        if alias_match(procedure, rule["procedure_aliases"]):
+            score += 2
+        if alias_match(region, rule["region_aliases"]):
+            score += 2
+        if alias_match(product, rule["product_aliases"]):
+            score += 2
+
+        if score > best_score:
+            best_score = score
+            best_rule = rule
+
+    if not best_rule or best_score <= 0:
+        raise HTTPException(status_code=404, detail="No matching pre-procedure rule found.")
+
+    return best_rule
+
+
+# ---------------------------------------------------------------------
+# Risk engine
+# ---------------------------------------------------------------------
+
+def clamp(n: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, n))
+
+
+def risk_level_from_score(score: int) -> RiskLevel:
+    if score >= 75:
+        return "very_high"
+    if score >= 50:
+        return "high"
+    if score >= 25:
+        return "moderate"
+    return "low"
+
+
+def decision_from_score(score: int) -> DecisionLevel:
+    if score >= 70:
+        return "high_risk"
+    if score >= 35:
+        return "caution"
+    return "go"
+
+
+def adjust_score(base: int, request: PreProcedureRequest) -> Tuple[int, List[str]]:
+    score = base
+    flags: List[str] = []
+    pf = request.patient_factors
+
+    technique = normalize(request.technique or "")
+    if technique == "needle":
+        score += 6
+        flags.append("Needle technique selected.")
+    elif technique == "cannula":
+        score -= 4
+        flags.append("Cannula technique selected.")
+
+    level = request.injector_experience_level
+    if level == "junior":
+        score += 8
+        flags.append("Junior injector selected.")
+    elif level == "intermediate":
+        score += 3
+        flags.append("Intermediate injector selected.")
+
+    if pf:
+        if pf.prior_vascular_event:
+            score += 12
+            flags.append("History suggests prior vascular complication risk.")
+        if pf.active_infection_near_site:
+            score += 20
+            flags.append("Active infection near treatment site.")
+        if pf.vascular_disease:
+            score += 8
+            flags.append("Relevant vascular disease risk.")
+        if pf.allergy_history:
+            score += 5
+            flags.append("Allergy history requires preparedness.")
+        if pf.autoimmune_history:
+            score += 4
+            flags.append("Autoimmune history may complicate inflammatory interpretation.")
+        if pf.anticoagulation:
+            score += 5
+            flags.append("Anticoagulation may increase bruising/bleeding considerations.")
+        if pf.smoking:
+            score += 4
+            flags.append("Smoking may worsen tissue resilience and healing.")
+        if pf.prior_filler_in_same_area:
+            score += 6
+            flags.append("Prior filler in same area may complicate anatomy and response.")
+
+    return clamp(score, 0, 100), flags
+
+
+def build_top_risks(rule: Dict[str, Any], overall_score: int) -> List[RiskItem]:
+    items: List[RiskItem] = []
+    modifier = int((overall_score - rule["base_risk"]) * 0.35)
+
+    for comp, comp_score, why in rule["complications"]:
+        final_score = clamp(comp_score + modifier, 0, 100)
+        items.append(
+            RiskItem(
+                complication=comp,
+                risk_score=final_score,
+                risk_level=risk_level_from_score(final_score),
+                why_it_matters=why,
+            )
+        )
+
+    items.sort(key=lambda x: x.risk_score, reverse=True)
+    return items
+
+
+def build_response(request: PreProcedureRequest) -> PreProcedureResponse:
+    rule = match_rule(request)
+    overall_score, flags = adjust_score(rule["base_risk"], request)
+    overall_level = risk_level_from_score(overall_score)
+    decision = decision_from_score(overall_score)
+
+    top_risks = build_top_risks(rule, overall_score)
+    evidence = evidence_retriever.retrieve(request, rule)
+
+    rationale_map = {
+        "go": "The current setup appears acceptable, but standard safety precautions remain essential.",
+        "caution": "Proceed only with heightened vigilance, mitigation steps, and readiness for complications.",
+        "high_risk": "Risk is materially elevated. Reassess technique, timing, patient factors, and overall plan before proceeding.",
+    }
+
+    return PreProcedureResponse(
+        request_id=str(uuid.uuid4()),
+        generated_at_utc=now_utc_iso(),
+        engine_version=ENGINE_VERSION,
+        knowledge_revision=KNOWLEDGE_REVISION,
+        safety_assessment=SafetyAssessment(
+            overall_risk_score=overall_score,
+            overall_risk_level=overall_level,
+            decision=decision,
+            rationale=rationale_map[decision],
+        ),
+        top_risks=top_risks,
+        procedure_insight=ProcedureInsight(
+            procedure_name=request.procedure,
+            region=request.region,
+            likely_plane_or_target=rule["plane"],
+            danger_zones=rule["danger_zones"],
+            technical_notes=rule["tech_notes"],
+        ),
+        mitigation_steps=rule["mitigation"],
+        caution_flags=flags,
+        evidence=evidence,
+        disclaimer=(
+            "This output is pre-procedure safety decision support, not a substitute for clinician judgment, "
+            "anatomical expertise, product knowledge, or local emergency preparedness."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
+# PDF export
+# ---------------------------------------------------------------------
+
+class PDFWriter:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.c = canvas.Canvas(path, pagesize=A4)
+        self.width, self.height = A4
+        self.left = 18 * mm
+        self.right = self.width - 18 * mm
+        self.top = self.height - 18 * mm
+        self.bottom = 18 * mm
+        self.y = self.top
+
+    def new_page(self) -> None:
+        self.c.showPage()
+        self.y = self.top
+
+    def ensure_space(self, needed: float) -> None:
+        if self.y - needed < self.bottom:
+            self.new_page()
+
+    def line(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14) -> None:
+        self.ensure_space(leading)
+        self.c.setFont(font, size)
+        self.c.drawString(self.left, self.y, text)
+        self.y -= leading
+
+    def wrapped(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14, bullet: Optional[str] = None) -> None:
+        max_width = self.right - self.left
+        self.c.setFont(font, size)
+
+        prefix = f"{bullet} " if bullet else ""
+        indent_width = stringWidth(prefix, font, size) if bullet else 0
+        usable_width = max_width - indent_width
+
+        words = text.split()
+        current = ""
+        first = True
+
+        def flush(line_text: str, is_first: bool) -> None:
+            self.ensure_space(leading)
+            self.c.setFont(font, size)
+            if bullet:
+                if is_first:
+                    self.c.drawString(self.left, self.y, prefix + line_text)
+                else:
+                    self.c.drawString(self.left + indent_width, self.y, line_text)
+            else:
+                self.c.drawString(self.left, self.y, line_text)
+            self.y -= leading
+
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if stringWidth(candidate, font, size) <= usable_width:
+                current = candidate
+            else:
+                flush(current, first)
+                first = False
+                current = word
+        if current:
+            flush(current, first)
+
+    def section(self, title: str) -> None:
+        self.y -= 4
+        self.line(title, font="Helvetica-Bold", size=12, leading=16)
+
+    def save(self) -> None:
+        self.c.save()
+
+
+def export_pdf(response: PreProcedureResponse) -> str:
+    filename = f"preprocedure_safety_{response.request_id}.pdf"
+    path = os.path.join(EXPORT_DIR, filename)
+    pdf = PDFWriter(path)
+
+    pdf.line("AesthetiCite Pre-Procedure Safety Check", font="Helvetica-Bold", size=16, leading=20)
+    pdf.line(f"Request ID: {response.request_id}")
+    pdf.line(f"Generated: {response.generated_at_utc}")
+    pdf.line(f"Version: {response.engine_version} | Revision: {response.knowledge_revision}")
+    pdf.line(
+        f"Overall Risk: {response.safety_assessment.overall_risk_score}/100 | "
+        f"Level: {response.safety_assessment.overall_risk_level} | "
+        f"Decision: {response.safety_assessment.decision}"
+    )
+
+    pdf.section("Assessment")
+    pdf.wrapped(response.safety_assessment.rationale)
+
+    pdf.section("Top Risks")
+    for item in response.top_risks:
+        pdf.wrapped(
+            f"{item.complication}: {item.risk_score}/100 ({item.risk_level})",
+            font="Helvetica-Bold",
+            bullet="•"
+        )
+        pdf.wrapped(item.why_it_matters, bullet="-")
+
+    pdf.section("Procedure Insight")
+    pdf.wrapped(f"Procedure: {response.procedure_insight.procedure_name}", font="Helvetica-Bold")
+    pdf.wrapped(f"Region: {response.procedure_insight.region}", bullet="•")
+    if response.procedure_insight.likely_plane_or_target:
+        pdf.wrapped(f"Likely plane/target: {response.procedure_insight.likely_plane_or_target}", bullet="•")
+    for dz in response.procedure_insight.danger_zones:
+        pdf.wrapped(f"Danger zone: {dz}", bullet="•")
+    for note in response.procedure_insight.technical_notes:
+        pdf.wrapped(f"Technical note: {note}", bullet="•")
+
+    pdf.section("Mitigation Steps")
+    for step in response.mitigation_steps:
+        pdf.wrapped(step, bullet="•")
+
+    pdf.section("Caution Flags")
+    if response.caution_flags:
+        for flag in response.caution_flags:
+            pdf.wrapped(flag, bullet="•")
+    else:
+        pdf.wrapped("No additional caution flags triggered.", bullet="•")
+
+    pdf.section("Evidence")
+    for ev in response.evidence:
+        pdf.wrapped(f"[{ev.source_id}] {ev.title}", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped(ev.note, bullet="-")
+        if ev.citation_text:
+            pdf.wrapped(f'Citation: "{ev.citation_text}"', bullet="-")
+
+    pdf.section("Disclaimer")
+    pdf.wrapped(response.disclaimer)
+
+    pdf.save()
+    return path
+
+
+# ---------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------
+
+@router.post("/preprocedure-check", response_model=PreProcedureResponse)
+def preprocedure_check(payload: PreProcedureRequest) -> PreProcedureResponse:
+    return build_response(payload)
+
+
+@router.post("/preprocedure-check/export-pdf", response_model=ExportPDFResponse)
+def preprocedure_check_export_pdf(payload: PreProcedureRequest) -> ExportPDFResponse:
+    response = build_response(payload)
+    pdf_path = export_pdf(response)
+    return ExportPDFResponse(
+        request_id=response.request_id,
+        filename=os.path.basename(pdf_path),
+        pdf_path=pdf_path,
+    )
+
+
+# ---------------------------------------------------------------------
+# Example integration
+# ---------------------------------------------------------------------
+
+FASTAPI_MAIN_EXAMPLE = """
+from fastapi import FastAPI
+from aestheticite_preprocedure_safety_engine import router as safety_router
+
+app = FastAPI(title="AesthetiCite API")
+app.include_router(safety_router)
+""".strip()
+
+
+# ---------------------------------------------------------------------
+# Local test
+# ---------------------------------------------------------------------
+
+if __name__ == "__main__":
+    sample = PreProcedureRequest(
+        procedure="nasolabial fold filler",
+        region="nasolabial fold",
+        product_type="hyaluronic acid filler",
+        technique="needle",
+        injector_experience_level="junior",
+        patient_factors=PatientFactors(
+            vascular_disease=True,
+            prior_filler_in_same_area=True,
+            smoking=True,
+        ),
+    )
+
+    result = build_response(sample)
+    print(result.model_dump_json(indent=2))
+    pdf_file = export_pdf(result)
+    print("PDF generated:", pdf_file)

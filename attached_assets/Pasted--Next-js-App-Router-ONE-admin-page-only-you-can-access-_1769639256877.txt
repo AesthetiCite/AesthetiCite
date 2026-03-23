@@ -1,0 +1,257 @@
+// ✅ Next.js (App Router) — ONE admin page only you can access
+// Files to add:
+//
+// 1) app/admin/page.tsx
+// 2) app/api/admin/metrics/route.ts
+//
+// Env vars:
+// - ADMIN_EMAIL="you@domain.com"
+// - BACKEND_URL="https://api.yourdomain.com"
+// - ADMIN_API_KEY="long-random-secret"   (shared secret between Next.js and FastAPI)
+
+////////////////////////////////////////////////////////////////////////////////
+// 1) app/admin/page.tsx
+////////////////////////////////////////////////////////////////////////////////
+
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
+
+type Metrics = {
+  window: { fromISO: string; toISO: string };
+  connections: {
+    active_last_5m: number;
+    active_last_60m: number;
+    unique_ip_last_24h: number;
+    unique_users_last_24h: number;
+  };
+  usage: {
+    queries_last_24h: number;
+    queries_last_7d: number;
+    tool_calls_last_24h: number;
+    refusals_last_24h: number;
+    refusal_rate_last_24h: number; // 0..1
+    errors_last_24h: number;
+    error_rate_last_24h: number; // 0..1
+  };
+  performance: {
+    latency_ms_p50_last_24h: number;
+    latency_ms_p95_last_24h: number;
+    retrieval_ms_p50_last_24h: number;
+    retrieval_ms_p95_last_24h: number;
+    llm_ms_p50_last_24h: number;
+    llm_ms_p95_last_24h: number;
+  };
+  cost: {
+    llm_usd_last_24h: number;
+    llm_usd_last_7d: number;
+  };
+  content: {
+    top_queries_last_24h: Array<{ query: string; count: number }>;
+    top_refusal_reasons_last_7d: Array<{ reason: string; count: number }>;
+    top_tools_last_7d: Array<{ tool: string; count: number }>;
+  };
+  safety: {
+    citation_mismatch_last_24h: number;
+    citation_mismatch_rate_last_24h: number; // 0..1
+    dosing_requests_last_24h: number;
+    interaction_checks_last_24h: number;
+  };
+};
+
+async function getAdminSessionEmail(): Promise<string | null> {
+  // ✅ Replace with your existing auth session read.
+  // If you're using NextAuth, use: getServerSession(authOptions).user?.email
+  // Here we assume you store user email in a signed cookie "vd_email" after login.
+  const c = cookies().get("vd_email")?.value;
+  return c ?? null;
+}
+
+export default async function AdminPage() {
+  const email = await getAdminSessionEmail();
+  const adminEmail = process.env.ADMIN_EMAIL;
+
+  if (!email || !adminEmail || email.toLowerCase() !== adminEmail.toLowerCase()) {
+    redirect("/"); // silent deny
+  }
+
+  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/admin/metrics`, {
+    cache: "no-store",
+    headers: { "x-admin": "1" },
+  });
+
+  if (!res.ok) {
+    return (
+      <div className="p-6">
+        <h1 className="text-xl font-semibold">Admin</h1>
+        <p className="mt-2 text-red-600">Failed to load metrics.</p>
+      </div>
+    );
+  }
+
+  const data = (await res.json()) as Metrics;
+
+  const Card = ({
+    title,
+    children,
+  }: {
+    title: string;
+    children: React.ReactNode;
+  }) => (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="text-sm font-medium text-slate-600">{title}</div>
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+
+  const KPI = ({ label, value }: { label: string; value: React.ReactNode }) => (
+    <div className="flex items-center justify-between gap-4 py-1">
+      <div className="text-sm text-slate-600">{label}</div>
+      <div className="text-sm font-semibold text-slate-900">{value}</div>
+    </div>
+  );
+
+  const pct = (x: number) => `${Math.round(x * 1000) / 10}%`;
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      <div className="mx-auto max-w-6xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-900">VeriDoc Admin</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Window: {data.window.fromISO} → {data.window.toISO}
+            </p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
+            Signed in as <span className="font-semibold">{email}</span>
+          </div>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <Card title="Connections">
+            <KPI label="Active (last 5m)" value={data.connections.active_last_5m} />
+            <KPI label="Active (last 60m)" value={data.connections.active_last_60m} />
+            <KPI label="Unique IPs (24h)" value={data.connections.unique_ip_last_24h} />
+            <KPI label="Unique users (24h)" value={data.connections.unique_users_last_24h} />
+          </Card>
+
+          <Card title="Usage (24h)">
+            <KPI label="Queries" value={data.usage.queries_last_24h} />
+            <KPI label="Tool calls" value={data.usage.tool_calls_last_24h} />
+            <KPI label="Refusals" value={`${data.usage.refusals_last_24h} (${pct(data.usage.refusal_rate_last_24h)})`} />
+            <KPI label="Errors" value={`${data.usage.errors_last_24h} (${pct(data.usage.error_rate_last_24h)})`} />
+            <div className="mt-2 text-xs text-slate-500">
+              Queries (7d): <span className="font-semibold">{data.usage.queries_last_7d}</span>
+            </div>
+          </Card>
+
+          <Card title="Performance (24h)">
+            <KPI label="Latency p50" value={`${data.performance.latency_ms_p50_last_24h} ms`} />
+            <KPI label="Latency p95" value={`${data.performance.latency_ms_p95_last_24h} ms`} />
+            <KPI label="Retrieval p50" value={`${data.performance.retrieval_ms_p50_last_24h} ms`} />
+            <KPI label="Retrieval p95" value={`${data.performance.retrieval_ms_p95_last_24h} ms`} />
+            <KPI label="LLM p50" value={`${data.performance.llm_ms_p50_last_24h} ms`} />
+            <KPI label="LLM p95" value={`${data.performance.llm_ms_p95_last_24h} ms`} />
+          </Card>
+
+          <Card title="Cost (LLM)">
+            <KPI label="Last 24h" value={`$${data.cost.llm_usd_last_24h.toFixed(2)}`} />
+            <KPI label="Last 7d" value={`$${data.cost.llm_usd_last_7d.toFixed(2)}`} />
+            <div className="mt-2 text-xs text-slate-500">
+              Keep this accurate by logging token usage + model price mapping server-side.
+            </div>
+          </Card>
+
+          <Card title="Safety (24h)">
+            <KPI label="Citation mismatches" value={`${data.safety.citation_mismatch_last_24h} (${pct(data.safety.citation_mismatch_rate_last_24h)})`} />
+            <KPI label="Dosing requests" value={data.safety.dosing_requests_last_24h} />
+            <KPI label="Interaction checks" value={data.safety.interaction_checks_last_24h} />
+          </Card>
+
+          <Card title="Top queries (24h)">
+            <div className="space-y-2">
+              {data.content.top_queries_last_24h.slice(0, 8).map((q, i) => (
+                <div key={i} className="rounded-xl bg-slate-50 p-2">
+                  <div className="text-xs text-slate-500">{q.count}×</div>
+                  <div className="text-sm text-slate-900">{q.query}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card title="Top refusal reasons (7d)">
+            <div className="space-y-2">
+              {data.content.top_refusal_reasons_last_7d.slice(0, 8).map((r, i) => (
+                <div key={i} className="flex items-center justify-between rounded-xl bg-slate-50 p-2">
+                  <div className="text-sm text-slate-900">{r.reason}</div>
+                  <div className="text-sm font-semibold text-slate-700">{r.count}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card title="Top tools (7d)">
+            <div className="space-y-2">
+              {data.content.top_tools_last_7d.slice(0, 10).map((t, i) => (
+                <div key={i} className="flex items-center justify-between rounded-xl bg-slate-50 p-2">
+                  <div className="text-sm text-slate-900">{t.tool}</div>
+                  <div className="text-sm font-semibold text-slate-700">{t.count}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600 shadow-sm">
+          <div className="font-semibold text-slate-700">Security notes</div>
+          <ul className="mt-2 list-disc pl-5">
+            <li>Admin access is enforced server-side by email match against ADMIN_EMAIL.</li>
+            <li>/api/admin/metrics is protected again by both admin session + ADMIN_API_KEY to prevent SSRF leaks.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 2) app/api/admin/metrics/route.ts
+////////////////////////////////////////////////////////////////////////////////
+
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+
+async function getAdminSessionEmail(): Promise<string | null> {
+  const c = cookies().get("vd_email")?.value;
+  return c ?? null;
+}
+
+export async function GET() {
+  const email = await getAdminSessionEmail();
+  const adminEmail = process.env.ADMIN_EMAIL;
+
+  if (!email || !adminEmail || email.toLowerCase() !== adminEmail.toLowerCase()) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const backend = process.env.BACKEND_URL;
+  const key = process.env.ADMIN_API_KEY;
+  if (!backend || !key) {
+    return NextResponse.json({ error: "backend not configured" }, { status: 500 });
+  }
+
+  const r = await fetch(`${backend}/admin/metrics`, {
+    method: "GET",
+    headers: {
+      "x-admin-api-key": key,
+      "accept": "application/json",
+    },
+    cache: "no-store",
+  });
+
+  const text = await r.text();
+  return new NextResponse(text, {
+    status: r.status,
+    headers: { "content-type": "application/json" },
+  });
+}

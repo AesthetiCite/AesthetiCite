@@ -1,0 +1,337 @@
+# NEXT STEP (one code block): Build a minimal Node/Next.js frontend that talks to Veridoc API
+# Features:
+# - Login page (/login) -> stores JWT in localStorage
+# - Ask page (/ask) -> sends authenticated POST /ask and renders answer + citations
+# - Uses NEXT_PUBLIC_API_BASE to point to your FastAPI (e.g., http://localhost:8000)
+#
+# Paste into Replit AI Agent (in a Node/Next project OR in a separate Replit for frontend).
+# If you're in the Python Replit, create a new Replit for the frontend and paste there.
+
+set -e
+
+echo "==> 1) Create Next.js app structure"
+mkdir -p veridoc-frontend/pages veridoc-frontend/styles veridoc-frontend/lib
+cd veridoc-frontend
+
+echo "==> 2) package.json"
+cat > package.json <<'EOF'
+{
+  "name": "veridoc-frontend",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 5000",
+    "build": "next build",
+    "start": "next start -p 5000"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
+EOF
+
+echo "==> 3) next.config.js"
+cat > next.config.js <<'EOF'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true
+};
+module.exports = nextConfig;
+EOF
+
+echo "==> 4) Basic CSS"
+cat > styles/globals.css <<'EOF'
+html, body { padding: 0; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+a { color: inherit; text-decoration: none; }
+* { box-sizing: border-box; }
+.container { max-width: 900px; margin: 0 auto; padding: 24px; }
+.card { border: 1px solid #e6e6e6; border-radius: 12px; padding: 16px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+input, select, textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 10px; }
+button { padding: 10px 14px; border: 1px solid #ddd; border-radius: 10px; cursor: pointer; background: white; }
+button:hover { background: #f7f7f7; }
+pre { white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+.small { color: #666; font-size: 13px; }
+.hr { height: 1px; background: #eee; margin: 14px 0; }
+.badge { display: inline-block; padding: 4px 8px; border: 1px solid #ddd; border-radius: 999px; font-size: 12px; color: #444; }
+EOF
+
+echo "==> 5) _app.js"
+cat > pages/_app.js <<'EOF'
+import "../styles/globals.css";
+
+export default function App({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+EOF
+
+echo "==> 6) lib/api.js (API helper)"
+cat > lib/api.js <<'EOF'
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+export function getToken() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("veridoc_token");
+}
+
+export function setToken(token) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("veridoc_token", token);
+}
+
+export function clearToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("veridoc_token");
+}
+
+export async function login(email, password) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Login failed");
+  return data.access_token;
+}
+
+export async function me(token) {
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Auth check failed");
+  return data;
+}
+
+export async function ask(token, question, domain="medicine", mode="clinic") {
+  const res = await fetch(`${API_BASE}/ask`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ question, domain, mode })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Ask failed");
+  return data;
+}
+EOF
+
+echo "==> 7) pages/index.js (redirect)"
+cat > pages/index.js <<'EOF'
+import { useEffect } from "react";
+import { getToken } from "../lib/api";
+import { useRouter } from "next/router";
+
+export default function Home() {
+  const router = useRouter();
+  useEffect(() => {
+    const t = getToken();
+    router.replace(t ? "/ask" : "/login");
+  }, [router]);
+  return <div className="container">Loading…</div>;
+}
+EOF
+
+echo "==> 8) pages/login.js"
+cat > pages/login.js <<'EOF'
+import { useState } from "react";
+import { login, setToken, me } from "../lib/api";
+import { useRouter } from "next/router";
+
+export default function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const router = useRouter();
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    setMsg("");
+    setBusy(true);
+    try {
+      const token = await login(email, password);
+      setToken(token);
+      await me(token);
+      router.push("/ask");
+    } catch (err) {
+      setMsg(err.message || "Login failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="container">
+      <h1>Veridoc</h1>
+      <p className="small">Clinician login</p>
+      <div className="card">
+        <form onSubmit={onSubmit} className="row">
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <label className="small">Email</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="doctor@example.com" />
+          </div>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <label className="small">Password</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+          </div>
+          <div style={{ width: "100%" }}>
+            <button disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+          </div>
+        </form>
+        {msg ? <div className="hr" /> : null}
+        {msg ? <p style={{ color: "crimson" }}>{msg}</p> : null}
+      </div>
+      <p className="small" style={{ marginTop: 14 }}>
+        API base: <span className="badge">{process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000"}</span>
+      </p>
+    </div>
+  );
+}
+EOF
+
+echo "==> 9) pages/ask.js"
+cat > pages/ask.js <<'EOF'
+import { useEffect, useState } from "react";
+import { ask, clearToken, getToken, me } from "../lib/api";
+import { useRouter } from "next/router";
+
+export default function AskPage() {
+  const router = useRouter();
+  const [token, setTok] = useState(null);
+  const [user, setUser] = useState(null);
+
+  const [question, setQuestion] = useState("What is hyaluronidase?");
+  const [domain, setDomain] = useState("aesthetic_medicine");
+  const [mode, setMode] = useState("clinic");
+
+  const [busy, setBusy] = useState(false);
+  const [resp, setResp] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    const t = getToken();
+    if (!t) {
+      router.replace("/login");
+      return;
+    }
+    setTok(t);
+    me(t).then(setUser).catch(() => {
+      clearToken();
+      router.replace("/login");
+    });
+  }, [router]);
+
+  async function onAsk() {
+    setErr("");
+    setResp(null);
+    setBusy(true);
+    try {
+      const data = await ask(token, question, domain, mode);
+      setResp(data);
+    } catch (e) {
+      setErr(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function logout() {
+    clearToken();
+    router.replace("/login");
+  }
+
+  return (
+    <div className="container">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <h1 style={{ marginBottom: 4 }}>Veridoc</h1>
+          <div className="small">Signed in as: {user?.email || "…"}</div>
+        </div>
+        <button onClick={logout}>Logout</button>
+      </div>
+
+      <div className="hr" />
+
+      <div className="card">
+        <label className="small">Question</label>
+        <textarea rows={4} value={question} onChange={(e) => setQuestion(e.target.value)} />
+
+        <div className="row" style={{ marginTop: 10 }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <label className="small">Domain</label>
+            <select value={domain} onChange={(e) => setDomain(e.target.value)}>
+              <option value="medicine">medicine</option>
+              <option value="dermatology">dermatology</option>
+              <option value="aesthetic_medicine">aesthetic_medicine</option>
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <label className="small">Mode</label>
+            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="clinic">clinic</option>
+              <option value="deep_dive">deep_dive</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <button disabled={busy} onClick={onAsk}>{busy ? "Asking…" : "Ask Veridoc"}</button>
+        </div>
+
+        {err ? <p style={{ color: "crimson" }}>{err}</p> : null}
+      </div>
+
+      {resp ? (
+        <div style={{ marginTop: 16 }} className="card">
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="badge">request_id: {resp.request_id}</div>
+            <div className="badge">latency: {resp.latency_ms} ms</div>
+          </div>
+
+          {resp.refusal ? (
+            <div style={{ marginTop: 12 }}>
+              <h3>Refusal</h3>
+              <p>{resp.refusal_reason}</p>
+            </div>
+          ) : (
+            <div style={{ marginTop: 12 }}>
+              <h3>Answer</h3>
+              <pre>{resp.answer}</pre>
+              <div className="hr" />
+              <h3>Citations</h3>
+              {resp.citations?.length ? (
+                <ul>
+                  {resp.citations.map((c, i) => (
+                    <li key={i}>
+                      <b>{c.title}</b> {c.year ? `(${c.year})` : ""} — {c.evidence_level || "Source"} — {c.page_or_section || ""}
+                      {c.snippet ? <div className="small" style={{ marginTop: 4 }}>{c.snippet}</div> : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="small">No citations returned.</p>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+EOF
+
+echo "==> 10) .env.local template"
+cat > .env.local <<'EOF'
+NEXT_PUBLIC_API_BASE=http://localhost:8000
+EOF
+
+echo "==> 11) Install & run"
+echo "Run these:"
+echo "  cd veridoc-frontend"
+echo "  npm install"
+echo "  npm run dev"

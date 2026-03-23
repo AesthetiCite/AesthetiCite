@@ -1,0 +1,16 @@
+Good. The existing case_logs table from network_workspace.py is the right store. get_similar_cases() in clinical_decision.py already does basic matching. The gap is: no aggregated outcome statistics, no one-tap case logging after a complication, and no polished UI. That's the Doximity value — outcome rates from the network, not just raw records. Building the aggregation API and the component now.Created 3 files, read a fileCreated 3 files, read a file3 files. Here's what the Doximity comparison actually means and where this implementation stands.
+
+What Doximity's network effect really is
+Doximity started as a medical professional directory. The network effect came from verified physician profiles — once enough doctors were on it, drug companies paid for access to that verified network. The case consultation feature (CME cases, peer-to-peer second opinions) built on top of that existing base.
+AesthetiCite's equivalent is simpler and more directly useful: outcome data from real aesthetic complications that no published database has. Published literature on vascular occlusion outcomes comes from case series of 20–50 patients, often single centres, often with selection bias. A real-world dataset from 500 UK/EU aesthetic clinics would be more accurate than anything peer-reviewed.
+What was built and why it's structured this way
+The GET /api/cases?complication=vascular+occlusion endpoint doesn't just return raw cases — it aggregates. The most important output is:
+resolution_rate_pct: 78%
+resolution_time: { median_minutes: 87, sample_size: 34 }
+top_treatments: [{ treatment: "hyaluronidase", cases: 38 }]
+hyaluronidase_doses: [{ dose: "1500 IU", cases: 28 }]
+The 87 minutes median number is the one that changes clinical behaviour. A clinician who is at 90 minutes with no blanching resolution now knows they are beyond the median. That's the escalation signal the data gives them.
+Why the LogCaseButton must be frictionless
+The build plan stores complication, treatment, outcome, and time. The implementation pre-fills complication from context and pre-fills treatment from the workflow steps the clinician already marked as completed. They arrive at the form needing only to select outcome and type a resolution time. That's 10 seconds. At 30 seconds it won't happen consistently. At 10 seconds it will.
+The resolution time parser accepts "2h", "90 min", "45 minutes", "2" (assumes minutes) — because making clinicians type "00:01:30" means they won't do it.
+The POST /api/cases/{id}/outcome endpoint lets clinicians log cases mid-treatment and update when the patient resolves — because you don't know the outcome at minute 30 when you're still injecting hyaluronidase.

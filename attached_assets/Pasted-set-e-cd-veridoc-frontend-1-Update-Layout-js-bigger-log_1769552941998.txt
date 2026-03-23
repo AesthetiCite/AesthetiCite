@@ -1,0 +1,100 @@
+set -e
+cd veridoc-frontend
+
+# 1) Update Layout.js (bigger logo + tighter brand block)
+cat > components/Layout.js <<'JS'
+import Link from "next/link";
+
+export default function Layout({ children, right, hideNav }) {
+  return (
+    <div className="container">
+      <div className="header">
+        <div className="brand">
+          {/* Upload your chosen logo to: public/veridoc-logo.png */}
+          <img className="brandLogo" src="/veridoc-logo.png" alt="VeriDoc logo" />
+          <div className="brandText">
+            <div className="brandTitle">
+              <span className="veri">Veri</span><span className="doc">Doc</span>
+            </div>
+            <div className="brandSubtitle">
+              Evidence-backed answers for clinicians • citations required
+            </div>
+          </div>
+        </div>
+
+        {!hideNav ? (
+          <div className="nav">
+            <span className="badge"><span className="dot" /> Evidence-only</span>
+            {right}
+          </div>
+        ) : null}
+      </div>
+
+      {children}
+
+      <footer>
+        VeriDoc provides evidence summaries with citations and short supporting snippets. It does not replace clinical judgment.
+      </footer>
+    </div>
+  );
+}
+JS
+
+# 2) Update CSS (logo size + header polish)
+python - <<'PY'
+from pathlib import Path
+css_path = Path("styles/globals.css")
+css = css_path.read_text()
+
+# Replace brand image rules + add new classes (idempotent)
+if ".brandLogo" not in css:
+    css += """
+
+/* ---- Brand/logo upgrades ---- */
+.brandLogo{
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border-radius: 18px;
+  background: rgba(255,255,255,.85);
+  border: 1px solid var(--border);
+  padding: 6px;
+  box-shadow: 0 14px 32px rgba(2,6,23,.10);
+}
+@media (min-width: 900px){
+  .brandLogo{ width: 84px; height: 84px; }
+}
+.brandText{ display:flex; flex-direction:column; gap:4px; }
+.brandTitle{
+  font-weight: 950;
+  letter-spacing: -0.04em;
+  font-size: 22px;
+  line-height: 1;
+}
+.brandTitle .veri{
+  background: linear-gradient(90deg, var(--brand0), var(--brand1));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.brandTitle .doc{ color: var(--text); margin-left: 2px; }
+.brandSubtitle{
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.3;
+  max-width: 420px;
+}
+"""
+# Also ensure header brand gap is good
+css = css.replace(
+    ".brand { display:flex; align-items:center; gap:12px; }",
+    ".brand { display:flex; align-items:center; gap:14px; }"
+)
+# Remove old brand img rule if present
+css = css.replace(".brand img { width: 44px; height: 44px; object-fit: contain; border-radius: 12px; }", "")
+css_path.write_text(css)
+print("✅ CSS updated")
+PY
+
+echo "==> Done. Restart frontend:"
+echo "npm run dev"

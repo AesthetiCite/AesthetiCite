@@ -1,0 +1,162 @@
+import os, time, json, asyncio
+from typing import Any, Dict, List, Optional
+
+import asyncpg
+
+DATABASE_URL = os.environ["DATABASE_URL"]
+
+SQL_UNIFIED_ALL = r"""
+WITH
+v AS (
+  SELECT c.id,
+         (c.embedding <=> CAST($2 AS vector(384))) AS vdist
+  FROM chunks c
+  JOIN documents d ON d.id = c.document_id
+  WHERE d.status = 'active'
+    AND c.embedding IS NOT NULL
+  ORDER BY c.embedding <=> CAST($2 AS vector(384))
+  LIMIT 120
+),
+f AS (
+  SELECT c.id,
+         ts_rank_cd(c.tsv, websearch_to_tsquery('english', $1)) AS fts
+  FROM chunks c
+  JOIN documents d ON d.id = c.document_id
+  WHERE d.status = 'active'
+    AND c.tsv @@ websearch_to_tsquery('english', $1)
+  ORDER BY fts DESC
+  LIMIT 120
+),
+u AS (
+  SELECT id,
+         min(vdist) AS vdist,
+         max(fts)   AS fts
+  FROM (
+    SELECT id, vdist, NULL::float AS fts FROM v
+    UNION ALL
+    SELECT id, NULL::float, fts FROM f
+  ) s
+  GROUP BY id
+),
+ranked AS (
+  SELECT *
+  FROM u
+  ORDER BY
+    COALESCE(vdist, 1e9) ASC,
+    COALESCE(fts, 0) DESC
+  LIMIT $3
+)
+SELECT
+  d.source_id, d.title, d.year, d.organization_or_journal,
+  d.document_type, d.domain, c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text, r.vdist, r.fts AS krank
+FROM ranked r
+JOIN chunks c ON c.id = r.id
+JOIN documents d ON d.id = c.document_id
+ORDER BY COALESCE(r.vdist, 1e9) ASC, COALESCE(r.fts, 0) DESC;
+"""
+
+# -----------------------------
+# Global pool + prepared stmt
+# -----------------------------
+_pool: Optional[asyncpg.Pool] = None
+_prepared: Optional[asyncpg.PreparedStatement] = None
+_lock = asyncio.Lock()
+
+async def init_retrieval_pool():
+    """
+    Call once on app startup.
+    Biggest win: stops per-request connect/TLS overhead.
+    """
+    global _pool
+    _pool = await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=2,
+        max_size=20,
+        max_inactive_connection_lifetime=300,
+        command_timeout=30,
+    )
+
+async def _get_prepared(con: asyncpg.Connection) -> asyncpg.PreparedStatement:
+    """
+    Prepare once per process (safe).
+    Prepared plans reduce parse/plan overhead and can reduce latency variance.
+    """
+    global _prepared
+    async with _lock:
+        if _prepared is None:
+            _prepared = await con.prepare(SQL_UNIFIED_ALL)
+        return _prepared
+
+# -----------------------------
+# Retrieval function with timing
+# -----------------------------
+async def retrieve_chunks_unified(q: str, qvec384: List[float], k: int = 40, ef_search: int = 80) -> Dict[str, Any]:
+    """
+    Returns:
+      { "rows": [...], "timing_ms": {...} }
+
+    IMPORTANT: This code proves where your 10 seconds are.
+    If DB time is ~6ms but end-to-end is 10s, you’ll see it immediately.
+    """
+    if _pool is None:
+        raise RuntimeError("Pool not initialized. Call init_retrieval_pool() on startup.")
+    if len(qvec384) != 384:
+        raise ValueError("qvec384 must be 384-dim")
+
+    t0 = time.perf_counter()
+
+    # 1) Acquire connection (this is where TLS/connect pain shows up if you weren't pooling)
+    t_acq0 = time.perf_counter()
+    async with _pool.acquire() as con:
+        t_acq1 = time.perf_counter()
+
+        # 2) Session knob for HNSW (kept local)
+        t_set0 = time.perf_counter()
+        await con.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+        t_set1 = time.perf_counter()
+
+        # 3) Prepared statement
+        t_prep0 = time.perf_counter()
+        stmt = await _get_prepared(con)
+        t_prep1 = time.perf_counter()
+
+        # 4) Execute + fetch
+        t_q0 = time.perf_counter()
+        rows = await stmt.fetch(q, qvec384, int(k))
+        t_q1 = time.perf_counter()
+
+    t1 = time.perf_counter()
+
+    # 5) Python shaping/serialization overhead (can surprise you if c.text is large)
+    t_py0 = time.perf_counter()
+    out_rows = []
+    for r in rows:
+        out_rows.append({
+            "source_id": r["source_id"],
+            "title": r["title"],
+            "year": r["year"],
+            "organization_or_journal": r["organization_or_journal"],
+            "document_type": r["document_type"],
+            "domain": r["domain"],
+            "page_or_section": r["page_or_section"],
+            "evidence_level": r["evidence_level"],
+            "text": r["text"],              # consider trimming here if needed
+            "vdist": float(r["vdist"]) if r["vdist"] is not None else None,
+            "krank": float(r["krank"]) if r["krank"] is not None else None,
+        })
+    # If you send JSON over the wire, this is where time can blow up:
+    _ = json.dumps(out_rows, ensure_ascii=False)
+    t_py1 = time.perf_counter()
+
+    timing_ms = {
+        "acquire_conn": (t_acq1 - t_acq0) * 1000,
+        "set_ef_search": (t_set1 - t_set0) * 1000,
+        "prepare_stmt": (t_prep1 - t_prep0) * 1000,
+        "db_fetch": (t_q1 - t_q0) * 1000,
+        "python_pack+json": (t_py1 - t_py0) * 1000,
+        "total": (t_py1 - t0) * 1000,
+    }
+
+    return {"rows": out_rows, "timing_ms": timing_ms}

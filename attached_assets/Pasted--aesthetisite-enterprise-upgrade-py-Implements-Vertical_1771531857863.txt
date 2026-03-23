@@ -1,0 +1,216 @@
+# aesthetisite_enterprise_upgrade.py
+# Implements:
+# - Vertical domain prioritization
+# - Complication mode boost
+# - Deterministic governance pipeline
+# - Strict citation validation
+# - Advanced ACI scoring
+# - Governance audit logging
+# - LLM abstraction
+# - Intent-aware retrieval
+# - Enterprise-ready structure
+
+import re, time, hashlib
+from typing import List, Dict, Any
+
+# ==========================================
+# 1️⃣ DOMAIN SEGMENTATION (VERTICAL PRIORITY)
+# ==========================================
+
+DOMAIN_PRIORITY = {
+    "aesthetic_core": 1.0,
+    "plastic_surgery": 0.85,
+    "dermatology": 0.65,
+    "general_medicine": 0.45
+}
+
+# ==========================================
+# 2️⃣ INTENT DETECTION (COMPLICATION DOMINANCE)
+# ==========================================
+
+def detect_intent(q: str) -> str:
+    ql = q.lower()
+    if any(k in ql for k in [
+        "occlusion", "vascular", "necrosis", "blindness",
+        "embol", "ischemia", "complication", "adverse event"
+    ]):
+        return "complication"
+    if any(k in ql for k in ["dose", "units", "dilution", "reconstitution"]):
+        return "dosing"
+    return "general"
+
+# ==========================================
+# 3️⃣ DOMAIN-WEIGHTED RETRIEVAL RERANK
+# ==========================================
+
+def rerank_documents(docs: List[Dict], intent: str) -> List[Dict]:
+    now_year = time.gmtime().tm_year
+
+    def score(d):
+        domain_weight = DOMAIN_PRIORITY.get(d.get("domain"), 0.5)
+        evidence_bonus = (10 - d.get("evidence_rank", 8)) / 10
+        recency_bonus = max(0, (d.get("year", 2000) - 2000)) / 50
+
+        complication_boost = 0.2 if (
+            intent == "complication" and d.get("evidence_rank", 9) <= 2
+        ) else 0
+
+        return domain_weight + evidence_bonus + recency_bonus + complication_boost
+
+    docs.sort(key=score, reverse=True)
+    return docs
+
+# ==========================================
+# 4️⃣ ADVANCED ACI SCORING
+# ==========================================
+
+def compute_aci(docs: List[Dict]) -> Dict:
+    if not docs:
+        return {
+            "score": 0,
+            "highest_level": "N/A",
+            "supporting_count": 0,
+            "gaps": ["No evidence retrieved"]
+        }
+
+    evidence_levels = [d["evidence_rank"] for d in docs]
+    best_level = min(evidence_levels)
+    support = len(docs)
+
+    base = 5
+    if best_level <= 1:
+        base += 3
+    elif best_level == 2:
+        base += 2
+    elif best_level == 3:
+        base += 1
+
+    support_bonus = min(2, support / 10)
+    score = min(10, round(base + support_bonus, 1))
+
+    gaps = []
+    if best_level > 3:
+        gaps.append("No guideline/systematic review/RCT identified")
+    if support < 5:
+        gaps.append("Limited number of directly relevant sources")
+
+    return {
+        "score": score,
+        "highest_level": best_level,
+        "supporting_count": support,
+        "gaps": gaps
+    }
+
+# ==========================================
+# 5️⃣ STRICT CITATION ENFORCEMENT
+# ==========================================
+
+CITATION_RE = re.compile(r"\[S\d+\]")
+
+def validate_citations(answer: str) -> bool:
+    if not CITATION_RE.search(answer):
+        return False
+
+    bullets = re.findall(r"- (.+)", answer)
+    for b in bullets:
+        if not CITATION_RE.search(b):
+            return False
+    return True
+
+# ==========================================
+# 6️⃣ GOVERNANCE PIPELINE
+# ==========================================
+
+async def governance_pipeline(question: str, lang: str, retrieve_func, llm_service):
+
+    intent = detect_intent(question)
+
+    docs = await retrieve_func(question)
+    docs = rerank_documents(docs, intent)
+
+    aci = compute_aci(docs)
+
+    prompt = f"""
+Write the entire answer in {lang}.
+
+Structure exactly:
+
+Evidence Strength Summary
+- Overall confidence: {aci['score']}/10
+- Highest evidence level: {aci['highest_level']}
+- Supporting sources: {aci['supporting_count']}
+
+Clinical Summary
+
+Key Evidence-Based Points
+- Bullet with citations [S1][S3]
+
+Safety Considerations
+
+Limitations / Uncertainty
+
+Suggested Follow-up Questions
+- Q1
+- Q2
+- Q3
+
+Question: {question}
+"""
+
+    answer = await llm_service.generate(prompt)
+
+    if not validate_citations(answer):
+        answer = (
+            "Clinical Summary\n"
+            "Evidence insufficient based on retrieved sources.\n\n"
+            "Limitations / Uncertainty\n"
+            "Retrieved evidence does not adequately support a grounded response.\n"
+        )
+
+    log_governance_event(question, docs, aci)
+
+    return {
+        "answer": answer,
+        "aci": aci,
+        "sources": docs
+    }
+
+# ==========================================
+# 7️⃣ GOVERNANCE LOGGING (AUDIT READY)
+# ==========================================
+
+GOVERNANCE_LOGS = []
+
+def log_governance_event(q, docs, aci):
+    GOVERNANCE_LOGS.append({
+        "timestamp": time.time(),
+        "question_hash": hashlib.sha256(q.encode()).hexdigest(),
+        "source_ids": [d.get("sid") for d in docs],
+        "aci_score": aci["score"]
+    })
+
+# ==========================================
+# 8️⃣ LLM ABSTRACTION
+# ==========================================
+
+class LLMService:
+    def __init__(self, model="gpt-4o-mini"):
+        self.model = model
+
+    async def generate(self, prompt: str):
+        # replace with real proxy call
+        return f"[Simulated answer from {self.model}]\n\n{prompt[:500]}"
+
+# ==========================================
+# 9️⃣ ENTERPRISE ADMIN ENDPOINT
+# ==========================================
+
+def get_governance_audit():
+    return {
+        "total_queries": len(GOVERNANCE_LOGS),
+        "average_aci": (
+            sum(log["aci_score"] for log in GOVERNANCE_LOGS) / len(GOVERNANCE_LOGS)
+            if GOVERNANCE_LOGS else 0
+        ),
+        "logs": GOVERNANCE_LOGS
+    }

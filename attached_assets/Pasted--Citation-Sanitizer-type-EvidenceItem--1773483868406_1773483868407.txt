@@ -1,0 +1,87 @@
+// ─── Citation Sanitizer ────────────────────────────────────────────────────
+
+type EvidenceItem = {
+  id?: string; source_id?: string; chunk_id?: string; doc_id?: string;
+  title?: string; source?: string; locator?: string;
+  page?: number | string; section?: string;
+  snippet?: string; quote?: string; url?: string;
+}
+type CitationItem = {
+  id: string; title?: string; source?: string;
+  locator?: string; snippet?: string; url?: string;
+}
+
+function normalizeCitationId(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  return s.length ? s : null;
+}
+
+function getEvidenceId(item: EvidenceItem, index: number): string {
+  return (normalizeCitationId(item.id) || normalizeCitationId(item.source_id) ||
+    normalizeCitationId(item.chunk_id) || normalizeCitationId(item.doc_id) ||
+    `src_${index + 1}`)!;
+}
+
+function evidenceToCitation(item: EvidenceItem, index: number): CitationItem {
+  const id = getEvidenceId(item, index);
+  const locator = item.locator ||
+    (item.page !== undefined ? `Page ${item.page}` : undefined) || item.section;
+  return {
+    id,
+    title: item.title || item.source || `Source ${index + 1}`,
+    source: item.source,
+    locator,
+    snippet: item.snippet || item.quote,
+    url: item.url,
+  };
+}
+
+function stripInvalidInlineCitations(answer: string, validIds: Set<string>): string {
+  if (!answer) return answer;
+  return answer
+    .replace(/\[([^\[\]]+)\]/g, (full, rawId) =>
+      validIds.has(String(rawId).trim()) ? full : "")
+    .replace(/【([^】]+)】/g, (full, rawId) =>
+      validIds.has(String(rawId).trim()) ? full : "")
+    .replace(/\[\^([^\]]+)\]/g, (full, rawId) =>
+      validIds.has(String(rawId).trim()) ? full : "")
+    .replace(/[ \t]+(\n|$)/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sanitizeGroundedResponse(payload: any) {
+  const rawEvidence: EvidenceItem[] =
+    Array.isArray(payload?.evidence) ? payload.evidence :
+    Array.isArray(payload?.sources) ? payload.sources :
+    Array.isArray(payload?.retrieved_chunks) ? payload.retrieved_chunks : [];
+
+  const citations = rawEvidence.map(evidenceToCitation);
+  const validIds = new Set(citations.map((c) => c.id));
+  const answer = typeof payload?.answer === "string" ? payload.answer :
+    typeof payload?.response === "string" ? payload.response :
+    typeof payload?.text === "string" ? payload.text : "";
+
+  return {
+    ...payload,
+    answer: stripInvalidInlineCitations(answer, validIds),
+    citations,
+    evidence: rawEvidence,
+    citation_mode: "server-validated",
+    citations_grounded: citations.length > 0,
+  };
+}
+
+function sanitizeGroundedResponseStrict(payload: any) {
+  const sanitized = sanitizeGroundedResponse(payload);
+  if (!sanitized.citations || sanitized.citations.length === 0) {
+    return {
+      ...sanitized,
+      citations: [],
+      citations_grounded: false,
+      evidence_warning: "No grounded evidence retrieved. Citations suppressed.",
+    };
+  }
+  return sanitized;
+}

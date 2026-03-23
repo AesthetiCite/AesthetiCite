@@ -1,0 +1,1959 @@
+/**
+ * AesthetiCite — Safety Workspace (Clinic Demo Ready)
+ *
+ * Replaces the original SafetyWorkspace.tsx with a stronger clinic-facing page.
+ *
+ * Uses existing backend routes:
+ *   POST /api/safety/preprocedure-check
+ *   POST /api/safety/preprocedure-check/export-pdf
+ *   POST /api/growth/session-reports
+ *   POST /api/growth/session-reports/:id/items
+ *   GET  /api/growth/session-reports/:id
+ *   POST /api/growth/session-reports/:id/export-pdf
+ *
+ * Drop into:
+ *   client/src/pages/safety-workspace.tsx
+ *
+ * Route:
+ *   <Route path="/safety-workspace">
+ *     <ProtectedRoute component={SafetyWorkspacePage} />
+ *   </Route>
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { getToken } from "@/lib/auth";
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Types
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+type Decision = "go" | "caution" | "high_risk";
+type RiskLevel = "low" | "moderate" | "high" | "very_high";
+type QueueStatus = "pending" | "running" | "done" | "error";
+type TabKey = "check" | "session";
+
+interface PatientFactors {
+  prior_filler_in_same_area?: boolean;
+  prior_vascular_event?: boolean;
+  autoimmune_history?: boolean;
+  allergy_history?: boolean;
+  active_infection_near_site?: boolean;
+  anticoagulation?: boolean;
+  vascular_disease?: boolean;
+  smoking?: boolean;
+}
+
+interface PreProcedureRequest {
+  procedure: string;
+  region: string;
+  product_type: string;
+  technique?: string;
+  injector_experience_level?: "junior" | "intermediate" | "senior";
+  patient_factors?: PatientFactors;
+}
+
+interface RiskItem {
+  complication: string;
+  risk_score: number;
+  risk_level: RiskLevel;
+  why_it_matters: string;
+}
+
+interface SafetyAssessment {
+  overall_risk_score: number;
+  overall_risk_level: string;
+  decision: Decision;
+  rationale: string;
+}
+
+interface ProcedureInsight {
+  procedure_name: string;
+  region: string;
+  likely_plane_or_target?: string;
+  danger_zones: string[];
+  technical_notes: string[];
+}
+
+interface EvidenceItem {
+  source_id: string;
+  title: string;
+  note: string;
+  citation_text?: string;
+}
+
+interface PreProcedureResponse {
+  request_id: string;
+  generated_at_utc: string;
+  engine_version: string;
+  safety_assessment: SafetyAssessment;
+  top_risks: RiskItem[];
+  procedure_insight: ProcedureInsight;
+  mitigation_steps: string[];
+  caution_flags: string[];
+  evidence: EvidenceItem[];
+  disclaimer: string;
+}
+
+interface SessionReportCreateResponse {
+  id: string;
+}
+
+interface SessionExportResponse {
+  filename: string;
+  pdf_path?: string;
+  report_id?: string;
+}
+
+interface SingleExportResponse {
+  filename: string;
+}
+
+interface QueuedCheck {
+  id: string;
+  patient_label: string;
+  request: PreProcedureRequest;
+  result?: PreProcedureResponse;
+  status: QueueStatus;
+  error?: string;
+  created_at: string;
+}
+
+interface PersistedWorkspaceState {
+  queue: QueuedCheck[];
+  sessionTitle: string;
+  activeTab: TabKey;
+  lastSingleForm?: CheckFormState;
+}
+
+type CheckFormState = PreProcedureRequest & {
+  patient_label: string;
+};
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Constants
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+const STORAGE_KEY = "aestheticite:safety-workspace:v2";
+
+const PROCEDURES = [
+  "Nasolabial fold filler",
+  "Tear trough filler",
+  "Lip filler",
+  "Glabellar filler",
+  "Glabellar toxin",
+  "Jawline / chin / cheek filler",
+  "Forehead / temple filler",
+  "Nose filler",
+] as const;
+
+const REGIONS = [
+  "Nasolabial fold",
+  "Tear trough",
+  "Lip",
+  "Glabella",
+  "Jawline",
+  "Chin",
+  "Cheek",
+  "Forehead",
+  "Temple",
+  "Nose",
+] as const;
+
+const PRODUCTS = [
+  "Hyaluronic acid filler",
+  "Calcium hydroxylapatite",
+  "Poly-L-lactic acid",
+  "PMMA filler",
+  "Botulinum toxin A",
+  "Other",
+] as const;
+
+const TECHNIQUES = [
+  "needle",
+  "cannula",
+  "blunt cannula",
+  "threading",
+  "bolus",
+  "fanning",
+] as const;
+
+const EXPERIENCE_LEVELS = ["junior", "intermediate", "senior"] as const;
+
+const PRESET_CASES: Array<{
+  label: string;
+  form: Partial<CheckFormState>;
+}> = [
+  {
+    label: "Tear trough — cautious case",
+    form: {
+      patient_label: "Patient A",
+      procedure: "tear trough filler",
+      region: "tear trough",
+      product_type: "hyaluronic acid filler",
+      technique: "cannula",
+      injector_experience_level: "intermediate",
+      patient_factors: {
+        prior_filler_in_same_area: true,
+        prior_vascular_event: false,
+        autoimmune_history: false,
+        allergy_history: false,
+        active_infection_near_site: false,
+        anticoagulation: false,
+        vascular_disease: false,
+        smoking: false,
+      },
+    },
+  },
+  {
+    label: "Lip filler — routine case",
+    form: {
+      patient_label: "Patient B",
+      procedure: "lip filler",
+      region: "lip",
+      product_type: "hyaluronic acid filler",
+      technique: "needle",
+      injector_experience_level: "senior",
+      patient_factors: {
+        prior_filler_in_same_area: false,
+        prior_vascular_event: false,
+        autoimmune_history: false,
+        allergy_history: false,
+        active_infection_near_site: false,
+        anticoagulation: false,
+        vascular_disease: false,
+        smoking: false,
+      },
+    },
+  },
+  {
+    label: "Nose filler — higher risk case",
+    form: {
+      patient_label: "Patient C",
+      procedure: "nose filler",
+      region: "nose",
+      product_type: "hyaluronic acid filler",
+      technique: "needle",
+      injector_experience_level: "junior",
+      patient_factors: {
+        prior_filler_in_same_area: false,
+        prior_vascular_event: true,
+        autoimmune_history: false,
+        allergy_history: false,
+        active_infection_near_site: false,
+        anticoagulation: true,
+        vascular_disease: false,
+        smoking: true,
+      },
+    },
+  },
+];
+
+const DECISION_CONFIG: Record<
+  Decision,
+  {
+    label: string;
+    bg: string;
+    ring: string;
+    text: string;
+    border: string;
+    soft: string;
+    icon: string;
+  }
+> = {
+  go: {
+    label: "GO",
+    bg: "bg-emerald-600",
+    ring: "ring-emerald-500/30",
+    text: "text-white",
+    border: "border-emerald-500/25",
+    soft: "bg-emerald-500/5",
+    icon: "✓",
+  },
+  caution: {
+    label: "CAUTION",
+    bg: "bg-amber-500",
+    ring: "ring-amber-500/30",
+    text: "text-white",
+    border: "border-amber-500/25",
+    soft: "bg-amber-500/5",
+    icon: "⚠",
+  },
+  high_risk: {
+    label: "HIGH RISK",
+    bg: "bg-red-600",
+    ring: "ring-red-500/30",
+    text: "text-white",
+    border: "border-red-500/25",
+    soft: "bg-red-500/5",
+    icon: "✕",
+  },
+};
+
+const RISK_LEVEL_CONFIG: Record<
+  RiskLevel,
+  {
+    label: string;
+    text: string;
+    bar: string;
+    chip: string;
+  }
+> = {
+  low: {
+    label: "Low",
+    text: "text-emerald-600 dark:text-emerald-400",
+    bar: "bg-emerald-500",
+    chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20",
+  },
+  moderate: {
+    label: "Moderate",
+    text: "text-amber-600 dark:text-amber-400",
+    bar: "bg-amber-500",
+    chip: "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20",
+  },
+  high: {
+    label: "High",
+    text: "text-orange-600 dark:text-orange-400",
+    bar: "bg-orange-500",
+    chip: "bg-orange-500/10 text-orange-700 dark:text-orange-300 border-orange-500/20",
+  },
+  very_high: {
+    label: "Very High",
+    text: "text-red-600 dark:text-red-400",
+    bar: "bg-red-600",
+    chip: "bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/20",
+  },
+};
+
+const BLANK_FORM: CheckFormState = {
+  patient_label: "",
+  procedure: "",
+  region: "",
+  product_type: "",
+  technique: "",
+  injector_experience_level: undefined,
+  patient_factors: {
+    prior_filler_in_same_area: false,
+    prior_vascular_event: false,
+    autoimmune_history: false,
+    allergy_history: false,
+    active_infection_near_site: false,
+    anticoagulation: false,
+    vascular_disease: false,
+    smoking: false,
+  },
+};
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Helpers
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function safeJsonParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeFormForApi(form: CheckFormState): PreProcedureRequest {
+  const cleanedTechnique = (form.technique || "").trim();
+  return {
+    procedure: form.procedure.trim(),
+    region: form.region.trim(),
+    product_type: form.product_type.trim(),
+    technique: cleanedTechnique || undefined,
+    injector_experience_level: form.injector_experience_level,
+    patient_factors: { ...(form.patient_factors || {}) },
+  };
+}
+
+function humanizeSlug(value: string) {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function clampScore(score?: number) {
+  if (typeof score !== "number" || Number.isNaN(score)) return 0;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function createDownloadLink(href: string, filename?: string) {
+  const a = document.createElement("a");
+  a.href = href;
+  if (filename) a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function downloadFromResponse(path: string, filename: string) {
+  createDownloadLink(path, filename);
+}
+
+function queueSummary(queue: QueuedCheck[]) {
+  const done = queue.filter((i) => i.status === "done" && i.result);
+  const pending = queue.filter((i) => i.status === "pending").length;
+  const running = queue.filter((i) => i.status === "running").length;
+  const errors = queue.filter((i) => i.status === "error").length;
+  const avgRisk =
+    done.length > 0
+      ? Math.round(
+          done.reduce((acc, item) => acc + clampScore(item.result?.safety_assessment.overall_risk_score), 0) /
+            done.length
+        )
+      : 0;
+
+  const decisionCounts: Record<Decision, number> = {
+    go: 0,
+    caution: 0,
+    high_risk: 0,
+  };
+
+  done.forEach((item) => {
+    const decision = item.result?.safety_assessment.decision;
+    if (decision) decisionCounts[decision] += 1;
+  });
+
+  return {
+    total: queue.length,
+    pending,
+    running,
+    errors,
+    done: done.length,
+    avgRisk,
+    decisionCounts,
+  };
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  worker: (item: T) => Promise<void>,
+  concurrency = 3
+) {
+  const queue = [...items];
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }).map(async () => {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) return;
+      await worker(item);
+    }
+  });
+  await Promise.all(runners);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * API
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const token = getToken();
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const detail =
+      (err as { detail?: string; message?: string }).detail ||
+      (err as { detail?: string; message?: string }).message ||
+      `Request failed: ${res.status}`;
+    throw new Error(detail);
+  }
+
+  return res.json() as Promise<T>;
+}
+
+async function apiGet<T>(path: string): Promise<T> {
+  const token = getToken();
+  const res = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!res.ok) {
+    let message = `Request failed: ${res.status}`;
+    try {
+      const err = (await res.json()) as { detail?: string; message?: string };
+      message = err.detail || err.message || message;
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
+
+  return res.json() as Promise<T>;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * UI primitives
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+function Label({ children }: { children: ReactNode }) {
+  return (
+    <label className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+      {children}
+    </label>
+  );
+}
+
+function SectionTitle({
+  title,
+  subtitle,
+  action,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <h2 className="text-sm font-bold tracking-tight">{title}</h2>
+        {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function Select({
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: readonly string[];
+  placeholder?: string;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+    >
+      {placeholder ? <option value="">{placeholder}</option> : null}
+      {options.map((option) => (
+        <option key={option} value={option.toLowerCase()}>
+          {option}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/40"
+    />
+  );
+}
+
+function CheckboxRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2.5 cursor-pointer group">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 rounded border-border accent-primary"
+      />
+      <span className="text-sm text-muted-foreground group-hover:text-foreground transition-colors">
+        {label}
+      </span>
+    </label>
+  );
+}
+
+function MiniStat({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string | number;
+  tone?: "default" | "success" | "warning" | "danger";
+}) {
+  const toneClasses =
+    tone === "success"
+      ? "border-emerald-500/20 bg-emerald-500/5"
+      : tone === "warning"
+      ? "border-amber-500/20 bg-amber-500/5"
+      : tone === "danger"
+      ? "border-red-500/20 bg-red-500/5"
+      : "border-border bg-card";
+
+  return (
+    <div className={`rounded-xl border px-3 py-3 ${toneClasses}`}>
+      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{label}</p>
+      <p className="text-lg font-black mt-1 tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+function DecisionBadge({ decision }: { decision: Decision }) {
+  const cfg = DECISION_CONFIG[decision];
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-black tracking-wider ring-2 ${cfg.bg} ${cfg.text} ${cfg.ring}`}
+    >
+      <span>{cfg.icon}</span>
+      {cfg.label}
+    </span>
+  );
+}
+
+function ScoreRing({
+  score,
+  decision,
+  size = 96,
+}: {
+  score: number;
+  decision: Decision;
+  size?: number;
+}) {
+  const safeScore = clampScore(score);
+  const cfg = DECISION_CONFIG[decision];
+  const r = 36;
+  const circumference = 2 * Math.PI * r;
+  const stroke = circumference * (safeScore / 100);
+  const color =
+    decision === "go" ? "#059669" : decision === "caution" ? "#d97706" : "#dc2626";
+
+  return (
+    <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox="0 0 88 88">
+        <circle
+          cx={44}
+          cy={44}
+          r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={6}
+          className="text-muted/30"
+        />
+        <circle
+          cx={44}
+          cy={44}
+          r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth={6}
+          strokeDasharray={`${stroke} ${circumference}`}
+          strokeLinecap="round"
+          transform="rotate(-90 44 44)"
+          style={{ transition: "stroke-dasharray 0.6s ease" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-2xl font-black tabular-nums leading-none" style={{ color }}>
+          {safeScore}
+        </span>
+        <span className="text-[9px] uppercase tracking-wider text-muted-foreground">/100</span>
+      </div>
+    </div>
+  );
+}
+
+function RiskBar({ score, level }: { score: number; level: string }) {
+  const safeScore = clampScore(score);
+  const cfg = RISK_LEVEL_CONFIG[(level as RiskLevel) || "moderate"] ?? RISK_LEVEL_CONFIG.moderate;
+
+  return (
+    <div className="mt-1.5 flex items-center gap-3">
+      <div className="h-1.5 flex-1 rounded-full overflow-hidden bg-muted">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${cfg.bar}`}
+          style={{ width: `${safeScore}%` }}
+        />
+      </div>
+      <span className={`text-xs font-bold tabular-nums ${cfg.text}`}>{safeScore}</span>
+    </div>
+  );
+}
+
+function Tag({
+  children,
+  tone = "default",
+}: {
+  children: ReactNode;
+  tone?: "default" | "danger" | "warning" | "success";
+}) {
+  const cls =
+    tone === "danger"
+      ? "bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/20"
+      : tone === "warning"
+      ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20"
+      : tone === "success"
+      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20"
+      : "bg-muted text-foreground border-border";
+
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cls}`}>
+      {children}
+    </span>
+  );
+}
+
+function EmptyState({
+  title,
+  body,
+  icon,
+}: {
+  title: string;
+  body: string;
+  icon?: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-card/50 p-8 text-center">
+      <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/50 text-3xl text-muted-foreground">
+        {icon || "⬡"}
+      </div>
+      <p className="text-sm font-semibold">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground max-w-sm mx-auto">{body}</p>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Forms
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+function CheckForm({
+  value,
+  onChange,
+  onRunSingle,
+  onAddToQueue,
+  onReset,
+  loading,
+  onApplyPreset,
+}: {
+  value: CheckFormState;
+  onChange: (next: CheckFormState) => void;
+  onRunSingle: () => void;
+  onAddToQueue: () => void;
+  onReset: () => void;
+  loading: boolean;
+  onApplyPreset: (preset: CheckFormState) => void;
+}) {
+  const setField = <K extends keyof CheckFormState>(key: K, val: CheckFormState[K]) => {
+    onChange({ ...value, [key]: val });
+  };
+
+  const setPF = <K extends keyof PatientFactors>(key: K, val: boolean) => {
+    onChange({
+      ...value,
+      patient_factors: {
+        ...(value.patient_factors || {}),
+        [key]: val,
+      },
+    });
+  };
+
+  const isValid =
+    value.procedure.trim().length > 0 &&
+    value.region.trim().length > 0 &&
+    value.product_type.trim().length > 0;
+
+  return (
+    <div className="space-y-6">
+      <SectionTitle
+        title="AesthetiCite Pre-Procedure Safety Check"
+        subtitle="Enter the planned treatment, anatomy, product, technique, and patient risk factors."
+        action={
+          <button
+            type="button"
+            onClick={onReset}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          >
+            Reset
+          </button>
+        }
+      />
+
+      <div className="rounded-2xl border border-border bg-muted/20 p-4">
+        <div className="flex flex-wrap gap-2">
+          {PRESET_CASES.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              onClick={() =>
+                onApplyPreset({
+                  ...BLANK_FORM,
+                  ...preset.form,
+                  patient_factors: {
+                    ...BLANK_FORM.patient_factors,
+                    ...(preset.form.patient_factors || {}),
+                  },
+                })
+              }
+              className="rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium hover:border-primary/40 hover:bg-primary/5 transition-colors"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Quick-fill presets help you demo routine, cautious, and higher-risk scenarios faster.
+        </p>
+      </div>
+
+      <div>
+        <Label>Patient / Label</Label>
+        <TextInput
+          value={value.patient_label}
+          onChange={(v) => setField("patient_label", v)}
+          placeholder="e.g. Patient A, Room 2"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <Label>Procedure *</Label>
+          <Select
+            value={value.procedure}
+            onChange={(v) => setField("procedure", v)}
+            options={PROCEDURES}
+            placeholder="Select procedure…"
+          />
+        </div>
+        <div>
+          <Label>Region *</Label>
+          <Select
+            value={value.region}
+            onChange={(v) => setField("region", v)}
+            options={REGIONS}
+            placeholder="Select region…"
+          />
+        </div>
+        <div>
+          <Label>Product type *</Label>
+          <Select
+            value={value.product_type}
+            onChange={(v) => setField("product_type", v)}
+            options={PRODUCTS}
+            placeholder="Select product…"
+          />
+        </div>
+        <div>
+          <Label>Technique</Label>
+          <Select
+            value={value.technique || ""}
+            onChange={(v) => setField("technique", v)}
+            options={TECHNIQUES}
+            placeholder="Select technique…"
+          />
+        </div>
+      </div>
+
+      <div>
+        <Label>Injector experience level</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {EXPERIENCE_LEVELS.map((level) => {
+            const active = value.injector_experience_level === level;
+            return (
+              <button
+                key={level}
+                type="button"
+                onClick={() =>
+                  setField(
+                    "injector_experience_level",
+                    active ? undefined : level
+                  )
+                }
+                className={`rounded-xl border px-3 py-2 text-sm font-semibold transition-colors ${
+                  active
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                }`}
+              >
+                {humanizeSlug(level)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <Label>Patient risk factors</Label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-2xl border border-border bg-muted/20 p-4">
+          <CheckboxRow
+            label="Prior filler in same area"
+            checked={!!value.patient_factors?.prior_filler_in_same_area}
+            onChange={(v) => setPF("prior_filler_in_same_area", v)}
+          />
+          <CheckboxRow
+            label="Prior vascular event"
+            checked={!!value.patient_factors?.prior_vascular_event}
+            onChange={(v) => setPF("prior_vascular_event", v)}
+          />
+          <CheckboxRow
+            label="Active infection near site"
+            checked={!!value.patient_factors?.active_infection_near_site}
+            onChange={(v) => setPF("active_infection_near_site", v)}
+          />
+          <CheckboxRow
+            label="Anticoagulation"
+            checked={!!value.patient_factors?.anticoagulation}
+            onChange={(v) => setPF("anticoagulation", v)}
+          />
+          <CheckboxRow
+            label="Allergy history"
+            checked={!!value.patient_factors?.allergy_history}
+            onChange={(v) => setPF("allergy_history", v)}
+          />
+          <CheckboxRow
+            label="Autoimmune history"
+            checked={!!value.patient_factors?.autoimmune_history}
+            onChange={(v) => setPF("autoimmune_history", v)}
+          />
+          <CheckboxRow
+            label="Vascular disease"
+            checked={!!value.patient_factors?.vascular_disease}
+            onChange={(v) => setPF("vascular_disease", v)}
+          />
+          <CheckboxRow
+            label="Smoking"
+            checked={!!value.patient_factors?.smoking}
+            onChange={(v) => setPF("smoking", v)}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <button
+          type="button"
+          onClick={onRunSingle}
+          disabled={!isValid || loading}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-bold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-40"
+        >
+          {loading ? (
+            <span className="h-4 w-4 rounded-full border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin" />
+          ) : (
+            <span>→</span>
+          )}
+          Run Safety Check
+        </button>
+
+        <button
+          type="button"
+          onClick={onAddToQueue}
+          disabled={!isValid}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-border px-5 py-3 text-sm font-bold text-foreground transition-colors hover:border-primary/40 hover:bg-muted/40 disabled:opacity-40"
+        >
+          <span>+</span>
+          Add to Session Queue
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Result panel
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+function ResultPanel({
+  result,
+  request,
+  exportingPdf,
+  onExportPdf,
+  onAddCurrentToQueue,
+}: {
+  result: PreProcedureResponse;
+  request?: PreProcedureRequest | null;
+  exportingPdf: boolean;
+  onExportPdf: () => void;
+  onAddCurrentToQueue: () => void;
+}) {
+  const sa = result.safety_assessment;
+  const safeScore = clampScore(sa.overall_risk_score);
+  const cfg = DECISION_CONFIG[sa.decision];
+
+  return (
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+      <div className={`rounded-2xl border p-5 ${cfg.soft} ${cfg.border}`}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <ScoreRing score={safeScore} decision={sa.decision} />
+            <div>
+              <DecisionBadge decision={sa.decision} />
+              <p className="mt-2 text-sm font-semibold">{humanizeSlug(sa.decision)}</p>
+              <p className="mt-1 max-w-lg text-sm text-muted-foreground leading-relaxed">{sa.rationale}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onAddCurrentToQueue}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-background px-4 py-2 text-sm font-semibold hover:bg-muted/50 transition-colors"
+            >
+              <span>+</span>
+              Send to Session Queue
+            </button>
+            <button
+              type="button"
+              onClick={onExportPdf}
+              disabled={exportingPdf}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-background px-4 py-2 text-sm font-semibold hover:bg-muted/50 transition-colors disabled:opacity-40"
+            >
+              {exportingPdf ? (
+                <span className="h-4 w-4 rounded-full border-2 border-muted-foreground/30 border-t-foreground animate-spin" />
+              ) : (
+                <span>↓</span>
+              )}
+              Export PDF
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <MiniStat label="Risk Score" value={`${safeScore}/100`} />
+          <MiniStat label="Decision" value={DECISION_CONFIG[sa.decision].label} />
+          <MiniStat label="Engine Version" value={result.engine_version || "—"} />
+          <MiniStat label="Generated" value={formatDateTime(result.generated_at_utc)} />
+        </div>
+      </div>
+
+      {request && (
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <SectionTitle
+            title="Case Summary"
+            subtitle="Planned treatment details submitted to the safety engine."
+          />
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Tag>{request.procedure}</Tag>
+            <Tag>{request.region}</Tag>
+            <Tag>{request.product_type}</Tag>
+            {request.technique ? <Tag>{request.technique}</Tag> : null}
+            {request.injector_experience_level ? (
+              <Tag>{humanizeSlug(request.injector_experience_level)}</Tag>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {result.caution_flags.length > 0 && (
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <SectionTitle
+            title="Caution Flags"
+            subtitle="Specific factors requiring heightened attention before proceeding."
+          />
+          <ul className="mt-3 space-y-2">
+            {result.caution_flags.map((flag, idx) => (
+              <li key={`${flag}-${idx}`} className="flex items-start gap-2 text-sm text-amber-800 dark:text-amber-200">
+                <span className="mt-0.5">•</span>
+                <span>{flag}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <SectionTitle
+          title="Top Complication Risks"
+          subtitle="The most important complications identified for this treatment plan."
+        />
+        <div className="mt-4 space-y-4">
+          {result.top_risks.map((risk) => {
+            const cfgRisk = RISK_LEVEL_CONFIG[risk.risk_level] ?? RISK_LEVEL_CONFIG.moderate;
+            return (
+              <div key={`${risk.complication}-${risk.risk_score}`} className="rounded-xl border border-border bg-background p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold capitalize">{risk.complication}</p>
+                  <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${cfgRisk.chip}`}>
+                    {cfgRisk.label}
+                  </span>
+                </div>
+                <RiskBar score={risk.risk_score} level={risk.risk_level} />
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{risk.why_it_matters}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4">
+          <SectionTitle
+            title="Danger Zones"
+            subtitle="Anatomical areas or structures requiring particular care."
+          />
+          {result.procedure_insight.danger_zones?.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {result.procedure_insight.danger_zones.map((zone) => (
+                <Tag key={zone} tone="danger">
+                  {zone}
+                </Tag>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">No specific danger zones returned.</p>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <SectionTitle
+            title="Procedure Intelligence"
+            subtitle="Procedure-specific context to guide safe execution."
+          />
+          <div className="mt-3 space-y-3">
+            {result.procedure_insight.likely_plane_or_target ? (
+              <div>
+                <p className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
+                  Likely Plane / Target
+                </p>
+                <p className="mt-1 text-sm">{result.procedure_insight.likely_plane_or_target}</p>
+              </div>
+            ) : null}
+
+            <div>
+              <p className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
+                Technique Notes
+              </p>
+              {result.procedure_insight.technical_notes?.length ? (
+                <ul className="mt-2 space-y-2">
+                  {result.procedure_insight.technical_notes.map((note, idx) => (
+                    <li key={`${note}-${idx}`} className="flex items-start gap-2 text-sm text-muted-foreground">
+                      <span className="mt-0.5 text-primary">→</span>
+                      <span>{note}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-sm text-muted-foreground">No technical notes returned.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <SectionTitle
+          title="Mitigation Steps"
+          subtitle="Practical actions to reduce risk before or during treatment."
+        />
+        {result.mitigation_steps?.length ? (
+          <ol className="mt-4 space-y-2">
+            {result.mitigation_steps.map((step, idx) => (
+              <li key={`${step}-${idx}`} className="flex items-start gap-3">
+                <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-black text-primary">
+                  {idx + 1}
+                </span>
+                <span className="text-sm leading-relaxed text-foreground/90">{step}</span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">No mitigation steps returned.</p>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <SectionTitle
+          title="Clinical Evidence"
+          subtitle="Evidence items returned by the safety engine for this case."
+        />
+        {result.evidence?.length ? (
+          <div className="mt-4 space-y-3">
+            {result.evidence.map((item) => (
+              <div key={item.source_id} className="rounded-xl border border-border bg-background p-3">
+                <p className="text-sm font-semibold">
+                  [{item.source_id}] {item.title}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.note}</p>
+                {item.citation_text ? (
+                  <blockquote className="mt-2 border-l-2 border-primary/30 pl-3 text-xs italic text-muted-foreground/80">
+                    “{item.citation_text}”
+                  </blockquote>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">No evidence items returned.</p>
+        )}
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-muted-foreground/60">{result.disclaimer}</p>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Session queue
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+function QueueItemCard({
+  item,
+  onRemove,
+  onDuplicate,
+  onRerun,
+}: {
+  item: QueuedCheck;
+  onRemove: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onRerun: (id: string) => void;
+}) {
+  const assessment = item.result?.safety_assessment;
+  const cfg = assessment ? DECISION_CONFIG[assessment.decision] : null;
+
+  return (
+    <div
+      className={`rounded-2xl border p-4 transition-colors ${
+        cfg ? `${cfg.soft} ${cfg.border}` : "border-border bg-card"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-bold">{item.patient_label || "Patient"}</p>
+            {assessment ? <DecisionBadge decision={assessment.decision} /> : null}
+            {item.status === "pending" ? <Tag>Pending</Tag> : null}
+            {item.status === "running" ? <Tag tone="warning">Running</Tag> : null}
+            {item.status === "error" ? <Tag tone="danger">Error</Tag> : null}
+          </div>
+
+          <p className="mt-1 text-xs text-muted-foreground">
+            {item.request.procedure} · {item.request.region} · {item.request.product_type}
+          </p>
+
+          {item.request.technique || item.request.injector_experience_level ? (
+            <p className="mt-1 text-[11px] text-muted-foreground/80">
+              {[item.request.technique, item.request.injector_experience_level].filter(Boolean).join(" · ")}
+            </p>
+          ) : null}
+
+          {assessment ? (
+            <div className="mt-3">
+              <RiskBar
+                score={assessment.overall_risk_score}
+                level={assessment.overall_risk_level}
+              />
+            </div>
+          ) : null}
+
+          {item.error ? (
+            <p className="mt-2 text-xs text-red-600 dark:text-red-400">{item.error}</p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => onDuplicate(item.id)}
+            className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/50"
+          >
+            Duplicate
+          </button>
+          <button
+            type="button"
+            onClick={() => onRerun(item.id)}
+            className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/50"
+          >
+            Rerun
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemove(item.id)}
+            className="rounded-lg border border-red-500/20 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-500/5"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionQueuePanel({
+  queue,
+  sessionTitle,
+  onSessionTitleChange,
+  onRemove,
+  onDuplicate,
+  onRerun,
+  onClear,
+  onRunAll,
+  onCreateReport,
+  onExportSession,
+  runningAll,
+  creatingReport,
+  exportingSession,
+  sessionId,
+}: {
+  queue: QueuedCheck[];
+  sessionTitle: string;
+  onSessionTitleChange: (v: string) => void;
+  onRemove: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onRerun: (id: string) => void;
+  onClear: () => void;
+  onRunAll: () => void;
+  onCreateReport: () => void;
+  onExportSession: () => void;
+  runningAll: boolean;
+  creatingReport: boolean;
+  exportingSession: boolean;
+  sessionId: string | null;
+}) {
+  const summary = useMemo(() => queueSummary(queue), [queue]);
+  const allDone = queue.length > 0 && summary.pending === 0 && summary.running === 0;
+  const anyDone = summary.done > 0;
+
+  if (queue.length === 0) {
+    return (
+      <EmptyState
+        icon="☰"
+        title="No procedures in the session queue"
+        body="Use Add to Session Queue from the safety check form or send a completed result directly into the queue."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <SectionTitle
+        title="Session Safety Report"
+        subtitle="Queue multiple procedures or patients, run safety checks, and export one consolidated PDF."
+        action={
+          <button
+            type="button"
+            onClick={onClear}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          >
+            Clear Queue
+          </button>
+        }
+      />
+
+      <div>
+        <Label>Session Title</Label>
+        <TextInput
+          value={sessionTitle}
+          onChange={onSessionTitleChange}
+          placeholder="e.g. Friday afternoon injectables session"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+        <MiniStat label="Queued" value={summary.total} />
+        <MiniStat label="Done" value={summary.done} tone="success" />
+        <MiniStat label="Pending" value={summary.pending} />
+        <MiniStat label="Errors" value={summary.errors} tone={summary.errors ? "danger" : "default"} />
+        <MiniStat label="Avg Risk" value={`${summary.avgRisk}/100`} tone="warning" />
+        <MiniStat
+          label="High Risk"
+          value={summary.decisionCounts.high_risk}
+          tone={summary.decisionCounts.high_risk > 0 ? "danger" : "default"}
+        />
+      </div>
+
+      {anyDone && (
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+            Session decision mix
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Tag tone="success">GO: {summary.decisionCounts.go}</Tag>
+            <Tag tone="warning">CAUTION: {summary.decisionCounts.caution}</Tag>
+            <Tag tone="danger">HIGH RISK: {summary.decisionCounts.high_risk}</Tag>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {queue.map((item) => (
+          <QueueItemCard
+            key={item.id}
+            item={item}
+            onRemove={onRemove}
+            onDuplicate={onDuplicate}
+            onRerun={onRerun}
+          />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <button
+          type="button"
+          onClick={onRunAll}
+          disabled={runningAll || summary.pending === 0}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+        >
+          {runningAll ? (
+            <span className="h-4 w-4 rounded-full border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin" />
+          ) : (
+            <span>▶</span>
+          )}
+          Run All Safety Checks
+        </button>
+
+        <button
+          type="button"
+          onClick={onCreateReport}
+          disabled={!anyDone || creatingReport}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-primary/40 px-5 py-3 text-sm font-bold text-primary hover:bg-primary/5 disabled:opacity-40"
+        >
+          {creatingReport ? (
+            <span className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+          ) : (
+            <span>⊕</span>
+          )}
+          Create Session Report
+        </button>
+
+        <button
+          type="button"
+          onClick={onExportSession}
+          disabled={!sessionId || exportingSession}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+        >
+          {exportingSession ? (
+            <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+          ) : (
+            <span>↓</span>
+          )}
+          Export Session PDF
+        </button>
+      </div>
+
+      {allDone && !sessionId ? (
+        <p className="text-xs text-muted-foreground">
+          All queued checks are complete. Create the session report, then export the consolidated PDF.
+        </p>
+      ) : null}
+
+      {sessionId ? (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+            Session report created
+          </p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Report ID: <code className="font-mono">{sessionId}</code>
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Main page
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+export default function SafetyWorkspacePage() {
+  const hydrated = useMemo(() => {
+    const persisted = safeJsonParse<PersistedWorkspaceState>(localStorage.getItem(STORAGE_KEY));
+    return persisted;
+  }, []);
+
+  const [activeTab, setActiveTab] = useState<TabKey>(hydrated?.activeTab ?? "check");
+  const [form, setForm] = useState<CheckFormState>(hydrated?.lastSingleForm ?? BLANK_FORM);
+
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<PreProcedureResponse | null>(null);
+  const [lastRequest, setLastRequest] = useState<PreProcedureRequest | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [exportingSinglePdf, setExportingSinglePdf] = useState(false);
+
+  const [queue, setQueue] = useState<QueuedCheck[]>(hydrated?.queue ?? []);
+  const [runningAll, setRunningAll] = useState(false);
+  const [creatingReport, setCreatingReport] = useState(false);
+  const [exportingSession, setExportingSession] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionTitle, setSessionTitle] = useState(hydrated?.sessionTitle ?? "Session Safety Report");
+  const [globalMessage, setGlobalMessage] = useState<string | null>(null);
+
+  const resultsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const payload: PersistedWorkspaceState = {
+      queue,
+      sessionTitle,
+      activeTab,
+      lastSingleForm: form,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  }, [queue, sessionTitle, activeTab, form]);
+
+  const runSingleCheck = useCallback(async (request: PreProcedureRequest) => {
+    return apiPost<PreProcedureResponse>("/api/safety/preprocedure-check", request);
+  }, []);
+
+  const handleRunSingle = useCallback(async () => {
+    const payload = normalizeFormForApi(form);
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setGlobalMessage(null);
+    setLastRequest(payload);
+
+    try {
+      const res = await runSingleCheck(payload);
+      setResult(res);
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Safety check failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [form, runSingleCheck]);
+
+  const buildQueueItem = useCallback((state: CheckFormState): QueuedCheck => {
+    return {
+      id: crypto.randomUUID(),
+      patient_label: state.patient_label.trim() || `Patient ${queue.length + 1}`,
+      request: normalizeFormForApi(state),
+      status: "pending",
+      created_at: nowIso(),
+    };
+  }, [queue.length]);
+
+  const handleAddToQueue = useCallback(() => {
+    const item = buildQueueItem(form);
+    setQueue((prev) => [...prev, item]);
+    setActiveTab("session");
+    setGlobalMessage(`Added ${item.patient_label} to the session queue.`);
+  }, [buildQueueItem, form]);
+
+  const handleSendCurrentResultToQueue = useCallback(() => {
+    if (!lastRequest) return;
+    const item: QueuedCheck = {
+      id: crypto.randomUUID(),
+      patient_label: form.patient_label.trim() || `Patient ${queue.length + 1}`,
+      request: { ...lastRequest },
+      result: result || undefined,
+      status: result ? "done" : "pending",
+      created_at: nowIso(),
+    };
+
+    setQueue((prev) => [...prev, item]);
+    setActiveTab("session");
+    setGlobalMessage(`Added ${item.patient_label} to the session queue.`);
+  }, [form.patient_label, lastRequest, queue.length, result]);
+
+  const handleRemoveFromQueue = useCallback((id: string) => {
+    setQueue((prev) => prev.filter((item) => item.id !== id));
+    if (sessionId) setSessionId(null);
+  }, [sessionId]);
+
+  const handleDuplicateQueueItem = useCallback((id: string) => {
+    setQueue((prev) => {
+      const source = prev.find((item) => item.id === id);
+      if (!source) return prev;
+      const copy: QueuedCheck = {
+        ...source,
+        id: crypto.randomUUID(),
+        patient_label: `${source.patient_label} Copy`,
+        status: "pending",
+        result: undefined,
+        error: undefined,
+        created_at: nowIso(),
+      };
+      return [...prev, copy];
+    });
+    if (sessionId) setSessionId(null);
+  }, [sessionId]);
+
+  const executeQueueItem = useCallback(async (id: string) => {
+    const current = queue.find((item) => item.id === id);
+    if (!current) return;
+
+    setQueue((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? { ...item, status: "running", error: undefined }
+          : item
+      )
+    );
+
+    try {
+      const res = await apiPost<PreProcedureResponse>("/api/safety/preprocedure-check", current.request);
+      setQueue((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? { ...item, status: "done", result: res, error: undefined }
+            : item
+        )
+      );
+    } catch (e) {
+      setQueue((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                status: "error",
+                error: e instanceof Error ? e.message : "Failed",
+              }
+            : item
+        )
+      );
+    }
+  }, [queue]);
+
+  const handleRerunQueueItem = useCallback(async (id: string) => {
+    setSessionId(null);
+    await executeQueueItem(id);
+  }, [executeQueueItem]);
+
+  const handleRunAll = useCallback(async () => {
+    const pendingItems = queue.filter((item) => item.status === "pending" || item.status === "error");
+    if (pendingItems.length === 0) return;
+
+    setRunningAll(true);
+    setSessionId(null);
+    setGlobalMessage(null);
+
+    try {
+      await runWithConcurrency(
+        pendingItems.map((i) => i.id),
+        async (id) => {
+          await executeQueueItem(id);
+        },
+        3
+      );
+      setGlobalMessage("All available safety checks were processed.");
+    } finally {
+      setRunningAll(false);
+    }
+  }, [executeQueueItem, queue]);
+
+  const handleClearQueue = useCallback(() => {
+    setQueue([]);
+    setSessionId(null);
+    setGlobalMessage("Session queue cleared.");
+  }, []);
+
+  const handleCreateSessionReport = useCallback(async () => {
+    const completed = queue.filter((item) => item.status === "done" && item.result);
+    if (completed.length === 0) return;
+
+    setCreatingReport(true);
+    setGlobalMessage(null);
+
+    try {
+      const created = await apiPost<SessionReportCreateResponse>("/api/growth/session-reports", {
+        title: sessionTitle.trim() || "Session Safety Report",
+        report_date: new Date().toISOString().slice(0, 10),
+        clinic_id: "demo_clinic",
+        clinician_id: "demo_clinician",
+      });
+
+      for (const item of completed) {
+        await apiPost(`/api/growth/session-reports/${created.id}/items`, {
+          patient_label: item.patient_label,
+          procedure: item.request.procedure,
+          region: item.request.region,
+          product_type: item.request.product_type,
+          technique: item.request.technique,
+          injector_experience_level: item.request.injector_experience_level,
+          engine_response_json: item.result,
+        });
+      }
+
+      setSessionId(created.id);
+      setGlobalMessage("Session report created successfully.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create session report");
+    } finally {
+      setCreatingReport(false);
+    }
+  }, [queue, sessionTitle]);
+
+  const handleExportSession = useCallback(async () => {
+    if (!sessionId) return;
+
+    setExportingSession(true);
+    setGlobalMessage(null);
+
+    try {
+      const data = await apiPost<SessionExportResponse>(
+        `/api/growth/session-reports/${sessionId}/export-pdf`,
+        {}
+      );
+      await downloadFromResponse(`/exports/${data.filename}`, data.filename);
+      setGlobalMessage("Session PDF exported.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Session export failed");
+    } finally {
+      setExportingSession(false);
+    }
+  }, [sessionId]);
+
+  const handleExportSinglePdf = useCallback(async () => {
+    if (!lastRequest) return;
+
+    setExportingSinglePdf(true);
+    setGlobalMessage(null);
+
+    try {
+      const data = await apiPost<SingleExportResponse>(
+        "/api/safety/preprocedure-check/export-pdf",
+        lastRequest
+      );
+      await downloadFromResponse(`/exports/${data.filename}`, data.filename);
+      setGlobalMessage("Safety check PDF exported.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "PDF export failed");
+    } finally {
+      setExportingSinglePdf(false);
+    }
+  }, [lastRequest]);
+
+  const handleRefreshSessionReport = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await apiGet(`/api/growth/session-reports/${sessionId}`);
+      setGlobalMessage("Session report is available.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load session report");
+    }
+  }, [sessionId]);
+
+  const queueStats = useMemo(() => queueSummary(queue), [queue]);
+
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
+          <div>
+            <h1 className="flex items-center gap-2 text-base font-black tracking-tight">
+              <span className="text-primary">⬡</span>
+              AesthetiCite
+              <span className="font-medium text-muted-foreground">/ Safety Workspace</span>
+            </h1>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Clinical safety decision support for aesthetic medicine
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <a
+              href="/ask"
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            >
+              Back to Evidence Search
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-7xl px-4 py-6 lg:py-8">
+        {globalMessage ? (
+          <div className="mb-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+            {globalMessage}
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[520px_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <div className="overflow-hidden rounded-3xl border border-border bg-card shadow-sm">
+              <div className="flex border-b border-border">
+                {(["check", "session"] as const).map((tab) => {
+                  const active = activeTab === tab;
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => setActiveTab(tab)}
+                      className={`relative flex-1 px-4 py-3 text-sm font-bold transition-colors ${
+                        active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {tab === "check" ? (
+                        "Safety Check"
+                      ) : (
+                        <span className="inline-flex items-center gap-2">
+                          Session Queue
+                          {queue.length > 0 ? (
+                            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-black text-primary-foreground">
+                              {queue.length}
+                            </span>
+                          ) : null}
+                        </span>
+                      )}
+                      {active ? (
+                        <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-primary" />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="p-5">
+                {activeTab === "check" ? (
+                  <CheckForm
+                    value={form}
+                    onChange={setForm}
+                    onRunSingle={handleRunSingle}
+                    onAddToQueue={handleAddToQueue}
+                    onReset={() => {
+                      setForm(BLANK_FORM);
+                      setError(null);
+                      setResult(null);
+                      setLastRequest(null);
+                    }}
+                    loading={loading}
+                    onApplyPreset={setForm}
+                  />
+                ) : (
+                  <SessionQueuePanel
+                    queue={queue}
+                    sessionTitle={sessionTitle}
+                    onSessionTitleChange={setSessionTitle}
+                    onRemove={handleRemoveFromQueue}
+                    onDuplicate={handleDuplicateQueueItem}
+                    onRerun={handleRerunQueueItem}
+                    onClear={handleClearQueue}
+                    onRunAll={handleRunAll}
+                    onCreateReport={handleCreateSessionReport}
+                    onExportSession={handleExportSession}
+                    runningAll={runningAll}
+                    creatingReport={creatingReport}
+                    exportingSession={exportingSession}
+                    sessionId={sessionId}
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <MiniStat label="Queued" value={queueStats.total} />
+              <MiniStat label="Done" value={queueStats.done} tone="success" />
+              <MiniStat label="Avg Risk" value={`${queueStats.avgRisk}/100`} tone="warning" />
+              <MiniStat
+                label="High Risk"
+                value={queueStats.decisionCounts.high_risk}
+                tone={queueStats.decisionCounts.high_risk > 0 ? "danger" : "default"}
+              />
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Product framing
+              </p>
+              <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                <p>• Pre-Procedure Safety Check</p>
+                <p>• Session Safety Report</p>
+                <p>• Clinical safety decision support for aesthetic injectables</p>
+              </div>
+            </div>
+
+            <p className="text-center text-[10px] text-muted-foreground/50">
+              AesthetiCite Safety Workspace · Clinic demo mode · Clinical decision support only
+            </p>
+          </div>
+
+          <div ref={resultsRef} className="space-y-4">
+            {loading ? (
+              <div className="rounded-3xl border border-border bg-card p-8">
+                <div className="flex flex-col items-center gap-4 text-center">
+                  <div className="relative h-16 w-16">
+                    <div className="absolute inset-0 rounded-full border-4 border-primary/20 animate-ping" />
+                    <div className="absolute inset-0 rounded-full border-4 border-primary/40 border-t-primary animate-spin" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold">Running safety analysis…</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Evaluating procedure, anatomy, patient factors, and mitigation steps.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {!loading && result ? (
+              <ResultPanel
+                result={result}
+                request={lastRequest}
+                exportingPdf={exportingSinglePdf}
+                onExportPdf={handleExportSinglePdf}
+                onAddCurrentToQueue={handleSendCurrentResultToQueue}
+              />
+            ) : null}
+
+            {!loading && !result && !error ? (
+              <EmptyState
+                title="No result yet"
+                body="Run a pre-procedure safety check to display the decision badge, risk score, top complication risks, danger zones, mitigation steps, and evidence."
+              />
+            ) : null}
+
+            {sessionId ? (
+              <div className="rounded-2xl border border-border bg-card p-4">
+                <SectionTitle
+                  title="Session report ready"
+                  subtitle="Your consolidated session report has been created and is ready for export."
+                  action={
+                    <button
+                      type="button"
+                      onClick={handleRefreshSessionReport}
+                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted/50"
+                    >
+                      Refresh
+                    </button>
+                  }
+                />
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Report ID: <code className="font-mono">{sessionId}</code>
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

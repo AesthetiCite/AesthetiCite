@@ -1,0 +1,141 @@
+{
+  "name": "USMLE-Style Medical Questions",
+  "description": "Medical licensing exam style questions focusing on clinical knowledge",
+  "questions": [
+    {
+      "id": "usmle_1",
+      "category": "pharmacology",
+      "question": "A 45-year-old woman receives botulinum toxin type A injection for forehead wrinkles. 30 minutes later, she develops difficulty swallowing and double vision. What is the mechanism of this adverse effect?",
+      "options": ["A. Acetylcholine release inhibition at neuromuscular junction", "B. Dopamine receptor blockade", "C. Histamine release from mast cells", "D. Serotonin syndrome"],
+      "correct_answer": "A",
+      "gold_answer": "Botulinum toxin inhibits acetylcholine release at the neuromuscular junction by cleaving SNARE proteins. Systemic spread can cause dysphagia and diplopia due to weakness of pharyngeal and extraocular muscles.",
+      "expected_keywords": ["acetylcholine", "neuromuscular junction", "SNARE", "dysphagia", "diplopia"]
+    },
+    {
+      "id": "usmle_2",
+      "category": "anatomy",
+      "question": "During filler injection to the nasolabial fold, accidental intravascular injection into which vessel poses the highest risk for vision loss?",
+      "options": ["A. Facial vein", "B. Angular artery", "C. Transverse facial artery", "D. Infraorbital artery"],
+      "correct_answer": "B",
+      "gold_answer": "The angular artery anastomoses with branches of the ophthalmic artery. Retrograde flow of filler emboli can reach the central retinal artery, causing retinal artery occlusion and blindness.",
+      "expected_keywords": ["angular artery", "ophthalmic artery", "retrograde", "retinal artery occlusion", "blindness"]
+    },
+    {
+      "id": "usmle_3",
+      "category": "pharmacology",
+      "question": "What is the first-line treatment for suspected vascular occlusion following hyaluronic acid filler injection?",
+      "options": ["A. Warm compresses", "B. Hyaluronidase injection", "C. Aspirin 325mg", "D. Observation for 24 hours"],
+      "correct_answer": "B",
+      "gold_answer": "Hyaluronidase is the first-line treatment for hyaluronic acid filler-related vascular occlusion. It enzymatically degrades hyaluronic acid to restore blood flow. Treatment should begin immediately upon recognition of symptoms.",
+      "expected_keywords": ["hyaluronidase", "enzymatic", "degrade", "immediate", "vascular occlusion"]
+    },
+    {
+      "id": "usmle_4",
+      "category": "dermatology",
+      "question": "A patient develops firm nodules 6 months after hyaluronic acid filler injection. Biopsy shows granulomatous inflammation. What is the most likely diagnosis?",
+      "options": ["A. Bacterial infection", "B. Delayed-type hypersensitivity reaction", "C. Biofilm formation", "D. Filler migration"],
+      "correct_answer": "B",
+      "gold_answer": "Delayed-onset nodules with granulomatous inflammation indicate a delayed-type hypersensitivity reaction (Type IV) to the filler material. Treatment includes intralesional corticosteroids and hyaluronidase.",
+      "expected_keywords": ["delayed-type hypersensitivity", "Type IV", "granulomatous", "corticosteroids", "intralesional"]
+    },
+    {
+      "id": "usmle_5",
+      "category": "pharmacology",
+      "question": "Which property of botulinum toxin type A explains why its effects last 3-4 months rather than permanently?",
+      "options": ["A. Hepatic metabolism", "B. Axonal sprouting and new synapse formation", "C. Renal excretion", "D. Antibody neutralization"],
+      "correct_answer": "B",
+      "gold_answer": "Botulinum toxin effects are temporary because motor neurons undergo axonal sprouting and form new functional neuromuscular junctions. This neuronal recovery process typically takes 3-4 months.",
+      "expected_keywords": ["axonal sprouting", "neuromuscular junction", "neuronal recovery", "3-4 months", "regeneration"]
+    },
+    {
+      "id": "usmle_6",
+      "category": "anatomy",
+      "question": "The danger triangle of the face refers to the area bounded by the corners of the mouth and the bridge of the nose. Why is this area particularly dangerous for infections?",
+      "options": ["A. Direct lymphatic drainage to axillary nodes", "B. Valveless veins communicating with cavernous sinus", "C. Proximity to the parotid gland", "D. Rich arterial blood supply"],
+      "correct_answer": "B",
+      "gold_answer": "The danger triangle contains valveless veins (angular and ophthalmic veins) that communicate with the cavernous sinus. Infections can spread intracranially via retrograde thrombophlebitis, potentially causing cavernous sinus thrombosis and meningitis.",
+      "expected_keywords": ["valveless veins", "cavernous sinus", "retrograde", "thrombophlebitis", "intracranial"]
+    },
+    {
+      "id": "usmle_7",
+      "category": "pharmacology",
+      "question": "A patient who previously received botulinum toxin injections now shows no response to treatment. Serum testing reveals neutralizing antibodies. Which factor most likely contributed to antibody formation?",
+      "options": ["A. High-dose injections with short intervals", "B. Patient's age over 50", "C. Use of topical anesthetics", "D. Injection into previously treated areas"],
+      "correct_answer": "A",
+      "gold_answer": "Neutralizing antibody formation is associated with high total doses, frequent injections (short intervals), and booster injections. The protein load and immunogenic epitopes trigger humoral immune response.",
+      "expected_keywords": ["neutralizing antibodies", "high dose", "frequent", "short intervals", "immunogenic"]
+    },
+    {
+      "id": "usmle_8",
+      "category": "dermatology",
+      "question": "Which laser wavelength is most selectively absorbed by melanin for treatment of pigmented lesions?",
+      "options": ["A. 1064 nm (Nd:YAG)", "B. 532 nm (KTP)", "C. 10,600 nm (CO2)", "D. 2940 nm (Er:YAG)"],
+      "correct_answer": "B",
+      "gold_answer": "The 532 nm wavelength (KTP laser) is most selectively absorbed by melanin. Shorter wavelengths have higher melanin absorption coefficients. The 1064 nm Nd:YAG penetrates deeper but has lower melanin selectivity.",
+      "expected_keywords": ["532 nm", "melanin", "absorption", "selective", "pigmented"]
+    },
+    {
+      "id": "usmle_9",
+      "category": "anatomy",
+      "question": "During treatment of crow's feet with botulinum toxin, injection too close to which structure can cause a drooping smile?",
+      "options": ["A. Orbicularis oculi", "B. Zygomaticus major", "C. Frontalis", "D. Procerus"],
+      "correct_answer": "B",
+      "gold_answer": "Injection near the zygomaticus major muscle, which elevates the corner of the mouth, can cause weakness and result in an asymmetric or drooping smile. Safe injection should stay lateral to the lateral orbital rim.",
+      "expected_keywords": ["zygomaticus major", "corner of mouth", "drooping smile", "lateral orbital rim", "asymmetric"]
+    },
+    {
+      "id": "usmle_10",
+      "category": "pharmacology",
+      "question": "What is the recommended unit ratio when converting from onabotulinumtoxinA (Botox) to abobotulinumtoxinA (Dysport) for the same clinical effect?",
+      "options": ["A. 1:1", "B. 1:2.5", "C. 1:4", "D. 2:1"],
+      "correct_answer": "B",
+      "gold_answer": "The conversion ratio from onabotulinumtoxinA to abobotulinumtoxinA is approximately 1:2.5 to 1:3. This means 20 units of Botox is roughly equivalent to 50-60 units of Dysport for similar clinical effect.",
+      "expected_keywords": ["1:2.5", "1:3", "20 units", "50 units", "conversion ratio"]
+    },
+    {
+      "id": "usmle_11",
+      "category": "dermatology",
+      "question": "A patient develops purpura immediately after intense pulsed light (IPL) treatment. What is the most likely cause?",
+      "options": ["A. Allergic reaction to cooling gel", "B. Excessive fluence causing dermal vessel rupture", "C. Photoallergic drug reaction", "D. Koebner phenomenon"],
+      "correct_answer": "B",
+      "gold_answer": "Immediate purpura after IPL indicates excessive fluence (energy) causing rupture of dermal blood vessels. This is a thermal injury from overtreatment. Settings should be reduced for subsequent sessions.",
+      "expected_keywords": ["fluence", "energy", "thermal injury", "vessel rupture", "dermal"]
+    },
+    {
+      "id": "usmle_12",
+      "category": "pharmacology",
+      "question": "Which characteristic of hyaluronic acid fillers provides their tissue-volumizing effect?",
+      "options": ["A. Cross-linking prevents enzymatic degradation", "B. Hygroscopic properties attract and retain water", "C. Stimulation of collagen synthesis", "D. Direct mechanical scaffolding"],
+      "correct_answer": "B",
+      "gold_answer": "Hyaluronic acid is highly hygroscopic and can bind up to 1000 times its weight in water. This water-binding capacity creates the volumizing effect. Cross-linking extends duration but the primary volume comes from water retention.",
+      "expected_keywords": ["hygroscopic", "water", "binding", "1000 times", "hydrophilic"]
+    },
+    {
+      "id": "usmle_13",
+      "category": "anatomy",
+      "question": "The supratrochlear and supraorbital nerves provide sensory innervation to which area?",
+      "options": ["A. Lower eyelid and cheek", "B. Forehead and anterior scalp", "C. Lateral canthal region", "D. Nasal dorsum"],
+      "correct_answer": "B",
+      "gold_answer": "The supratrochlear and supraorbital nerves are terminal branches of the frontal nerve (V1). They provide sensory innervation to the forehead, upper eyelid, and anterior scalp. They exit through the supraorbital notch/foramen.",
+      "expected_keywords": ["forehead", "scalp", "V1", "supraorbital notch", "sensory innervation"]
+    },
+    {
+      "id": "usmle_14",
+      "category": "dermatology",
+      "question": "What is the primary mechanism of action of fractional CO2 laser resurfacing?",
+      "options": ["A. Selective photothermolysis of melanin", "B. Controlled thermal zones stimulating collagen remodeling", "C. Chemical ablation of epidermis", "D. Cryotherapy-induced tissue contraction"],
+      "correct_answer": "B",
+      "gold_answer": "Fractional CO2 laser creates microscopic thermal zones (MTZs) surrounded by untreated tissue. The thermal injury stimulates wound healing and collagen remodeling while the untreated zones allow rapid re-epithelialization.",
+      "expected_keywords": ["microscopic thermal zones", "MTZ", "collagen remodeling", "wound healing", "re-epithelialization"]
+    },
+    {
+      "id": "usmle_15",
+      "category": "pharmacology",
+      "question": "A patient on warfarin therapy wants dermal filler injections. What is the recommended approach regarding anticoagulation?",
+      "options": ["A. Stop warfarin 5 days before procedure", "B. Continue warfarin but avoid aspirin", "C. Continue current anticoagulation; increased bruising is acceptable risk", "D. Bridge with heparin during procedure"],
+      "correct_answer": "C",
+      "gold_answer": "Current guidelines recommend continuing anticoagulation for cosmetic procedures as the thromboembolic risk of stopping outweighs the bleeding risk. Patients should be counseled about increased bruising. Careful technique and post-procedure compression reduce hematoma risk.",
+      "expected_keywords": ["continue anticoagulation", "thromboembolic risk", "bruising", "compression", "hematoma"]
+    }
+  ]
+}

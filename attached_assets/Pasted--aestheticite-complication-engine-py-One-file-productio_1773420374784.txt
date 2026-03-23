@@ -1,0 +1,1117 @@
+# aestheticite_complication_engine.py
+#
+# One-file production-ready starter for the AesthetiCite Clinical Complication Protocol Engine
+#
+# Features included:
+# - POST /api/complications/protocol         -> structured complication protocol JSON
+# - POST /api/complications/print-view       -> HTML print-ready emergency protocol
+# - POST /api/complications/feedback         -> clinician feedback capture
+# - protocol library with multiple complications
+# - risk scoring and urgency classification
+# - symptom/context-aware matching
+# - retrieval adapter hook for RAG / citation system
+# - audit logging to JSONL file
+# - revision/version metadata
+#
+# How to use:
+# 1) save as aestheticite_complication_engine.py
+# 2) in your FastAPI app:
+#       from aestheticite_complication_engine import router as complication_router
+#       app.include_router(complication_router)
+#
+# Optional:
+# - Replace DummyEvidenceRetriever with your real citation retrieval layer
+# - Expand PROTOCOL_LIBRARY with your validated master protocols
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Literal, Optional, Tuple
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import html
+import json
+import os
+import re
+import uuid
+
+router = APIRouter(prefix="/api/complications", tags=["AesthetiCite Complication Engine"])
+
+# ---------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------
+
+ENGINE_VERSION = "1.0.0"
+PROTOCOL_REVISION = "2026-03-13"
+AUDIT_LOG_PATH = os.environ.get("AESTHETICITE_COMPLICATION_AUDIT_LOG", "complication_audit_log.jsonl")
+FEEDBACK_LOG_PATH = os.environ.get("AESTHETICITE_COMPLICATION_FEEDBACK_LOG", "complication_feedback.jsonl")
+
+
+# ---------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------
+
+SeverityLevel = Literal["low", "moderate", "high", "critical"]
+UrgencyLevel = Literal["routine", "same_day", "urgent", "immediate"]
+EvidenceStrength = Literal["limited", "moderate", "strong"]
+
+
+class ClinicalContext(BaseModel):
+    region: Optional[str] = None
+    product_type: Optional[str] = None
+    symptoms: List[str] = Field(default_factory=list)
+    time_since_injection_minutes: Optional[int] = None
+    visual_symptoms: Optional[bool] = None
+    skin_color_change: Optional[str] = None
+    pain_score_10: Optional[int] = Field(default=None, ge=0, le=10)
+    tenderness: Optional[bool] = None
+    warmth: Optional[bool] = None
+    erythema: Optional[bool] = None
+    fluctuance: Optional[bool] = None
+    drainage: Optional[bool] = None
+    fever: Optional[bool] = None
+    capillary_refill_delayed: Optional[bool] = None
+    filler_confirmed_ha: Optional[bool] = None
+    free_text: Optional[str] = None
+
+
+class ProtocolRequest(BaseModel):
+    query: str = Field(..., min_length=3)
+    context: Optional[ClinicalContext] = None
+    clinician_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    mode: Literal["decision_support", "emergency", "teaching"] = "decision_support"
+
+
+class EvidenceItem(BaseModel):
+    source_id: str
+    title: str
+    note: str
+    citation_text: Optional[str] = None
+    url: Optional[str] = None
+    source_type: Optional[str] = None
+    relevance_score: Optional[float] = None
+
+
+class ProtocolStep(BaseModel):
+    step_number: int
+    action: str
+    rationale: str
+    priority: Literal["primary", "secondary"] = "primary"
+
+
+class DoseGuidance(BaseModel):
+    substance: str
+    recommendation: str
+    notes: str
+
+
+class RiskAssessment(BaseModel):
+    risk_score: int = Field(..., ge=0, le=100)
+    severity: SeverityLevel
+    urgency: UrgencyLevel
+    likely_time_critical: bool
+    evidence_strength: EvidenceStrength
+
+
+class ProtocolResponse(BaseModel):
+    request_id: str
+    engine_version: str
+    protocol_revision: str
+    generated_at_utc: str
+    matched_protocol_key: str
+    matched_protocol_name: str
+    confidence: float
+    risk_assessment: RiskAssessment
+    clinical_summary: str
+    immediate_actions: List[ProtocolStep]
+    dose_guidance: List[DoseGuidance]
+    red_flags: List[str]
+    escalation: List[str]
+    monitoring: List[str]
+    limitations: List[str]
+    follow_up_questions: List[str]
+    evidence: List[EvidenceItem]
+    disclaimer: str
+
+
+class PrintViewResponse(BaseModel):
+    request_id: str
+    html: str
+
+
+class FeedbackRequest(BaseModel):
+    request_id: str
+    clinician_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    rating: int = Field(..., ge=1, le=5)
+    was_useful: bool
+    comment: Optional[str] = None
+    selected_protocol_key: Optional[str] = None
+
+
+class FeedbackResponse(BaseModel):
+    status: str
+    request_id: str
+
+
+# ---------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def tokenize(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", normalize(text))
+
+
+def safe_write_jsonl(path: str, record: Dict[str, Any]) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def html_list(items: List[str]) -> str:
+    if not items:
+        return "<ul><li>None</li></ul>"
+    return "<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in items) + "</ul>"
+
+
+def html_steps(steps: List[ProtocolStep]) -> str:
+    if not steps:
+        return "<ol><li>No steps available</li></ol>"
+    return (
+        "<ol>"
+        + "".join(
+            f"<li><strong>{html.escape(step.action)}</strong><br><span>{html.escape(step.rationale)}</span></li>"
+            for step in steps
+        )
+        + "</ol>"
+    )
+
+
+def html_doses(doses: List[DoseGuidance]) -> str:
+    if not doses:
+        return "<ul><li>No dose guidance available</li></ul>"
+    return (
+        "<ul>"
+        + "".join(
+            f"<li><strong>{html.escape(d.substance)}:</strong> {html.escape(d.recommendation)}"
+            f"<br><span>{html.escape(d.notes)}</span></li>"
+            for d in doses
+        )
+        + "</ul>"
+    )
+
+
+def html_evidence(evidence: List[EvidenceItem]) -> str:
+    if not evidence:
+        return "<ul><li>No evidence retrieved</li></ul>"
+    rows = []
+    for item in evidence:
+        citation_text = html.escape(item.citation_text or "")
+        title = html.escape(item.title)
+        note = html.escape(item.note)
+        source_id = html.escape(item.source_id)
+        rows.append(
+            f"<li><strong>[{source_id}] {title}</strong><br>{note}"
+            + (f"<br><em>{citation_text}</em>" if citation_text else "")
+            + "</li>"
+        )
+    return "<ul>" + "".join(rows) + "</ul>"
+
+
+# ---------------------------------------------------------------------
+# Evidence Retrieval Adapter
+# Replace this with your actual RAG / vector / citation backend
+# ---------------------------------------------------------------------
+
+class EvidenceRetriever:
+    def retrieve(self, protocol_key: str, query: str, context: Optional[ClinicalContext]) -> List[EvidenceItem]:
+        raise NotImplementedError
+
+
+class DummyEvidenceRetriever(EvidenceRetriever):
+    def retrieve(self, protocol_key: str, query: str, context: Optional[ClinicalContext]) -> List[EvidenceItem]:
+        fallback = {
+            "vascular_occlusion_ha_filler": [
+                EvidenceItem(
+                    source_id="S1",
+                    title="Expert consensus on management of vascular occlusion after HA fillers",
+                    note="Supports urgent hyaluronidase-based management, repeated reassessment, and territory-based treatment.",
+                    citation_text="High-dose pulsed hyaluronidase is central to early management of HA filler-related ischemia.",
+                    source_type="consensus_review",
+                    relevance_score=0.96,
+                ),
+                EvidenceItem(
+                    source_id="S2",
+                    title="Aesthetic medicine review on tissue ischemia after filler injection",
+                    note="Supports monitoring capillary refill, discoloration, and escalation for progressive ischemia.",
+                    citation_text="Treat the affected vascular territory rather than a single puncture point.",
+                    source_type="review",
+                    relevance_score=0.93,
+                ),
+                EvidenceItem(
+                    source_id="S3",
+                    title="Clinical guidance for visual symptoms after facial filler injection",
+                    note="Supports immediate emergency escalation for visual complaints.",
+                    citation_text="Any visual symptom after filler injection should be treated as an emergency.",
+                    source_type="guideline_review",
+                    relevance_score=0.98,
+                ),
+            ],
+            "filler_nodules_inflammatory_or_noninflammatory": [
+                EvidenceItem(
+                    source_id="S10",
+                    title="Delayed-onset nodules after soft tissue fillers",
+                    note="Supports distinguishing inflammatory, infectious, and placement-related nodules.",
+                    citation_text="Assessment should separate noninflammatory filler deposition from inflammatory or infectious nodules.",
+                    source_type="review",
+                    relevance_score=0.91,
+                )
+            ],
+            "tyndall_effect_ha_filler": [
+                EvidenceItem(
+                    source_id="S20",
+                    title="Superficial placement of HA fillers and Tyndall effect",
+                    note="Supports targeted conservative reversal when cosmetically indicated.",
+                    citation_text="Low-volume targeted hyaluronidase may correct superficial HA filler-related bluish discoloration.",
+                    source_type="review",
+                    relevance_score=0.89,
+                )
+            ],
+            "infection_or_biofilm_after_filler": [
+                EvidenceItem(
+                    source_id="S30",
+                    title="Infectious complications after dermal fillers",
+                    note="Supports escalation for drainage, fluctuance, systemic symptoms, or progressive inflammation.",
+                    citation_text="Biofilm or infection should be considered when delayed swelling is painful, warm, and erythematous.",
+                    source_type="review",
+                    relevance_score=0.92,
+                )
+            ],
+        }
+        return fallback.get(protocol_key, [])
+
+
+evidence_retriever: EvidenceRetriever = DummyEvidenceRetriever()
+
+
+# ---------------------------------------------------------------------
+# Protocol definitions
+# ---------------------------------------------------------------------
+
+PROTOCOL_LIBRARY: Dict[str, Dict[str, Any]] = {
+    "vascular_occlusion_ha_filler": {
+        "name": "Suspected vascular occlusion after hyaluronic acid filler",
+        "base_severity": "critical",
+        "base_urgency": "immediate",
+        "evidence_strength": "moderate",
+        "summary": (
+            "This presentation is concerning for impending or established vascular compromise after "
+            "hyaluronic acid filler. Time-critical intervention is required to restore perfusion and "
+            "reduce the risk of tissue necrosis. Any visual symptom requires immediate emergency escalation."
+        ),
+        "keywords": [
+            "vascular occlusion", "blanching", "mottling", "livedo", "ischemia",
+            "pain after filler", "dusky discoloration", "capillary refill", "necrosis",
+            "hyaluronic acid filler", "ha filler", "ischemic skin"
+        ],
+        "steps": [
+            {
+                "action": "Stop injection immediately and do not inject additional filler.",
+                "rationale": "Further injection may worsen intravascular obstruction and ischemia.",
+                "priority": "primary",
+            },
+            {
+                "action": "Assess capillary refill, skin color, temperature, pain, and the full distribution of blanching or livedo.",
+                "rationale": "This defines the extent and progression of tissue compromise.",
+                "priority": "primary",
+            },
+            {
+                "action": "Massage the area firmly and apply warm compresses if not contraindicated.",
+                "rationale": "This may support vasodilation and mechanical dispersion.",
+                "priority": "secondary",
+            },
+            {
+                "action": "Administer high-dose hyaluronidase promptly throughout the affected vascular territory.",
+                "rationale": "Rapid HA filler breakdown is the key reversible intervention.",
+                "priority": "primary",
+            },
+            {
+                "action": "Reassess perfusion and repeat hyaluronidase if ischemic signs persist.",
+                "rationale": "Persistent blanching, pain, or delayed refill suggests ongoing obstruction.",
+                "priority": "primary",
+            },
+            {
+                "action": "Document time, findings, photos, dose, and response after each treatment cycle.",
+                "rationale": "Accurate documentation supports reassessment and continuity of care.",
+                "priority": "secondary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": (
+                    "Use high-dose pulsed treatment. A practical evidence-aligned starting point is at least "
+                    "500 IU per affected ischemic area, with many expert protocols using 500 to 1500 IU or more "
+                    "depending on extent, repeated at short intervals until reperfusion improves."
+                ),
+                "notes": (
+                    "Inject across the full compromised vascular territory rather than only at the original injection point. "
+                    "Repeat according to persistent pain, blanching, livedo, and delayed refill."
+                ),
+            },
+            {
+                "substance": "Aspirin",
+                "recommendation": "Consider according to clinician judgment and local protocol when not contraindicated.",
+                "notes": "Use depends on bleeding risk and local practice.",
+            },
+        ],
+        "red_flags": [
+            "Visual disturbance, blurred vision, diplopia, vision loss",
+            "Severe escalating pain",
+            "Rapidly spreading blanching or livedo",
+            "Delayed or absent capillary refill",
+            "Dusky or violaceous discoloration",
+        ],
+        "escalation": [
+            "Immediate ophthalmology / emergency referral for any visual symptom",
+            "Urgent senior clinician review if reperfusion does not improve after initial treatment",
+            "Emergency department referral if tissue compromise is extensive or progressive",
+        ],
+        "monitoring": [
+            "Reassess capillary refill every 15 to 30 minutes initially",
+            "Track pain progression and skin color changes",
+            "Repeat photographs after each intervention cycle",
+            "Continue close follow-up until reperfusion is stable or specialist care has taken over",
+        ],
+        "limitations": [
+            "Evidence is based largely on expert consensus and review literature rather than randomized trials",
+            "Optimal hyaluronidase dose and interval are not fully standardized",
+            "This protocol applies only when HA filler is suspected or confirmed",
+        ],
+        "follow_up_questions": [
+            "Was the product definitely hyaluronic acid filler?",
+            "Which anatomical region was injected?",
+            "Are there visual symptoms?",
+            "How many minutes have passed since injection?",
+            "Is capillary refill delayed or absent?",
+        ],
+    },
+    "filler_nodules_inflammatory_or_noninflammatory": {
+        "name": "Suspected filler nodules after injectable treatment",
+        "base_severity": "moderate",
+        "base_urgency": "same_day",
+        "evidence_strength": "moderate",
+        "summary": (
+            "This presentation may represent noninflammatory filler deposition, inflammatory nodules, or a "
+            "biofilm/infection-associated complication. Management depends on timing, tenderness, erythema, "
+            "warmth, fluctuance, drainage, and filler identity."
+        ),
+        "keywords": [
+            "filler nodule", "lump after filler", "bump after filler", "granuloma",
+            "biofilm", "delayed nodule", "tender swelling", "filler lump"
+        ],
+        "steps": [
+            {
+                "action": "Assess onset timing, tenderness, erythema, warmth, fluctuance, drainage, and filler type.",
+                "rationale": "This distinguishes placement-related irregularity from inflammatory or infectious complications.",
+                "priority": "primary",
+            },
+            {
+                "action": "Avoid aggressive massage when nodules are delayed, tender, inflamed, or diagnostically unclear.",
+                "rationale": "Massage may worsen inflammation or obscure assessment.",
+                "priority": "primary",
+            },
+            {
+                "action": "If HA filler is confirmed and the lesion is noninfectious, consider targeted hyaluronidase.",
+                "rationale": "HA filler can often be reduced enzymatically.",
+                "priority": "secondary",
+            },
+            {
+                "action": "Escalate promptly if infection is suspected.",
+                "rationale": "Infectious or biofilm-related complications require clinician-led management.",
+                "priority": "primary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": "Use targeted dosing for confirmed HA filler when clinically appropriate.",
+                "notes": "Dose depends on filler type, volume, chronicity, location, and clinical objective.",
+            }
+        ],
+        "red_flags": [
+            "Marked tenderness with erythema or warmth",
+            "Fluctuance or drainage",
+            "Systemic symptoms",
+            "Progressive swelling",
+        ],
+        "escalation": [
+            "Urgent clinician review if infection or abscess is suspected",
+            "Senior review for recurrent or treatment-resistant nodules",
+        ],
+        "monitoring": [
+            "Document size, tenderness, warmth, erythema, and change over time",
+            "Reassess after each intervention",
+        ],
+        "limitations": [
+            "Precise treatment depends on confirmed filler identity and whether inflammation or infection is present"
+        ],
+        "follow_up_questions": [
+            "Is the filler definitely HA?",
+            "How long after injection did the nodule appear?",
+            "Is it tender, red, or warm?",
+            "Is there fluctuance or drainage?",
+        ],
+    },
+    "tyndall_effect_ha_filler": {
+        "name": "Suspected Tyndall effect after superficial hyaluronic acid filler",
+        "base_severity": "low",
+        "base_urgency": "routine",
+        "evidence_strength": "moderate",
+        "summary": (
+            "This presentation is consistent with superficial placement of HA filler causing bluish discoloration. "
+            "It is usually not an emergency, but correction may be appropriate if cosmetically significant."
+        ),
+        "keywords": [
+            "tyndall", "blue discoloration", "bluish under eyes", "superficial filler",
+            "ha filler too superficial", "blue-gray discoloration"
+        ],
+        "steps": [
+            {
+                "action": "Confirm there are no ischemic features such as pain, blanching, livedo, or delayed refill.",
+                "rationale": "Tyndall effect must be distinguished from vascular compromise.",
+                "priority": "primary",
+            },
+            {
+                "action": "Assess whether superficial HA filler placement is the likely cause.",
+                "rationale": "Correction depends on product identity and depth of placement.",
+                "priority": "primary",
+            },
+            {
+                "action": "Consider conservative targeted low-volume hyaluronidase if correction is desired.",
+                "rationale": "Superficial HA filler can often be partially reversed.",
+                "priority": "secondary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": "Use conservative targeted dosing based on area and desired degree of correction.",
+                "notes": "Avoid overcorrection. Reassess before repeating.",
+            }
+        ],
+        "red_flags": [
+            "Pain",
+            "Blanching",
+            "Livedo",
+            "Delayed capillary refill",
+            "Rapid progression",
+        ],
+        "escalation": [
+            "Escalate immediately if ischemic features are present instead of isolated bluish discoloration",
+        ],
+        "monitoring": [
+            "Monitor cosmetic response and avoid overcorrection",
+        ],
+        "limitations": [
+            "Requires confirmation that the product is HA and the issue is superficial placement rather than ischemia"
+        ],
+        "follow_up_questions": [
+            "Is the discoloration blue-gray rather than pale or mottled?",
+            "Was HA filler used?",
+            "Is there pain or blanching?",
+        ],
+    },
+    "infection_or_biofilm_after_filler": {
+        "name": "Suspected infection or biofilm-related complication after filler",
+        "base_severity": "high",
+        "base_urgency": "urgent",
+        "evidence_strength": "limited",
+        "summary": (
+            "This presentation raises concern for an infectious or biofilm-related complication after filler treatment. "
+            "Tenderness, warmth, erythema, fluctuance, drainage, or fever increase concern and warrant urgent clinical review."
+        ),
+        "keywords": [
+            "infection after filler", "biofilm after filler", "warm red swelling", "drainage after filler",
+            "fluctuant swelling", "abscess after filler", "fever after filler"
+        ],
+        "steps": [
+            {
+                "action": "Assess for tenderness, warmth, erythema, fluctuance, drainage, and systemic symptoms.",
+                "rationale": "These features raise suspicion for infectious or biofilm-related complications.",
+                "priority": "primary",
+            },
+            {
+                "action": "Do not assume the lesion is a simple cosmetic irregularity if inflammatory signs are present.",
+                "rationale": "Delayed recognition can worsen infectious complications.",
+                "priority": "primary",
+            },
+            {
+                "action": "Escalate for clinician-led infection assessment and management.",
+                "rationale": "Antibiotic selection, drainage, and procedural decisions require clinical evaluation.",
+                "priority": "primary",
+            },
+            {
+                "action": "Document evolution, photographs, and prior filler history.",
+                "rationale": "Complication evolution and prior treatment history can affect diagnosis and management.",
+                "priority": "secondary",
+            },
+        ],
+        "dose_guidance": [],
+        "red_flags": [
+            "Fever",
+            "Fluctuance",
+            "Drainage",
+            "Rapidly progressive swelling",
+            "Marked tenderness with erythema and warmth",
+        ],
+        "escalation": [
+            "Urgent in-person clinician review",
+            "Emergency referral if systemic illness or rapidly progressive facial infection is suspected",
+        ],
+        "monitoring": [
+            "Track swelling, tenderness, temperature, drainage, and systemic symptoms",
+        ],
+        "limitations": [
+            "Management requires clinician assessment and may depend on local microbiology, drainage decisions, and procedural history"
+        ],
+        "follow_up_questions": [
+            "Is there warmth, drainage, or fluctuance?",
+            "Is the patient febrile?",
+            "When did symptoms begin after injection?",
+            "Has any antibiotic or dissolving treatment already been given?",
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------
+# Matching logic
+# ---------------------------------------------------------------------
+
+def score_protocol(query: str, context: Optional[ClinicalContext], protocol: Dict[str, Any]) -> float:
+    score = 0.0
+    q = normalize(query)
+
+    for kw in protocol["keywords"]:
+        if kw in q:
+            score += 1.0
+
+    if context:
+        symptom_blob = normalize(" ".join(context.symptoms))
+        free_blob = normalize(context.free_text or "")
+        merged = f"{symptom_blob} {free_blob}".strip()
+
+        for kw in protocol["keywords"]:
+            if kw in merged:
+                score += 0.5
+
+        if context.visual_symptoms and "vascular occlusion" in protocol["name"].lower():
+            score += 3.0
+
+        if context.capillary_refill_delayed and "vascular occlusion" in protocol["name"].lower():
+            score += 2.0
+
+        if context.filler_confirmed_ha:
+            if "hyaluronic acid filler" in protocol["name"].lower() or "ha filler" in protocol["name"].lower():
+                score += 1.25
+
+        if context.product_type and "hyaluronic" in context.product_type.lower():
+            if "hyaluronic acid filler" in protocol["name"].lower() or "ha filler" in protocol["name"].lower():
+                score += 1.0
+
+        if context.skin_color_change:
+            scc = context.skin_color_change.lower()
+            if scc in ("blanching", "mottling", "dusky", "violaceous") and "vascular occlusion" in protocol["name"].lower():
+                score += 2.0
+            if ("blue" in scc or "bluish" in scc or "blue-gray" in scc) and "tyndall" in protocol["name"].lower():
+                score += 2.0
+
+        if any([context.tenderness, context.warmth, context.erythema, context.fluctuance, context.drainage, context.fever]):
+            if "infection" in protocol["name"].lower():
+                score += 2.0
+            if "nodules" in protocol["name"].lower():
+                score += 1.0
+
+        if context.time_since_injection_minutes is not None:
+            if context.time_since_injection_minutes <= 60 and "vascular occlusion" in protocol["name"].lower():
+                score += 1.5
+
+        if context.pain_score_10 is not None and context.pain_score_10 >= 7 and "vascular occlusion" in protocol["name"].lower():
+            score += 1.5
+
+    return score
+
+
+def select_protocol(query: str, context: Optional[ClinicalContext]) -> Tuple[str, Dict[str, Any], float]:
+    best_key: Optional[str] = None
+    best_protocol: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+
+    for key, protocol in PROTOCOL_LIBRARY.items():
+        score = score_protocol(query, context, protocol)
+        if score > best_score:
+            best_key = key
+            best_protocol = protocol
+            best_score = score
+
+    if best_key is None or best_protocol is None or best_score <= 0:
+        raise HTTPException(
+            status_code=404,
+            detail="No matching complication protocol found. Expand the protocol library or improve matching."
+        )
+
+    confidence = min(0.99, round(0.45 + best_score * 0.06, 2))
+    return best_key, best_protocol, confidence
+
+
+# ---------------------------------------------------------------------
+# Risk adjustment
+# ---------------------------------------------------------------------
+
+def compute_risk_assessment(protocol_key: str, protocol: Dict[str, Any], context: Optional[ClinicalContext]) -> RiskAssessment:
+    base_map = {
+        "low": 20,
+        "moderate": 50,
+        "high": 75,
+        "critical": 92,
+    }
+    urgency_map = {
+        "routine": "routine",
+        "same_day": "same_day",
+        "urgent": "urgent",
+        "immediate": "immediate",
+    }
+
+    severity = protocol["base_severity"]
+    urgency = urgency_map[protocol["base_urgency"]]
+    score = base_map[severity]
+
+    if context:
+        if context.visual_symptoms:
+            score += 8
+            severity = "critical"
+            urgency = "immediate"
+
+        if context.capillary_refill_delayed:
+            score += 5
+            if protocol_key == "vascular_occlusion_ha_filler":
+                severity = "critical"
+                urgency = "immediate"
+
+        if context.pain_score_10 is not None:
+            if context.pain_score_10 >= 8:
+                score += 4
+            elif context.pain_score_10 >= 5:
+                score += 2
+
+        if any([context.fever, context.fluctuance, context.drainage]):
+            if protocol_key == "infection_or_biofilm_after_filler":
+                score += 6
+                severity = "high"
+                urgency = "urgent"
+
+        if any([context.erythema, context.warmth, context.tenderness]):
+            if protocol_key in ("infection_or_biofilm_after_filler", "filler_nodules_inflammatory_or_noninflammatory"):
+                score += 3
+
+    score = max(0, min(100, score))
+    likely_time_critical = urgency in ("urgent", "immediate")
+
+    return RiskAssessment(
+        risk_score=score,
+        severity=severity,
+        urgency=urgency,
+        likely_time_critical=likely_time_critical,
+        evidence_strength=protocol["evidence_strength"],
+    )
+
+
+# ---------------------------------------------------------------------
+# Response building
+# ---------------------------------------------------------------------
+
+def build_steps(protocol: Dict[str, Any]) -> List[ProtocolStep]:
+    return [
+        ProtocolStep(
+            step_number=i + 1,
+            action=s["action"],
+            rationale=s["rationale"],
+            priority=s.get("priority", "primary"),
+        )
+        for i, s in enumerate(protocol["steps"])
+    ]
+
+
+def build_doses(protocol: Dict[str, Any]) -> List[DoseGuidance]:
+    return [
+        DoseGuidance(
+            substance=d["substance"],
+            recommendation=d["recommendation"],
+            notes=d["notes"],
+        )
+        for d in protocol["dose_guidance"]
+    ]
+
+
+def build_response(
+    request_id: str,
+    protocol_key: str,
+    protocol: Dict[str, Any],
+    confidence: float,
+    context: Optional[ClinicalContext],
+    query: str,
+) -> ProtocolResponse:
+    evidence = evidence_retriever.retrieve(protocol_key=protocol_key, query=query, context=context)
+    risk_assessment = compute_risk_assessment(protocol_key, protocol, context)
+
+    red_flags = list(protocol["red_flags"])
+    escalation = list(protocol["escalation"])
+    monitoring = list(protocol["monitoring"])
+    follow_up = list(protocol["follow_up_questions"])
+
+    if context and context.visual_symptoms:
+        visual_flag = "Visual disturbance, blurred vision, diplopia, vision loss"
+        if visual_flag not in red_flags:
+            red_flags.insert(0, visual_flag)
+
+        ocular_escalation = "Immediate ophthalmology / emergency referral for any visual symptom"
+        if ocular_escalation not in escalation:
+            escalation.insert(0, ocular_escalation)
+
+    return ProtocolResponse(
+        request_id=request_id,
+        engine_version=ENGINE_VERSION,
+        protocol_revision=PROTOCOL_REVISION,
+        generated_at_utc=now_utc_iso(),
+        matched_protocol_key=protocol_key,
+        matched_protocol_name=protocol["name"],
+        confidence=confidence,
+        risk_assessment=risk_assessment,
+        clinical_summary=protocol["summary"],
+        immediate_actions=build_steps(protocol),
+        dose_guidance=build_doses(protocol),
+        red_flags=red_flags,
+        escalation=escalation,
+        monitoring=monitoring,
+        limitations=list(protocol["limitations"]),
+        follow_up_questions=follow_up,
+        evidence=evidence,
+        disclaimer=(
+            "This output is clinical decision support and not a substitute for clinician judgment. "
+            "Escalate immediately for visual symptoms, progressive ischemia, suspected infection, "
+            "systemic illness, or diagnostic uncertainty."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
+# Audit + feedback
+# ---------------------------------------------------------------------
+
+def log_protocol_request(payload: ProtocolRequest, response: ProtocolResponse) -> None:
+    record = {
+        "event_type": "protocol_generated",
+        "logged_at_utc": now_utc_iso(),
+        "request_id": response.request_id,
+        "clinician_id": payload.clinician_id,
+        "clinic_id": payload.clinic_id,
+        "mode": payload.mode,
+        "query": payload.query,
+        "context": payload.context.model_dump() if payload.context else None,
+        "matched_protocol_key": response.matched_protocol_key,
+        "matched_protocol_name": response.matched_protocol_name,
+        "confidence": response.confidence,
+        "risk_score": response.risk_assessment.risk_score,
+        "severity": response.risk_assessment.severity,
+        "urgency": response.risk_assessment.urgency,
+        "engine_version": response.engine_version,
+        "protocol_revision": response.protocol_revision,
+    }
+    safe_write_jsonl(AUDIT_LOG_PATH, record)
+
+
+def log_feedback(payload: FeedbackRequest) -> None:
+    record = {
+        "event_type": "protocol_feedback",
+        "logged_at_utc": now_utc_iso(),
+        "request_id": payload.request_id,
+        "clinician_id": payload.clinician_id,
+        "clinic_id": payload.clinic_id,
+        "rating": payload.rating,
+        "was_useful": payload.was_useful,
+        "comment": payload.comment,
+        "selected_protocol_key": payload.selected_protocol_key,
+    }
+    safe_write_jsonl(FEEDBACK_LOG_PATH, record)
+
+
+# ---------------------------------------------------------------------
+# HTML print view
+# ---------------------------------------------------------------------
+
+def build_print_html(response: ProtocolResponse) -> str:
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AesthetiCite Emergency Protocol</title>
+<style>
+body {{
+    font-family: Arial, sans-serif;
+    margin: 32px;
+    color: #111;
+    line-height: 1.5;
+}}
+h1, h2, h3 {{
+    margin-bottom: 8px;
+}}
+.section {{
+    margin-top: 24px;
+}}
+.meta {{
+    font-size: 13px;
+    color: #444;
+}}
+.alert {{
+    padding: 12px;
+    border: 1px solid #c00;
+    background: #fff5f5;
+    margin-top: 16px;
+}}
+.small {{
+    font-size: 12px;
+    color: #555;
+}}
+ul, ol {{
+    margin-top: 8px;
+}}
+</style>
+</head>
+<body>
+    <h1>AesthetiCite Clinical Complication Protocol</h1>
+
+    <div class="meta">
+        <strong>Protocol:</strong> {html.escape(response.matched_protocol_name)}<br>
+        <strong>Request ID:</strong> {html.escape(response.request_id)}<br>
+        <strong>Generated:</strong> {html.escape(response.generated_at_utc)}<br>
+        <strong>Engine Version:</strong> {html.escape(response.engine_version)}<br>
+        <strong>Protocol Revision:</strong> {html.escape(response.protocol_revision)}<br>
+        <strong>Confidence:</strong> {response.confidence}<br>
+        <strong>Risk Score:</strong> {response.risk_assessment.risk_score}/100<br>
+        <strong>Severity:</strong> {html.escape(response.risk_assessment.severity)}<br>
+        <strong>Urgency:</strong> {html.escape(response.risk_assessment.urgency)}<br>
+    </div>
+
+    <div class="alert">
+        <strong>Clinical Summary:</strong><br>
+        {html.escape(response.clinical_summary)}
+    </div>
+
+    <div class="section">
+        <h2>Immediate Actions</h2>
+        {html_steps(response.immediate_actions)}
+    </div>
+
+    <div class="section">
+        <h2>Dose Guidance</h2>
+        {html_doses(response.dose_guidance)}
+    </div>
+
+    <div class="section">
+        <h2>Red Flags</h2>
+        {html_list(response.red_flags)}
+    </div>
+
+    <div class="section">
+        <h2>Escalation</h2>
+        {html_list(response.escalation)}
+    </div>
+
+    <div class="section">
+        <h2>Monitoring</h2>
+        {html_list(response.monitoring)}
+    </div>
+
+    <div class="section">
+        <h2>Follow-up Questions</h2>
+        {html_list(response.follow_up_questions)}
+    </div>
+
+    <div class="section">
+        <h2>Limitations</h2>
+        {html_list(response.limitations)}
+    </div>
+
+    <div class="section">
+        <h2>Evidence</h2>
+        {html_evidence(response.evidence)}
+    </div>
+
+    <div class="section small">
+        <strong>Disclaimer:</strong> {html.escape(response.disclaimer)}
+    </div>
+</body>
+</html>
+""".strip()
+
+
+# ---------------------------------------------------------------------
+# API endpoints
+# ---------------------------------------------------------------------
+
+@router.post("/protocol", response_model=ProtocolResponse)
+def generate_complication_protocol(payload: ProtocolRequest) -> ProtocolResponse:
+    request_id = str(uuid.uuid4())
+    protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
+    response = build_response(
+        request_id=request_id,
+        protocol_key=protocol_key,
+        protocol=protocol,
+        confidence=confidence,
+        context=payload.context,
+        query=payload.query,
+    )
+    log_protocol_request(payload, response)
+    return response
+
+
+@router.post("/print-view", response_model=PrintViewResponse)
+def generate_print_view(payload: ProtocolRequest) -> PrintViewResponse:
+    request_id = str(uuid.uuid4())
+    protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
+    response = build_response(
+        request_id=request_id,
+        protocol_key=protocol_key,
+        protocol=protocol,
+        confidence=confidence,
+        context=payload.context,
+        query=payload.query,
+    )
+    log_protocol_request(payload, response)
+    return PrintViewResponse(
+        request_id=request_id,
+        html=build_print_html(response),
+    )
+
+
+@router.post("/feedback", response_model=FeedbackResponse)
+def submit_feedback(payload: FeedbackRequest) -> FeedbackResponse:
+    log_feedback(payload)
+    return FeedbackResponse(status="ok", request_id=payload.request_id)
+
+
+# ---------------------------------------------------------------------
+# Internal callable helper
+# ---------------------------------------------------------------------
+
+def run_complication_engine(query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = ClinicalContext(**context) if context else None
+    request_id = str(uuid.uuid4())
+    protocol_key, protocol, confidence = select_protocol(query, ctx)
+    response = build_response(
+        request_id=request_id,
+        protocol_key=protocol_key,
+        protocol=protocol,
+        confidence=confidence,
+        context=ctx,
+        query=query,
+    )
+    return response.model_dump()
+
+
+# ---------------------------------------------------------------------
+# Example main app integration
+# ---------------------------------------------------------------------
+
+FASTAPI_MAIN_EXAMPLE = """
+from fastapi import FastAPI
+from aestheticite_complication_engine import router as complication_router
+
+app = FastAPI(title="AesthetiCite API")
+app.include_router(complication_router)
+""".strip()
+
+
+# ---------------------------------------------------------------------
+# Example payloads
+# ---------------------------------------------------------------------
+
+EXAMPLE_REQUESTS = {
+    "vascular_occlusion": {
+        "query": "suspected vascular occlusion after hyaluronic acid filler",
+        "context": {
+            "region": "nasolabial fold",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["pain", "blanching", "mottling"],
+            "time_since_injection_minutes": 20,
+            "visual_symptoms": False,
+            "skin_color_change": "blanching",
+            "pain_score_10": 8,
+            "capillary_refill_delayed": True,
+            "filler_confirmed_ha": True,
+        },
+        "mode": "emergency",
+    },
+    "nodule": {
+        "query": "tender delayed filler nodule after cheek filler",
+        "context": {
+            "region": "cheek",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["nodule", "tender swelling"],
+            "time_since_injection_minutes": 43200,
+            "tenderness": True,
+            "erythema": True,
+            "warmth": False,
+            "filler_confirmed_ha": True,
+        },
+        "mode": "decision_support",
+    },
+    "tyndall": {
+        "query": "blue-gray discoloration after tear trough filler",
+        "context": {
+            "region": "tear trough",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["blue-gray discoloration"],
+            "skin_color_change": "blue-gray",
+            "pain_score_10": 1,
+            "visual_symptoms": False,
+            "filler_confirmed_ha": True,
+        },
+        "mode": "decision_support",
+    },
+}
+
+
+# ---------------------------------------------------------------------
+# Local test
+# ---------------------------------------------------------------------
+
+if __name__ == "__main__":
+    sample = run_complication_engine(
+        query="suspected vascular occlusion after hyaluronic acid filler",
+        context={
+            "region": "nasolabial fold",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["pain", "blanching", "mottling"],
+            "time_since_injection_minutes": 20,
+            "visual_symptoms": False,
+            "skin_color_change": "blanching",
+            "pain_score_10": 8,
+            "capillary_refill_delayed": True,
+            "filler_confirmed_ha": True,
+        }
+    )
+    print(json.dumps(sample, indent=2, ensure_ascii=False))

@@ -1,0 +1,776 @@
+# app.py  (ONE FILE)
+# Implements ALL remaining “product polish” improvements in one place:
+#
+# ✅ User accounts (email+password) + JWT auth (no external auth libs)
+# ✅ Persistent conversation history (list/resume/delete)
+# ✅ Ask streaming SSE (authority header + sources + memory context + LLM follow-ups)
+# ✅ Robust citation linking data: every source gets a clickable URL:
+#      - Prefer stored document.url
+#      - Else DOI → https://doi.org/<doi>
+#      - Else PMID → https://pubmed.ncbi.nlm.nih.gov/<pmid>/
+# ✅ DOI/PubMed linking during ingestion:
+#      /ingest/doi upserts documents (doi, pmid, url, journal, year, title)
+#      Uses Crossref + PubMed eutils (best-effort)
+#
+# You ONLY need to plug 2 functions:
+#   1) embed_query(q)-> list[float] length 384
+#   2) retrieve_chunks_unified(q, qvec, k)-> {"chunks":[...], "sources":[...]}
+#
+# Install:
+#   pip install fastapi uvicorn httpx asyncpg python-multipart
+#
+# Env:
+#   export DATABASE_URL="postgres://..."
+#   export AI_PROXY_URL="http://localhost:1106/modelfarm/openai/chat/completions"
+#   export COMPOSE_MODEL="gpt-4o-mini"
+#   export JWT_SECRET="change-me"
+#
+# Run:
+#   uvicorn app:app --host 0.0.0.0 --port 8000
+
+import os, json, time, hmac, base64, hashlib, secrets, asyncio, re
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+
+import asyncpg
+import httpx
+from fastapi import FastAPI, Request, HTTPException, Depends, Header, Form
+from fastapi.responses import StreamingResponse, JSONResponse, Response
+from pydantic import BaseModel, EmailStr
+
+# -----------------------------
+# ENV
+# -----------------------------
+DATABASE_URL   = os.getenv("DATABASE_URL")
+AI_PROXY_URL   = os.getenv("AI_PROXY_URL", "http://localhost:1106/modelfarm/openai/chat/completions")
+COMPOSE_MODEL  = os.getenv("COMPOSE_MODEL", "gpt-4o-mini")
+JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-me")
+
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL")
+
+# Retrieval + prompt caps
+K_DEFAULT          = int(os.getenv("K_DEFAULT", "40"))
+CHUNK_CHAR_CAP     = int(os.getenv("CHUNK_CHAR_CAP", "650"))
+MAX_SOURCES_TO_LLM = int(os.getenv("MAX_SOURCES_TO_LLM", "10"))
+
+# LLM caps
+COMPOSE_MAX_TOKENS = int(os.getenv("COMPOSE_MAX_TOKENS", "1100"))
+COMPOSE_TEMP       = float(os.getenv("COMPOSE_TEMPERATURE", "0.2"))
+HEARTBEAT_SECONDS  = float(os.getenv("HEARTBEAT_SECONDS", "0.8"))
+
+# Memory caps
+MEMORY_MAX_TURNS   = int(os.getenv("MEMORY_MAX_TURNS", "6"))
+MEMORY_MAX_CHARS   = int(os.getenv("MEMORY_MAX_CHARS", "1800"))
+
+# -----------------------------
+# APP / DB
+# -----------------------------
+app = FastAPI(title="AesthetiCite (Accounts + History + Linking)", version="1.0")
+POOL: Optional[asyncpg.Pool] = None
+
+CREATE_TABLES_SQL = r"""
+CREATE TABLE IF NOT EXISTS users (
+  id            TEXT PRIMARY KEY,
+  email         TEXT UNIQUE NOT NULL,
+  pw_hash       TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title         TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id             BIGSERIAL PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role           TEXT NOT NULL CHECK (role IN ('user','assistant')),
+  content        TEXT NOT NULL,
+  created_at     TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conv_created ON messages(conversation_id, created_at DESC);
+
+-- Optional: documents metadata store (if you already have one, adjust names/columns)
+CREATE TABLE IF NOT EXISTS documents_meta (
+  source_id     TEXT PRIMARY KEY,
+  doi           TEXT,
+  pmid          TEXT,
+  url           TEXT,
+  title         TEXT,
+  journal       TEXT,
+  year          INT,
+  updated_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_docs_meta_doi ON documents_meta(doi);
+CREATE INDEX IF NOT EXISTS idx_docs_meta_pmid ON documents_meta(pmid);
+"""
+
+@app.on_event("startup")
+async def startup():
+    global POOL
+    POOL = await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=2,
+        max_size=20,
+        max_inactive_connection_lifetime=300,
+        command_timeout=30,
+    )
+    async with POOL.acquire() as con:
+        await con.execute(CREATE_TABLES_SQL)
+
+@app.on_event("shutdown")
+async def shutdown():
+    global POOL
+    if POOL:
+        await POOL.close()
+        POOL = None
+
+# -----------------------------
+# SSE helpers
+# -----------------------------
+def sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# -----------------------------
+# Minimal JWT (HS256) + password hashing
+# -----------------------------
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("utf-8"))
+
+def jwt_sign(payload: Dict[str, Any], secret: str) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h = _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    p = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    msg = f"{h}.{p}".encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url(sig)}"
+
+def jwt_verify(token: str, secret: str) -> Dict[str, Any]:
+    try:
+        h, p, s = token.split(".")
+        msg = f"{h}.{p}".encode("utf-8")
+        sig = _b64url_decode(s)
+        exp_sig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, exp_sig):
+            raise ValueError("bad signature")
+        payload = json.loads(_b64url_decode(p))
+        if "exp" in payload and int(payload["exp"]) < int(time.time()):
+            raise ValueError("expired")
+        return payload
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    return f"pbkdf2_sha256${_b64url(salt)}${_b64url(dk)}"
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, salt_b64, dk_b64 = stored.split("$", 2)
+        if algo != "pbkdf2_sha256":
+            return False
+        salt = _b64url_decode(salt_b64)
+        dk = _b64url_decode(dk_b64)
+        test = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+        return hmac.compare_digest(dk, test)
+    except Exception:
+        return False
+
+async def get_user(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    payload = jwt_verify(token, JWT_SECRET)
+    uid = payload.get("sub")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        row = await con.fetchrow("SELECT id, email FROM users WHERE id=$1", uid)
+    if not row:
+        raise HTTPException(status_code=401, detail="User not found")
+    return {"id": row["id"], "email": row["email"]}
+
+# -----------------------------
+# Evidence typing + authority header
+# -----------------------------
+def infer_evidence_type(document_type: Optional[str], journal_or_org: Optional[str]) -> str:
+    t = (document_type or "").lower()
+    j = (journal_or_org or "").lower()
+    if "guideline" in t or "consensus" in t or "recommendation" in t:
+        return "Guideline/Consensus"
+    if "systematic" in t or "meta" in t:
+        return "Systematic Review"
+    if "random" in t or "rct" in t or "trial" in t:
+        return "Randomized Trial"
+    if "cohort" in t or "case-control" in t or "observational" in t:
+        return "Observational Study"
+    if "case report" in t or "case series" in t:
+        return "Case Report/Series"
+    if "review" in t:
+        return "Narrative Review"
+    if any(x in j for x in ["nejm", "jama", "lancet", "bmj"]):
+        return "Journal Article"
+    return "Other"
+
+def evidence_rank(evidence_type: str) -> int:
+    order = {
+        "Guideline/Consensus": 1,
+        "Systematic Review": 2,
+        "Randomized Trial": 3,
+        "Observational Study": 4,
+        "Case Report/Series": 5,
+        "Narrative Review": 6,
+        "Journal Article": 7,
+        "Other": 8,
+    }
+    return order.get(evidence_type, 9)
+
+def compute_aci_lightweight(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    typed = []
+    for s in sources:
+        et = infer_evidence_type(s.get("document_type"), s.get("organization_or_journal") or s.get("journal"))
+        typed.append((evidence_rank(et), et))
+    typed.sort(key=lambda x: x[0])
+    highest = typed[0][1] if typed else "N/A"
+    supporting = len(sources)
+    base = 6.0
+    if highest in ("Guideline/Consensus", "Systematic Review"):
+        base += 2.0
+    elif highest == "Randomized Trial":
+        base += 1.2
+    base += min(2.0, supporting / 20.0)
+    conf = max(0.0, min(10.0, base))
+    gaps = []
+    if supporting < 5:
+        gaps.append("Limited number of directly relevant sources retrieved")
+    return {
+        "overall_confidence_0_10": conf,
+        "highest_level": highest,
+        "supporting_count": supporting,
+        "gaps": gaps,
+    }
+
+def build_authority_header(sources: List[Dict[str, Any]], aci: Dict[str, Any]) -> str:
+    conf = aci.get("overall_confidence_0_10")
+    highest = aci.get("highest_level", "N/A")
+    n_support = aci.get("supporting_count", len(sources))
+    gaps = aci.get("gaps", []) or []
+    conf_str = f"{conf:.1f}/10" if isinstance(conf, (int, float)) else "N/A"
+
+    mix = []
+    for s in sources[:10]:
+        et = infer_evidence_type(s.get("document_type"), s.get("organization_or_journal") or s.get("journal"))
+        if et not in mix:
+            mix.append(et)
+        if len(mix) >= 3:
+            break
+
+    gaps_text = ""
+    if gaps:
+        gaps_text = "\n- Evidence gaps: " + "; ".join(gaps[:3])
+
+    safety = (
+        "Safety considerations (aesthetic practice):\n"
+        "- Where vascular risk exists, use conservative technique and have an occlusion response protocol.\n"
+        "- Document contraindications and informed consent; reassess after conservative dosing/volumes.\n"
+    )
+
+    return (
+        "Evidence Strength Summary\n"
+        f"- Overall confidence: {conf_str}\n"
+        f"- Highest evidence level found: {highest}\n"
+        f"- Supporting sources used: {n_support}\n"
+        f"- Evidence mix: {', '.join(mix) if mix else 'N/A'}"
+        f"{gaps_text}\n\n"
+        f"{safety}\n"
+        "What is well-supported vs uncertain is stated explicitly below.\n\n"
+    )
+
+def skeleton(sources: List[Dict[str, Any]]) -> str:
+    top = sources[:5]
+    cites = " ".join([f"[{s.get('sid','S?')}]" for s in top])
+    return (
+        "Clinical summary (loading grounded answer…)\n"
+        "- Evidence retrieved; generating a grounded answer with inline citations.\n"
+        "- Claims will only be stated when supported by provided sources.\n\n"
+        f"Top sources: {cites}\n\n"
+    )
+
+# -----------------------------
+# DOI/PMID/URL helpers (linking)
+# -----------------------------
+DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
+
+def normalize_doi(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    s = s.strip()
+    s = s.replace("https://doi.org/", "").replace("http://doi.org/", "")
+    s = s.replace("doi:", "").strip()
+    m = DOI_RE.search(s)
+    return m.group(0) if m else None
+
+def doi_url(doi: str) -> str:
+    return f"https://doi.org/{doi}"
+
+def pubmed_url(pmid: str) -> str:
+    return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+
+async def upsert_doc_meta(source_id: str, doi: Optional[str], pmid: Optional[str], url: Optional[str],
+                          title: Optional[str], journal: Optional[str], year: Optional[int]) -> None:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        await con.execute(
+            """
+            INSERT INTO documents_meta(source_id, doi, pmid, url, title, journal, year, updated_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7, now())
+            ON CONFLICT(source_id) DO UPDATE SET
+              doi=COALESCE(EXCLUDED.doi, documents_meta.doi),
+              pmid=COALESCE(EXCLUDED.pmid, documents_meta.pmid),
+              url=COALESCE(EXCLUDED.url, documents_meta.url),
+              title=COALESCE(EXCLUDED.title, documents_meta.title),
+              journal=COALESCE(EXCLUDED.journal, documents_meta.journal),
+              year=COALESCE(EXCLUDED.year, documents_meta.year),
+              updated_at=now()
+            """,
+            source_id, doi, pmid, url, title, journal, year
+        )
+
+async def fetch_doc_meta(source_id: str) -> Optional[Dict[str, Any]]:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        row = await con.fetchrow("SELECT source_id, doi, pmid, url, title, journal, year FROM documents_meta WHERE source_id=$1", source_id)
+    return dict(row) if row else None
+
+# -----------------------------
+# Ingestion: /ingest/doi (Crossref + PubMed best-effort)
+# -----------------------------
+CROSSREF_API = "https://api.crossref.org/works/"
+PUBMED_SEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_FETCH  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+async def crossref_lookup(doi: str) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(CROSSREF_API + doi, headers={"User-Agent": "AesthetiCite/1.0"})
+        r.raise_for_status()
+        return r.json().get("message", {})
+
+async def pubmed_find_pmid(doi: str) -> Optional[str]:
+    params = {"db": "pubmed", "term": f"{doi}[AID]", "retmode": "json", "retmax": "1"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(PUBMED_SEARCH, params=params)
+        if r.status_code != 200:
+            return None
+        ids = r.json().get("esearchresult", {}).get("idlist", [])
+        return ids[0] if ids else None
+
+class IngestDOI(BaseModel):
+    source_id: str
+    doi: str
+
+@app.post("/ingest/doi")
+async def ingest_doi(body: IngestDOI, user=Depends(get_user)):
+    doi = normalize_doi(body.doi)
+    if not doi:
+        raise HTTPException(status_code=400, detail="Invalid DOI")
+
+    cr = await crossref_lookup(doi)
+    title = (cr.get("title") or [None])[0]
+    journal = (cr.get("container-title") or [None])[0]
+    year = None
+    if cr.get("issued", {}).get("date-parts"):
+        year = cr["issued"]["date-parts"][0][0]
+    url = cr.get("URL") or doi_url(doi)
+
+    pmid = await pubmed_find_pmid(doi)
+
+    await upsert_doc_meta(
+        source_id=body.source_id,
+        doi=doi,
+        pmid=pmid,
+        url=url,
+        title=title,
+        journal=journal,
+        year=year,
+    )
+    return {"ok": True, "source_id": body.source_id, "doi": doi, "pmid": pmid, "url": url}
+
+# -----------------------------
+# PWA basics
+# -----------------------------
+@app.get("/manifest.webmanifest")
+def manifest():
+    return JSONResponse({
+        "name": "AesthetiCite",
+        "short_name": "AesthetiCite",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0b1220",
+        "theme_color": "#0b1220",
+        "icons": []
+    })
+
+@app.get("/sw.js")
+def service_worker():
+    return Response("self.addEventListener('fetch', (e)=>{});", media_type="application/javascript")
+
+# -----------------------------
+# Auth endpoints
+# -----------------------------
+class SignupBody(BaseModel):
+    email: EmailStr
+    password: str
+
+class LoginBody(BaseModel):
+    email: EmailStr
+    password: str
+
+@app.post("/auth/signup")
+async def signup(body: SignupBody):
+    if len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password too short (min 8 chars)")
+    uid = "u_" + secrets.token_hex(10)
+    pw = hash_password(body.password)
+
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        try:
+            await con.execute("INSERT INTO users(id, email, pw_hash) VALUES($1,$2,$3)", uid, body.email.lower(), pw)
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(status_code=409, detail="Email already exists")
+
+    token = jwt_sign({"sub": uid, "email": body.email.lower(), "exp": int(time.time()) + 60 * 60 * 24 * 30}, JWT_SECRET)
+    return {"ok": True, "token": token, "user": {"id": uid, "email": body.email.lower()}}
+
+@app.post("/auth/login")
+async def login(body: LoginBody):
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        row = await con.fetchrow("SELECT id, email, pw_hash FROM users WHERE email=$1", body.email.lower())
+    if not row or not verify_password(body.password, row["pw_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = jwt_sign({"sub": row["id"], "email": row["email"], "exp": int(time.time()) + 60 * 60 * 24 * 30}, JWT_SECRET)
+    return {"ok": True, "token": token, "user": {"id": row["id"], "email": row["email"]}}
+
+@app.get("/me")
+async def me(user=Depends(get_user)):
+    return {"ok": True, "user": user}
+
+# -----------------------------
+# Conversation history endpoints
+# -----------------------------
+class NewConversationResp(BaseModel):
+    conversation_id: str
+
+@app.post("/conversations/new", response_model=NewConversationResp)
+async def conversations_new(user=Depends(get_user)):
+    cid = f"c_{int(time.time()*1000)}_{secrets.token_hex(3)}"
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        await con.execute("INSERT INTO conversations(id, user_id) VALUES($1,$2)", cid, user["id"])
+    return {"conversation_id": cid}
+
+@app.get("/conversations")
+async def conversations_list(user=Depends(get_user)):
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        rows = await con.fetch(
+            """
+            SELECT c.id, c.title, c.created_at,
+                   (SELECT content FROM messages m WHERE m.conversation_id=c.id ORDER BY created_at DESC LIMIT 1) AS last_message
+            FROM conversations c
+            WHERE c.user_id=$1
+            ORDER BY c.created_at DESC
+            LIMIT 200
+            """,
+            user["id"]
+        )
+    return {"ok": True, "conversations": [dict(r) for r in rows]}
+
+@app.get("/conversations/{conversation_id}/messages")
+async def conversation_messages(conversation_id: str, user=Depends(get_user)):
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        own = await con.fetchval("SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2", conversation_id, user["id"])
+        if not own:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        rows = await con.fetch(
+            "SELECT role, content, created_at FROM messages WHERE conversation_id=$1 ORDER BY created_at ASC LIMIT 500",
+            conversation_id
+        )
+    return {"ok": True, "conversation_id": conversation_id, "messages": [dict(r) for r in rows]}
+
+@app.delete("/conversations/{conversation_id}")
+async def conversation_delete(conversation_id: str, user=Depends(get_user)):
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        res = await con.execute("DELETE FROM conversations WHERE id=$1 AND user_id=$2", conversation_id, user["id"])
+    return {"ok": True, "deleted": True}
+
+# -----------------------------
+# Memory context
+# -----------------------------
+async def add_message(conversation_id: str, role: str, content: str) -> None:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        await con.execute("INSERT INTO messages(conversation_id, role, content) VALUES($1,$2,$3)", conversation_id, role, content)
+
+async def fetch_recent_messages(conversation_id: str, limit: int = MEMORY_MAX_TURNS) -> List[Dict[str, Any]]:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        rows = await con.fetch(
+            "SELECT role, content, created_at FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2",
+            conversation_id, limit
+        )
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+def compress_context(messages: List[Dict[str, Any]]) -> str:
+    parts = []
+    for m in messages[-MEMORY_MAX_TURNS:]:
+        role = "User" if m["role"] == "user" else "Assistant"
+        txt = (m["content"] or "").strip()
+        if len(txt) > 700:
+            txt = txt[:700] + "…"
+        parts.append(f"{role}: {txt}")
+    ctx = "\n".join(parts)
+    if len(ctx) > MEMORY_MAX_CHARS:
+        ctx = ctx[-MEMORY_MAX_CHARS:]
+    return ctx
+
+# -----------------------------
+# YOU MUST PLUG THESE TWO
+# -----------------------------
+async def embed_query(q: str) -> List[float]:
+    raise NotImplementedError("Plug embed_query() returning 384 floats")
+
+async def retrieve_chunks_unified(q: str, qvec: List[float], k: int) -> Dict[str, Any]:
+    raise NotImplementedError("Plug retrieve_chunks_unified() returning chunks + sources")
+
+# -----------------------------
+# Build prompt (single-call, multi-cite, followups, memory)
+# -----------------------------
+def build_single_call_prompt(question: str, conversation_context: str, chunks: List[Dict[str, Any]]) -> str:
+    compact = []
+    for c in chunks[:MAX_SOURCES_TO_LLM]:
+        compact.append({
+            "sid": c.get("sid"),
+            "t": (c.get("title") or "")[:160],
+            "y": c.get("year"),
+            "id": c.get("doi") or c.get("url"),
+            "x": (c.get("text") or "")[:CHUNK_CHAR_CAP],
+        })
+
+    return f"""
+You are AesthetiCite (evidence-grounded clinical assistant for aesthetic medicine).
+
+Conversation context:
+{conversation_context}
+
+Hard rules:
+1) EVERY factual claim MUST include inline citations like [S1][S3]. You may cite multiple sources per claim.
+2) If sources do not support a claim, DO NOT state it. Write "Evidence insufficient".
+3) Do NOT use outside knowledge for factual claims.
+4) Prefer fewer, stronger, cited points over many weak points.
+5) Make uncertainty explicit.
+
+Write exactly in this structure:
+Clinical Summary (2–3 lines)
+
+Key Evidence-Based Points
+- Bullet (end with citations like [S1][S3])
+
+Safety Considerations (if applicable)
+
+Limitations / Uncertainty
+
+Suggested Follow-up Questions
+- Question 1
+- Question 2
+- Question 3
+
+User question: {question}
+
+Sources (JSON):
+{json.dumps(compact, ensure_ascii=False)}
+""".strip()
+
+# -----------------------------
+# Proxy stream call
+# -----------------------------
+async def llm_stream(prompt: str) -> AsyncGenerator[str, None]:
+    payload = {
+        "model": COMPOSE_MODEL,
+        "messages": [
+            {"role": "system", "content": "Be concise. Follow citation rules exactly. No invented facts."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": COMPOSE_TEMP,
+        "max_tokens": COMPOSE_MAX_TOKENS,
+        "stream": True,
+    }
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", AI_PROXY_URL, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                chunk = line[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                    delta = obj["choices"][0].get("delta", {})
+                    tok = delta.get("content")
+                    if tok:
+                        yield tok
+                except Exception:
+                    continue
+
+# -----------------------------
+# Main ask endpoint
+# -----------------------------
+class AskBody(BaseModel):
+    q: str
+    conversation_id: str
+    k: int = K_DEFAULT
+
+def _ensure_source_url(s: Dict[str, Any]) -> Dict[str, Any]:
+    # Provide a robust clickable URL for the frontend.
+    url = s.get("url")
+    doi = normalize_doi(s.get("doi") or "")
+    pmid = (s.get("pmid") or "").strip() if s.get("pmid") else None
+
+    if not url:
+        if doi:
+            url = doi_url(doi)
+        elif pmid:
+            url = pubmed_url(pmid)
+
+    s2 = dict(s)
+    if doi:
+        s2["doi_norm"] = doi
+        s2["doi_url"] = doi_url(doi)
+    if pmid:
+        s2["pubmed_url"] = pubmed_url(pmid)
+    s2["url"] = url
+    return s2
+
+@app.post("/ask/stream")
+async def ask_stream(body: AskBody, request: Request, user=Depends(get_user)):
+    q = body.q.strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]),
+                                 media_type="text/event-stream")
+
+    cid = body.conversation_id.strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id required")
+
+    # Ensure this conversation belongs to this user
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        own = await con.fetchval("SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2", cid, user["id"])
+        if not own:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+    async def gen() -> AsyncGenerator[str, None]:
+        t0 = time.perf_counter()
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+
+        # Store user message
+        await add_message(cid, "user", q)
+
+        # Context
+        recent = await fetch_recent_messages(cid, limit=MEMORY_MAX_TURNS)
+        ctx = compress_context(recent)
+
+        # Retrieval
+        t_r0 = time.perf_counter()
+        qvec = await embed_query(q)
+        r = await retrieve_chunks_unified(q, qvec, body.k)
+        chunks = r["chunks"]
+        sources = r["sources"]
+        t_r1 = time.perf_counter()
+
+        # Enrich sources with evidence tags + robust URLs.
+        enriched = []
+        for s in sources:
+            et = infer_evidence_type(s.get("document_type"), s.get("organization_or_journal") or s.get("journal"))
+            s2 = dict(s)
+            s2["evidence_type"] = et
+            s2["evidence_rank"] = evidence_rank(et)
+
+            # If url missing but we have a stable source_id, try meta table
+            if not s2.get("url") and s2.get("source_id"):
+                meta = await fetch_doc_meta(s2["source_id"])
+                if meta:
+                    s2["doi"] = s2.get("doi") or meta.get("doi")
+                    s2["pmid"] = s2.get("pmid") or meta.get("pmid")
+                    s2["url"] = s2.get("url") or meta.get("url")
+
+            s2 = _ensure_source_url(s2)
+            enriched.append(s2)
+
+        # Authority header + instant skeleton
+        aci = compute_aci_lightweight(enriched)
+        header = build_authority_header(enriched, aci)
+
+        yield sse("sources", {"sources": enriched, "ms": int((t_r1 - t0) * 1000)})
+        yield sse("replace", {"channel": "final", "message": "Answer (streaming)…"})
+        yield sse("token", {"t": header, "channel": "final"})
+        yield sse("token", {"t": skeleton(enriched), "channel": "final"})
+
+        if await request.is_disconnected():
+            return
+
+        # Single-call LLM stream (includes contextual follow-ups)
+        prompt = build_single_call_prompt(q, ctx, chunks)
+
+        yield sse("status", {"phase": "answer", "message": "Generating grounded answer..."})
+        t_c0 = time.perf_counter()
+        first_tok_ms: Optional[int] = None
+        buf: List[str] = []
+
+        async for tok in llm_stream(prompt):
+            if first_tok_ms is None:
+                first_tok_ms = int((time.perf_counter() - t_c0) * 1000)
+            buf.append(tok)
+            yield sse("token", {"t": tok, "channel": "final"})
+            if await request.is_disconnected():
+                return
+
+        t1 = time.perf_counter()
+        answer_text = "".join(buf).strip()
+        await add_message(cid, "assistant", answer_text)
+
+        yield sse("meta", {
+            "retrieval_ms": int((t_r1 - t_r0) * 1000),
+            "compose_first_token_ms": first_tok_ms,
+            "compose_total_ms": int((t1 - t_c0) * 1000),
+            "total_ms": int((t1 - t0) * 1000),
+            "model": COMPOSE_MODEL,
+            "caps": {
+                "k": body.k,
+                "chunk_char_cap": CHUNK_CHAR_CAP,
+                "max_sources_to_llm": MAX_SOURCES_TO_LLM,
+                "compose_max_tokens": COMPOSE_MAX_TOKENS,
+                "compose_temp": COMPOSE_TEMP,
+                "memory_max_turns": MEMORY_MAX_TURNS,
+                "memory_max_chars": MEMORY_MAX_CHARS,
+            }
+        })
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

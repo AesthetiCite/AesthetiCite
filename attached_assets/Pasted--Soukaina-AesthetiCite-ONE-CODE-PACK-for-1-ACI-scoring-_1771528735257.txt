@@ -1,0 +1,347 @@
+# ============================
+# Soukaina AesthetiCite — ONE CODE PACK for:
+# 1) ACI scoring realism (v2)
+# 2) Retrieval precision tuning (rules-based query rewrite + intent filters + hybrid rerank)
+# 3) Enterprise dashboard (admin stats + CSV export)
+# Paste into main.py (single-file). Search the "INSERT HERE" markers below.
+# ============================
+
+# ----------------------------
+# (A) ENV knobs (INSERT near other ENV constants)
+# ----------------------------
+ACI_RECENCY_HALF_LIFE_YEARS = float(os.getenv("ACI_RECENCY_HALF_LIFE_YEARS", "6"))
+HYBRID_ALPHA = float(os.getenv("HYBRID_ALPHA", "0.65"))  # vector weight if you have scores; else used for rerank heuristics
+GUIDELINE_BOOST = float(os.getenv("GUIDELINE_BOOST", "0.12"))
+SR_BOOST = float(os.getenv("SR_BOOST", "0.08"))
+RCT_BOOST = float(os.getenv("RCT_BOOST", "0.05"))
+OBS_PENALTY = float(os.getenv("OBS_PENALTY", "0.03"))
+CASE_PENALTY = float(os.getenv("CASE_PENALTY", "0.06"))
+NARR_PENALTY = float(os.getenv("NARR_PENALTY", "0.08"))
+
+# ----------------------------
+# (B) DB migration for admin users (INSERT inside startup() after CREATE_TABLES_SQL execute)
+# ----------------------------
+# INSERT HERE inside startup(): after `await con.execute(CREATE_TABLES_SQL)`
+#   This is safe/idempotent.
+# --------------------------------
+# await con.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE")
+# await con.execute("CREATE INDEX IF NOT EXISTS idx_users_is_admin ON users(is_admin)")
+
+# ----------------------------
+# (C) Admin guard (INSERT near get_user())
+# ----------------------------
+async def get_admin_user(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    u = await get_user(authorization)
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        is_admin = await con.fetchval("SELECT is_admin FROM users WHERE id=$1", u["id"])
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    return u
+
+# ----------------------------
+# (1) ACI scoring realism v2 (INSERT near compute_aci_lightweight or replace it)
+# ----------------------------
+def _recency_score(year: Optional[int], now_year: int) -> float:
+    if not year or year < 1900 or year > now_year:
+        return 0.5
+    age = max(0, now_year - year)
+    # half-life style decay: newer => closer to 1
+    return 2 ** (-(age / max(0.1, ACI_RECENCY_HALF_LIFE_YEARS)))
+
+def compute_aci_v2(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    More realistic confidence:
+    - Evidence level mix (guidelines/SR/RCT fraction)
+    - Supporting count (diminishing returns)
+    - Recency (half-life decay)
+    - Penalty if dominated by low-level evidence
+    - Explicit gaps
+    """
+    now_year = time.gmtime().tm_year
+    n = len(sources)
+    if n == 0:
+        return {
+            "overall_confidence_0_10": 0.0,
+            "highest_level": "N/A",
+            "supporting_count": 0,
+            "gaps": ["No sources retrieved"],
+            "mix": {},
+        }
+
+    # ensure evidence_type / evidence_rank present
+    ranks = []
+    types = []
+    years = []
+    for s in sources:
+        et = s.get("evidence_type") or infer_evidence_type(s.get("document_type"), s.get("organization_or_journal") or s.get("journal"))
+        r = int(s.get("evidence_rank") or evidence_rank(et))
+        y = s.get("year")
+        types.append(et)
+        ranks.append(r)
+        years.append(y if isinstance(y, int) else None)
+
+    # mix counts
+    mix = {}
+    for t_ in types:
+        mix[t_] = mix.get(t_, 0) + 1
+
+    # highest evidence
+    best_idx = min(range(n), key=lambda i: ranks[i])
+    highest = types[best_idx]
+
+    # high-level fractions
+    hi = sum(1 for r in ranks if r <= 1)  # guideline/consensus
+    sr = sum(1 for r in ranks if r == 2)  # systematic review
+    rct = sum(1 for r in ranks if r == 3) # RCT
+    low = sum(1 for r in ranks if r >= 5) # case series / narrative / other
+
+    hi_frac = hi / n
+    strong_frac = (hi + sr + rct) / n
+    low_frac = low / n
+
+    # recency
+    rec_scores = [_recency_score(y, now_year) for y in years if y]
+    rec = (sum(rec_scores) / len(rec_scores)) if rec_scores else 0.55
+
+    # supporting count (diminishing returns)
+    support = n
+    support_score = min(1.0, (support ** 0.5) / (20 ** 0.5))  # saturates ~20
+
+    # base score from evidence mix
+    base = 0.0
+    base += 0.55 * strong_frac
+    base += 0.20 * hi_frac
+    base += 0.15 * rec
+    base += 0.10 * support_score
+
+    # penalties
+    base -= 0.35 * max(0.0, low_frac - 0.35)  # punish when low evidence dominates
+
+    # clamp and scale
+    conf = max(0.0, min(1.0, base))
+    conf_0_10 = round(conf * 10.0, 1)
+
+    gaps = []
+    if support < 5:
+        gaps.append("Limited number of directly relevant sources retrieved")
+    if strong_frac < 0.25:
+        gaps.append("Low proportion of high-level evidence (guidelines/systematic reviews/RCTs)")
+    if rec < 0.45:
+        gaps.append("Evidence appears older on average (limited recent high-quality data)")
+    if highest in ("Case Report/Series", "Narrative Review", "Other"):
+        gaps.append("Highest evidence level found is low; interpret cautiously")
+
+    return {
+        "overall_confidence_0_10": conf_0_10,
+        "highest_level": highest,
+        "supporting_count": support,
+        "gaps": gaps,
+        "mix": mix,
+    }
+
+# ----------------------------
+# (2) Retrieval precision tuning (INSERT near retrieval helpers)
+# ----------------------------
+def rewrite_query_rules(q: str) -> Dict[str, Any]:
+    """
+    Zero-LLM, rules-based query rewrite + intent filters.
+    Returns:
+      {
+        "q2": str,
+        "intent": str,
+        "filters": {"guideline_first": bool, "complications_mode": bool}
+      }
+    """
+    q0 = (q or "").strip()
+    ql = q0.lower()
+
+    complications_markers = [
+        "vascular", "occlusion", "ischemia", "necrosis", "blindness", "embol", "artery", "hyaluronidase",
+        "complication", "adverse", "safety", "contraindication"
+    ]
+    guideline_markers = ["guideline", "consensus", "recommendation", "position statement", "best practice"]
+    dosing_markers = ["dose", "dosage", "units", "volume", "dilution", "reconstitution", "technique", "injection plane"]
+
+    complications_mode = any(m in ql for m in complications_markers)
+    guideline_first = complications_mode or any(m in ql for m in guideline_markers)
+
+    # add safe retrieval hints (as text) — your retrieve function may use FTS on these
+    hints = []
+    if guideline_first:
+        hints += ["guideline", "consensus", "recommendation", "position statement"]
+    if complications_mode:
+        hints += ["management", "algorithm", "emergency", "protocol"]
+
+    # keep original q, append minimal hints
+    q2 = q0
+    if hints:
+        q2 = f"{q0} ({' OR '.join(hints[:4])})"
+
+    # intent label
+    intent = "general"
+    if complications_mode:
+        intent = "complications"
+    elif any(m in ql for m in dosing_markers):
+        intent = "technique_or_dosing"
+    elif guideline_first:
+        intent = "guideline"
+
+    return {"q2": q2, "intent": intent, "filters": {"guideline_first": guideline_first, "complications_mode": complications_mode}}
+
+def hybrid_rerank_sources(enriched_sources: List[Dict[str, Any]]) -> None:
+    """
+    If your retrieval populates optional scores (vector_score, fts_score), blend them.
+    Otherwise: apply evidence-type boosts/penalties + recency as rerank.
+    """
+    now_year = time.gmtime().tm_year
+
+    def boost_by_type(et: str) -> float:
+        if et == "Guideline/Consensus":
+            return GUIDELINE_BOOST
+        if et == "Systematic Review":
+            return SR_BOOST
+        if et == "Randomized Trial":
+            return RCT_BOOST
+        if et == "Observational Study":
+            return -OBS_PENALTY
+        if et == "Case Report/Series":
+            return -CASE_PENALTY
+        if et == "Narrative Review":
+            return -NARR_PENALTY
+        return 0.0
+
+    for s in enriched_sources:
+        et = s.get("evidence_type") or "Other"
+        y = s.get("year") if isinstance(s.get("year"), int) else None
+        rec = _recency_score(y, now_year)
+
+        vs = s.get("vector_score")
+        fs = s.get("fts_score")
+
+        if isinstance(vs, (int, float)) and isinstance(fs, (int, float)):
+            # normalize-ish: assume both are already comparable (if not, normalize in retrieval)
+            blended = HYBRID_ALPHA * float(vs) + (1.0 - HYBRID_ALPHA) * float(fs)
+            s["_rank_score"] = blended + boost_by_type(et) + 0.04 * rec
+        else:
+            # fallback: evidence-first rerank with light recency
+            s["_rank_score"] = -float(s.get("evidence_rank") or 9) + 0.06 * rec + boost_by_type(et)
+
+    enriched_sources.sort(key=lambda s: float(s.get("_rank_score", -9999.0)), reverse=True)
+    for s in enriched_sources:
+        s.pop("_rank_score", None)
+
+# ----------------------------
+# (3) Enterprise dashboard (INSERT endpoints near other routes)
+# ----------------------------
+def _csv_escape(x: Any) -> str:
+    s = "" if x is None else str(x)
+    s = s.replace('"', '""')
+    return f'"{s}"'
+
+@app.get("/admin/stats")
+async def admin_stats(admin=Depends(get_admin_user)):
+    """
+    Minimal enterprise credibility metrics:
+    - active users
+    - conversations
+    - messages
+    - last 30d usage
+    """
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        users = await con.fetchval("SELECT COUNT(*) FROM users")
+        convs = await con.fetchval("SELECT COUNT(*) FROM conversations")
+        msgs = await con.fetchval("SELECT COUNT(*) FROM messages")
+        last30 = await con.fetchval(
+            "SELECT COUNT(*) FROM messages WHERE created_at > (now() - interval '30 days')"
+        )
+
+        # top conversations by message count (proxy for engagement)
+        top = await con.fetch(
+            """
+            SELECT c.id AS conversation_id,
+                   COALESCE(c.title,'') AS title,
+                   COUNT(m.id) AS message_count,
+                   MAX(m.created_at) AS last_activity
+            FROM conversations c
+            JOIN messages m ON m.conversation_id = c.id
+            GROUP BY c.id
+            ORDER BY message_count DESC
+            LIMIT 10
+            """
+        )
+
+    return {
+        "ok": True,
+        "counts": {"users": int(users), "conversations": int(convs), "messages": int(msgs), "messages_last_30d": int(last30)},
+        "top_conversations": [dict(r) for r in top],
+    }
+
+@app.get("/admin/export/pilot.csv")
+async def admin_export_pilot_csv(admin=Depends(get_admin_user)):
+    """
+    Simple CSV export for pilots:
+    - per-user usage
+    - per-conversation counts
+    """
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        per_user = await con.fetch(
+            """
+            SELECT u.email,
+                   COUNT(DISTINCT c.id) AS conversations,
+                   COUNT(m.id) AS messages,
+                   SUM(CASE WHEN m.role='user' THEN 1 ELSE 0 END) AS user_turns,
+                   SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END) AS assistant_turns,
+                   MAX(m.created_at) AS last_activity
+            FROM users u
+            LEFT JOIN conversations c ON c.user_id=u.id
+            LEFT JOIN messages m ON m.conversation_id=c.id
+            GROUP BY u.email
+            ORDER BY messages DESC NULLS LAST
+            """
+        )
+
+    lines = []
+    header = ["email", "conversations", "messages", "user_turns", "assistant_turns", "last_activity"]
+    lines.append(",".join(header))
+    for r in per_user:
+        lines.append(",".join([
+            _csv_escape(r["email"]),
+            str(r["conversations"] or 0),
+            str(r["messages"] or 0),
+            str(r["user_turns"] or 0),
+            str(r["assistant_turns"] or 0),
+            _csv_escape(r["last_activity"]),
+        ]))
+
+    csv_data = "\n".join(lines) + "\n"
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=aestheticite_pilot_export.csv"},
+    )
+
+# ============================
+# WIRING INSIDE /ask/stream (2 surgical edits)
+# ============================
+# 1) Replace ACI call:
+#    aci = compute_aci_lightweight(enriched)
+#    --> aci = compute_aci_v2(enriched)
+#
+# 2) Add retrieval tuning before embedding/retrieval AND hybrid rerank after enrichment:
+#
+#    rq = rewrite_query_rules(q)
+#    q_for_retrieval = rq["q2"]
+#    qvec = await embed_query(q_for_retrieval)
+#    r = await retrieve_chunks_unified(q_for_retrieval, qvec, body.k)
+#
+#    ... after building enriched list ...
+#    hybrid_rerank_sources(enriched)
+#    aci = compute_aci_v2(enriched)
+#
+# NOTE: Your retrieve_chunks_unified() can optionally return per-source:
+#   vector_score, fts_score  (float)
+# If not present, rerank falls back to evidence/recency heuristics.
+# ============================

@@ -1,0 +1,18 @@
+Good. Now I have the full picture of both features. The gap is precise: both pages have GPT-4o vision but neither runs a structured complication differential — they generate free-text answers. VisualDX's core value is ranked, named diagnoses with visual evidence. Building that engine now, wired into both existing pages.Created 3 files, read a fileCreated 3 files, read a file3 files. Here's what was built and why it gets you close to VisualDX.
+
+What VisualDX actually is
+VisualDX's core value is a clinical sign → named diagnosis mapping built over 20+ years and 30,000 conditions. When a dermatologist uploads a photo, they don't get free text — they get a ranked list: "Most likely: vascular occlusion (87%), Less likely: haematoma (9%), Consider: ecchymosis (4%)." Each with visual evidence.
+The existing AesthetiCite visual features produce free-text answers. That's not the same thing.
+What was built
+COMPLICATION_SIGNS in vision_diagnosis.py is the proprietary equivalent — 9 aesthetic complication types, each with 5 specific visual signs the AI should look for:
+
+vascular_occlusion → blanching, livedo reticularis, dusky discolouration, demarcated vascular territory border
+skin_necrosis → dark purple/black, eschar, sharply demarcated zone, loss of skin texture
+tyndall_effect → blue-grey translucent discolouration, visible through thin skin, no warmth
+and 6 more
+
+This dictionary does three things: it grounds the GPT-4o prompt (telling the model exactly what to look for and in what terms), it enriches the output (adding action text and protocol keys), and it's served via API so the frontend can display a "what to look for" reference card.
+The protocol bridge is the key feature the build plan asked for. When the result returns trigger_protocol: "vascular_occlusion", the "Open Clinical Protocol" button navigates to /decide?complication=Vascular+Occlusion — pre-filling the complication decision page. The clinician sees the image result and the full workflow in one click.
+The comparison endpoint (/api/vision/diagnose-compare) sends both images to GPT-4o simultaneously with a prompt that explicitly asks it to compare, not just describe. It returns change_status: "significantly_worsened", new signs detected since baseline, resolved signs, and per-feature change tracking (asymmetry/erythema/swelling/discolouration/blanching). This integrates directly into the existing Vision Follow-up page's comparison flow.
+The three features are now complementary, not overlapping:
+Visual CounselingVision Follow-upAesthetiCite VisionInput1 photo pre-procedure2 photos serial1 or 2 photos, any stageOutputFree-text evidence reportPixel delta metricsNamed ranked differentialComplication named?NoNoYesUrgency classified?NoNoYes — immediate/urgent/routineProtocol bridge?NoNoYes → /decide

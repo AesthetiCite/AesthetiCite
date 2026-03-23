@@ -1,0 +1,759 @@
+"""
+AesthetiCite — PHASE 2–5 (single-file patch)
+Includes:
+PHASE 2: Treatment Comparison Tool + Treatment Protocols + Patient Handouts
+PHASE 3: Citation Export (BibTeX/RIS) + optional image-search scaffolding (safe placeholders)
+PHASE 4: Personalized Alerts (email digests) + saved interests
+PHASE 5: Mobile/Tablet optimization support (API response shaping) + performance (HNSW + caches)
+
+✅ Drop into Replit as: aestheticite_phase2_5.py
+✅ Run:  uvicorn aestheticite_phase2_5:app --host 0.0.0.0 --port 8000
+
+WHAT YOU MUST PLUG IN (3 functions you already have):
+- retrieve_chunks(query, filters) -> list[dict]   # hybrid retrieval (BM25 + vector, etc.)
+- llm_json(system, user, temperature=0.0) -> dict
+- llm_text(system, user, temperature=0.2) -> str
+Optional:
+- execute_tool(name, args) -> dict               # deterministic calculators/tools registry
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import json
+import time
+import math
+import hashlib
+import sqlite3
+import smtplib
+import traceback
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+# Optional deps (safe fallbacks if not installed)
+try:
+    import hnswlib  # pip install hnswlib
+except Exception:
+    hnswlib = None
+
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler  # pip install apscheduler
+except Exception:
+    BackgroundScheduler = None
+
+
+# ---------------------------
+# 0) YOU MUST PROVIDE THESE
+# ---------------------------
+
+def retrieve_chunks(query: str, filters: Optional[dict] = None) -> List[dict]:
+    """
+    Must return chunks like:
+    [
+      {
+        "id": "doc:123#chunk:4",
+        "text": "...",
+        "title": "Paper/PI title",
+        "source_type": "pi|guideline|rct|review|textbook|other",
+        "year": 2022,
+        "authors": ["A", "B"],
+        "journal": "J Dermatol",
+        "doi": "10.xxxx/xxxx",
+        "url": "https://...",
+      }, ...
+    ]
+    """
+    raise NotImplementedError("Plug in your existing hybrid retrieval here.")
+
+def llm_json(system: str, user: str, temperature: float = 0.0) -> dict:
+    raise NotImplementedError("Plug in your LLM JSON client here.")
+
+def llm_text(system: str, user: str, temperature: float = 0.2) -> str:
+    raise NotImplementedError("Plug in your LLM text client here.")
+
+def execute_tool(name: str, args: dict) -> dict:
+    # Optional; keep as placeholder if you don't have deterministic tools yet.
+    return {"ok": False, "error": "execute_tool not wired"}
+
+
+# ---------------------------
+# 1) CONFIG
+# ---------------------------
+
+APP_NAME = "AesthetiCite"
+DB_PATH = os.getenv("AESTHETICITE_DB", "aestheticite_phase2_5.sqlite3")
+CACHE_TTL_SECONDS = int(os.getenv("AESTHETICITE_CACHE_TTL", "172800"))  # 48h
+
+# Alerts email (Phase 4)
+SMTP_HOST = os.getenv("AESTHETICITE_SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("AESTHETICITE_SMTP_PORT", "587"))
+SMTP_USER = os.getenv("AESTHETICITE_SMTP_USER", "")
+SMTP_PASS = os.getenv("AESTHETICITE_SMTP_PASS", "")
+SMTP_FROM = os.getenv("AESTHETICITE_SMTP_FROM", SMTP_USER)
+
+# HNSW
+HNSW_DIM = int(os.getenv("AESTHETICITE_EMBED_DIM", "1536"))  # set to your embed dim
+HNSW_MAX_ELEMENTS = int(os.getenv("AESTHETICITE_HNSW_MAX", "200000"))
+HNSW_EF = int(os.getenv("AESTHETICITE_HNSW_EF", "128"))
+HNSW_M = int(os.getenv("AESTHETICITE_HNSW_M", "16"))
+HNSW_INDEX_PATH = os.getenv("AESTHETICITE_HNSW_INDEX", "aestheticite_hnsw.bin")
+HNSW_META_PATH = os.getenv("AESTHETICITE_HNSW_META", "aestheticite_hnsw_meta.json")
+
+# “Mobile optimization” knobs (Phase 5)
+DEFAULT_VIEW = "mobile"  # "mobile" or "desktop"
+MOBILE_MAX_TOKENS_HINT = 650  # generation hint only; your LLM client controls tokens
+
+
+# ---------------------------
+# 2) STORAGE: SQLITE (cache + user prefs + alerts)
+# ---------------------------
+
+def _db() -> sqlite3.Connection:
+    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    return con
+
+def init_db() -> None:
+    con = _db()
+    cur = con.cursor()
+
+    # Query cache
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS query_cache (
+        cache_key TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        payload TEXT NOT NULL
+    )""")
+
+    # User interests / alerts (Phase 4)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_interests (
+        user_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, topic)
+    )""")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS alert_runs (
+        user_id TEXT PRIMARY KEY,
+        last_run_at INTEGER NOT NULL
+    )""")
+
+    con.commit()
+    con.close()
+
+def cache_get(key: str) -> Optional[dict]:
+    con = _db()
+    cur = con.cursor()
+    row = cur.execute("SELECT created_at, payload FROM query_cache WHERE cache_key=?", (key,)).fetchone()
+    con.close()
+    if not row:
+        return None
+    if int(time.time()) - int(row["created_at"]) > CACHE_TTL_SECONDS:
+        return None
+    try:
+        return json.loads(row["payload"])
+    except Exception:
+        return None
+
+def cache_set(key: str, payload: dict) -> None:
+    con = _db()
+    cur = con.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO query_cache(cache_key, created_at, payload) VALUES(?,?,?)",
+        (key, int(time.time()), json.dumps(payload))
+    )
+    con.commit()
+    con.close()
+
+def make_cache_key(kind: str, obj: dict) -> str:
+    raw = kind + ":" + json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def upsert_interest(user_id: str, topic: str) -> None:
+    con = _db()
+    cur = con.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO user_interests(user_id, topic, created_at) VALUES(?,?,?)",
+        (user_id, topic.strip().lower(), int(time.time()))
+    )
+    con.commit()
+    con.close()
+
+def remove_interest(user_id: str, topic: str) -> None:
+    con = _db()
+    cur = con.cursor()
+    cur.execute("DELETE FROM user_interests WHERE user_id=? AND topic=?", (user_id, topic.strip().lower()))
+    con.commit()
+    con.close()
+
+def list_interests(user_id: str) -> List[str]:
+    con = _db()
+    cur = con.cursor()
+    rows = cur.execute("SELECT topic FROM user_interests WHERE user_id=? ORDER BY topic", (user_id,)).fetchall()
+    con.close()
+    return [r["topic"] for r in rows]
+
+def get_last_alert_run(user_id: str) -> int:
+    con = _db()
+    cur = con.cursor()
+    row = cur.execute("SELECT last_run_at FROM alert_runs WHERE user_id=?", (user_id,)).fetchone()
+    con.close()
+    return int(row["last_run_at"]) if row else 0
+
+def set_last_alert_run(user_id: str, ts: int) -> None:
+    con = _db()
+    cur = con.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO alert_runs(user_id, last_run_at) VALUES(?,?)",
+        (user_id, ts)
+    )
+    con.commit()
+    con.close()
+
+
+# ---------------------------
+# 3) HNSW (Phase 5 speed)
+# ---------------------------
+
+@dataclass
+class HNSWStore:
+    index: Any
+    id_to_doc: Dict[int, dict]
+    next_id: int
+
+hnsw_store: Optional[HNSWStore] = None
+
+def _load_hnsw() -> Optional[HNSWStore]:
+    if hnswlib is None:
+        return None
+
+    idx = hnswlib.Index(space="cosine", dim=HNSW_DIM)
+    id_to_doc: Dict[int, dict] = {}
+    next_id = 0
+
+    if os.path.exists(HNSW_INDEX_PATH) and os.path.exists(HNSW_META_PATH):
+        idx.load_index(HNSW_INDEX_PATH)
+        with open(HNSW_META_PATH, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        id_to_doc = {int(k): v for k, v in meta.get("id_to_doc", {}).items()}
+        next_id = int(meta.get("next_id", len(id_to_doc)))
+        idx.set_ef(HNSW_EF)
+        return HNSWStore(index=idx, id_to_doc=id_to_doc, next_id=next_id)
+
+    # Create empty index
+    idx.init_index(max_elements=HNSW_MAX_ELEMENTS, ef_construction=200, M=HNSW_M)
+    idx.set_ef(HNSW_EF)
+    return HNSWStore(index=idx, id_to_doc=id_to_doc, next_id=next_id)
+
+def _save_hnsw(store: HNSWStore) -> None:
+    if hnswlib is None:
+        return
+    store.index.save_index(HNSW_INDEX_PATH)
+    meta = {"id_to_doc": store.id_to_doc, "next_id": store.next_id}
+    with open(HNSW_META_PATH, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+def hnsw_add(embedding: List[float], doc_meta: dict) -> None:
+    global hnsw_store
+    if hnsw_store is None:
+        return
+    i = hnsw_store.next_id
+    hnsw_store.index.add_items([embedding], [i])
+    hnsw_store.id_to_doc[i] = doc_meta
+    hnsw_store.next_id += 1
+
+def hnsw_search(embedding: List[float], k: int = 10) -> List[dict]:
+    if hnsw_store is None:
+        return []
+    labels, distances = hnsw_store.index.knn_query([embedding], k=k)
+    out = []
+    for lab, dist in zip(labels[0], distances[0]):
+        meta = hnsw_store.id_to_doc.get(int(lab))
+        if meta:
+            out.append({"meta": meta, "distance": float(dist)})
+    return out
+
+
+# ---------------------------
+# 4) CITATIONS EXPORT (Phase 3)
+# ---------------------------
+
+def _safe(s: Optional[str]) -> str:
+    return (s or "").strip()
+
+def to_bibtex(items: List[dict]) -> str:
+    # Minimal BibTeX; best effort.
+    out = []
+    for i, c in enumerate(items, start=1):
+        key = re.sub(r"[^a-zA-Z0-9]+", "", (_safe(c.get("first_author")) + _safe(c.get("year")))) or f"ref{i}"
+        authors = " and ".join(c.get("authors") or ([] if not c.get("first_author") else [c["first_author"]]))
+        title = _safe(c.get("title"))
+        journal = _safe(c.get("journal"))
+        year = _safe(str(c.get("year") or ""))
+        doi = _safe(c.get("doi"))
+        url = _safe(c.get("url"))
+        fields = []
+        if authors: fields.append(f"  author = {{{authors}}}")
+        if title: fields.append(f"  title = {{{title}}}")
+        if journal: fields.append(f"  journal = {{{journal}}}")
+        if year: fields.append(f"  year = {{{year}}}")
+        if doi: fields.append(f"  doi = {{{doi}}}")
+        if url: fields.append(f"  url = {{{url}}}")
+        out.append("@article{" + key + ",\n" + ",\n".join(fields) + "\n}")
+    return "\n\n".join(out).strip()
+
+def to_ris(items: List[dict]) -> str:
+    # Minimal RIS
+    lines = []
+    for c in items:
+        lines.append("TY  - JOUR")
+        for a in (c.get("authors") or []):
+            lines.append(f"AU  - {a}")
+        if c.get("title"): lines.append(f"TI  - {c['title']}")
+        if c.get("journal"): lines.append(f"JO  - {c['journal']}")
+        if c.get("year"): lines.append(f"PY  - {c['year']}")
+        if c.get("doi"): lines.append(f"DO  - {c['doi']}")
+        if c.get("url"): lines.append(f"UR  - {c['url']}")
+        lines.append("ER  - ")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+# ---------------------------
+# 5) CORE “PHASE 2–5” TOOLS
+# ---------------------------
+
+class CompareRequest(BaseModel):
+    treatments: List[str] = Field(..., min_items=2, max_items=4)
+    context: Optional[str] = None
+    view: Optional[str] = None  # "mobile"|"desktop"
+
+class ProtocolRequest(BaseModel):
+    topic: str
+    patient_profile: Optional[str] = None
+    view: Optional[str] = None
+
+class HandoutRequest(BaseModel):
+    topic: str
+    language: str = "en"
+    reading_level: str = "middle_school"  # or "simple", "high_school"
+    view: Optional[str] = None
+
+class ExportCitationsRequest(BaseModel):
+    citations: List[dict]
+    format: str = "bibtex"  # "bibtex" or "ris"
+
+class InterestRequest(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    topics: List[str] = Field(default_factory=list)
+
+class QueryRequest(BaseModel):
+    query: str
+    filters: Optional[dict] = None
+    view: Optional[str] = None  # "mobile"|"desktop"
+    # When true, returns a compact payload optimized for tablet UI.
+    compact: bool = True
+
+
+def _view_mode(view: Optional[str]) -> str:
+    v = (view or DEFAULT_VIEW).lower().strip()
+    return "mobile" if v not in ("desktop", "mobile") else v
+
+def _compact_answer(answer: str, max_chars: int = 1800) -> str:
+    # Phase 5: keep mobile responses snappy
+    ans = re.sub(r"\n{3,}", "\n\n", answer).strip()
+    if len(ans) <= max_chars:
+        return ans
+    return ans[:max_chars].rsplit(" ", 1)[0] + "…"
+
+def _extract_citations(chunks: List[dict], max_items: int = 8) -> List[dict]:
+    seen = set()
+    out = []
+    for ch in chunks:
+        key = ch.get("doi") or ch.get("url") or ch.get("title") or ch.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        authors = ch.get("authors") or []
+        out.append({
+            "title": ch.get("title"),
+            "journal": ch.get("journal"),
+            "year": ch.get("year"),
+            "doi": ch.get("doi"),
+            "url": ch.get("url"),
+            "authors": authors,
+            "first_author": authors[0] if authors else None,
+            "source_type": ch.get("source_type"),
+        })
+        if len(out) >= max_items:
+            break
+    return out
+
+def _phase2_compare(treatments: List[str], context: Optional[str], view: str) -> dict:
+    cache_key = make_cache_key("compare", {"treatments": treatments, "context": context, "view": view})
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    joined = ", ".join(treatments)
+    query = f"Compare {joined} in aesthetic practice. Include dosing equivalence if applicable, onset, duration, diffusion/spread, contraindications, storage/handling, typical indications, adverse events."
+    if context:
+        query += f" Context: {context}"
+
+    chunks = retrieve_chunks(query, filters={"domain": "aesthetics"})
+    citations = _extract_citations(chunks)
+
+    system = (
+        f"You are {APP_NAME}, a clinical decision support assistant for aesthetic medicine.\n"
+        "Output STRICT JSON only.\n"
+        "Create a side-by-side comparison table and a brief practical summary.\n"
+        "Do not guess dosing equivalence; if uncertain, state 'insufficient evidence' and cite.\n"
+        "Prefer prescribing information and guidelines over reviews.\n"
+    )
+    user = f"Treatments: {treatments}\nContext: {context or ''}\nSources:\n" + "\n\n".join(
+        [f"- {c.get('title')} ({c.get('year')}) doi:{c.get('doi')} url:{c.get('url')}" for c in citations]
+    )
+
+    data = llm_json(system, user, temperature=0.0)
+    payload = {"comparison": data, "citations": citations, "view": view}
+    cache_set(cache_key, payload)
+    return payload
+
+def _phase2_protocol(topic: str, patient_profile: Optional[str], view: str) -> dict:
+    cache_key = make_cache_key("protocol", {"topic": topic, "patient_profile": patient_profile, "view": view})
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    query = f"Clinical protocol for: {topic}. Include dosing ranges (if relevant), technique steps, follow-up schedule, contraindications, complications and management."
+    if patient_profile:
+        query += f" Patient profile: {patient_profile}"
+
+    chunks = retrieve_chunks(query, filters={"domain": "aesthetics"})
+    citations = _extract_citations(chunks)
+
+    system = (
+        f"You are {APP_NAME}. Write a practical step-by-step treatment protocol.\n"
+        "Rules:\n"
+        "- Prefer PI/guidelines.\n"
+        "- If details are not supported by sources, label clearly as 'expert consensus' and keep conservative.\n"
+        "- Include a 'complications & rescue' section.\n"
+    )
+    user = f"Topic: {topic}\nPatient profile: {patient_profile or ''}\nSources:\n" + "\n\n".join(
+        [f"- {c.get('title')} ({c.get('year')}) doi:{c.get('doi')} url:{c.get('url')}" for c in citations]
+    )
+    text = llm_text(system, user, temperature=0.2)
+    payload = {"protocol": _compact_answer(text) if view == "mobile" else text, "citations": citations, "view": view}
+    cache_set(cache_key, payload)
+    return payload
+
+def _phase2_handout(topic: str, language: str, reading_level: str, view: str) -> dict:
+    cache_key = make_cache_key("handout", {"topic": topic, "language": language, "reading_level": reading_level, "view": view})
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    query = f"Patient education handout: {topic}."
+    chunks = retrieve_chunks(query, filters={"domain": "aesthetics"})
+    citations = _extract_citations(chunks)
+
+    system = (
+        f"You are {APP_NAME}. Create a patient handout.\n"
+        f"Language: {language}\n"
+        f"Reading level: {reading_level}\n"
+        "Constraints:\n"
+        "- No fear-mongering.\n"
+        "- Include: what it is, benefits, common side effects, rare serious risks, aftercare, when to call.\n"
+        "- Avoid clinician jargon.\n"
+    )
+    user = f"Handout topic: {topic}\nSources:\n" + "\n\n".join(
+        [f"- {c.get('title')} ({c.get('year')}) doi:{c.get('doi')} url:{c.get('url')}" for c in citations]
+    )
+    text = llm_text(system, user, temperature=0.2)
+    payload = {"handout": _compact_answer(text, 2200) if view == "mobile" else text, "citations": citations, "view": view}
+    cache_set(cache_key, payload)
+    return payload
+
+def _phase3_export(citations: List[dict], fmt: str) -> dict:
+    fmt = fmt.lower().strip()
+    if fmt not in ("bibtex", "ris"):
+        raise HTTPException(status_code=400, detail="format must be bibtex or ris")
+    if fmt == "bibtex":
+        return {"format": "bibtex", "content": to_bibtex(citations)}
+    return {"format": "ris", "content": to_ris(citations)}
+
+# Optional (Phase 3) image-search scaffolding (SAFE placeholder)
+def _phase3_image_search_stub(query: str) -> dict:
+    # You should only return literature-linked images or your curated dataset.
+    return {
+        "ok": False,
+        "note": "Image search is not enabled in this patch. Implement a curated, literature-linked image index to avoid unsafe/marketing claims.",
+        "query": query
+    }
+
+
+# ---------------------------
+# 6) ALERTS (Phase 4)
+# ---------------------------
+
+def _send_email(to_email: str, subject: str, body: str) -> None:
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and SMTP_FROM):
+        raise RuntimeError("SMTP env vars not set (AESTHETICITE_SMTP_HOST/USER/PASS/FROM)")
+    msg = f"From: {SMTP_FROM}\r\nTo: {to_email}\r\nSubject: {subject}\r\n\r\n{body}"
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_FROM, [to_email], msg.encode("utf-8"))
+
+def run_alerts_once(user_id: str, email: str) -> dict:
+    """
+    Weekly digest: searches for each saved topic with a "recent" constraint.
+    You can tighten this by using your internal index metadata (published_at) if available.
+    """
+    topics = list_interests(user_id)
+    if not topics:
+        return {"ok": True, "sent": False, "reason": "no topics"}
+
+    last = get_last_alert_run(user_id)
+    since_days = 7
+    if last:
+        # if missed, still just do 7d digest
+        since_days = 7
+
+    lines = [f"{APP_NAME} — Weekly updates for your interests\n", f"Topics: {', '.join(topics)}\n"]
+    any_hits = False
+
+    for t in topics:
+        q = f"New papers or updates in the last {since_days} days about: {t}"
+        chunks = retrieve_chunks(q, filters={"domain": "aesthetics", "recent_days": since_days})
+        cits = _extract_citations(chunks, max_items=5)
+        if cits:
+            any_hits = True
+            lines.append(f"\n== {t.upper()} ==\n")
+            for c in cits:
+                title = c.get("title") or "Untitled"
+                yr = c.get("year") or ""
+                doi = c.get("doi") or ""
+                url = c.get("url") or ""
+                lines.append(f"- {title} ({yr}) {doi} {url}".strip())
+
+    if not any_hits:
+        lines.append("\nNo new items found this week.\n")
+
+    subject = f"{APP_NAME} — Your weekly research alerts"
+    body = "\n".join(lines).strip()
+
+    _send_email(email, subject, body)
+    set_last_alert_run(user_id, int(time.time()))
+    return {"ok": True, "sent": True, "topics": topics, "since_days": since_days}
+
+
+# ---------------------------
+# 7) GENERAL QUERY ENDPOINT (Phase 5 shaping + caching)
+# ---------------------------
+
+def answer_query(query: str, filters: Optional[dict], view: str, compact: bool) -> dict:
+    cache_key = make_cache_key("qa", {"q": query, "filters": filters or {}, "view": view, "compact": compact})
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    chunks = retrieve_chunks(query, filters=filters)
+    citations = _extract_citations(chunks)
+
+    system = (
+        f"You are {APP_NAME}, for aesthetic medicine. Provide a clinician-ready answer.\n"
+        "Hard rules:\n"
+        "- If a key claim lacks support, say 'insufficient evidence'.\n"
+        "- Prefer PI and guidelines.\n"
+        "- Include a short clinical summary and practical next steps.\n"
+    )
+    user = f"Question: {query}\n\nSources:\n" + "\n\n".join(
+        [f"- {c.get('title')} ({c.get('year')}) doi:{c.get('doi')} url:{c.get('url')}" for c in citations]
+    )
+
+    text = llm_text(system, user, temperature=0.2)
+
+    payload = {
+        "answer": _compact_answer(text) if (compact or view == "mobile") else text,
+        "citations": citations,
+        "view": view,
+        "meta": {"cached": False}
+    }
+    cache_set(cache_key, payload)
+    return payload
+
+
+# ---------------------------
+# 8) FASTAPI
+# ---------------------------
+
+app = FastAPI(title=f"{APP_NAME} — Phase 2–5 Patch", version="2-5.0")
+
+@app.on_event("startup")
+def _startup():
+    init_db()
+    global hnsw_store
+    hnsw_store = _load_hnsw()
+
+    # Optional: start scheduler for alerts (Phase 4)
+    if BackgroundScheduler is not None:
+        sched = BackgroundScheduler()
+        # You can register your own jobs here; this patch leaves it manual via endpoint.
+        sched.start()
+
+@app.get("/health")
+def health():
+    return {"ok": True, "app": APP_NAME, "time": datetime.utcnow().isoformat() + "Z"}
+
+@app.post("/qa")
+def qa(req: QueryRequest):
+    view = _view_mode(req.view)
+    try:
+        payload = answer_query(req.query, req.filters, view, req.compact)
+        return JSONResponse(payload)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"QA error: {e}")
+
+# PHASE 2 — Comparison Tool
+@app.post("/tools/compare")
+def compare(req: CompareRequest):
+    view = _view_mode(req.view)
+    try:
+        return JSONResponse(_phase2_compare(req.treatments, req.context, view))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Compare error: {e}")
+
+# PHASE 2 — Protocols
+@app.post("/tools/protocol")
+def protocol(req: ProtocolRequest):
+    view = _view_mode(req.view)
+    try:
+        return JSONResponse(_phase2_protocol(req.topic, req.patient_profile, view))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Protocol error: {e}")
+
+# PHASE 2 — Patient Handouts
+@app.post("/tools/handout")
+def handout(req: HandoutRequest):
+    view = _view_mode(req.view)
+    try:
+        return JSONResponse(_phase2_handout(req.topic, req.language, req.reading_level, view))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Handout error: {e}")
+
+# PHASE 3 — Citation Export
+@app.post("/tools/citations/export")
+def export_citations(req: ExportCitationsRequest):
+    try:
+        return JSONResponse(_phase3_export(req.citations, req.format))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export error: {e}")
+
+# PHASE 3 — Image search stub
+@app.get("/tools/images/search")
+def image_search(q: str):
+    return JSONResponse(_phase3_image_search_stub(q))
+
+# PHASE 4 — Interests
+@app.post("/alerts/interests/add")
+def add_interests(req: InterestRequest):
+    if not req.user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    for t in req.topics:
+        upsert_interest(req.user_id, t)
+    return {"ok": True, "user_id": req.user_id, "topics": list_interests(req.user_id)}
+
+@app.post("/alerts/interests/remove")
+def del_interests(req: InterestRequest):
+    if not req.user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    for t in req.topics:
+        remove_interest(req.user_id, t)
+    return {"ok": True, "user_id": req.user_id, "topics": list_interests(req.user_id)}
+
+@app.get("/alerts/interests/list")
+def get_interests(user_id: str):
+    return {"ok": True, "user_id": user_id, "topics": list_interests(user_id)}
+
+# PHASE 4 — Run digest now
+@app.post("/alerts/run")
+def run_alerts(req: InterestRequest):
+    if not req.user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if not req.email:
+        raise HTTPException(status_code=400, detail="email required to send alerts")
+    try:
+        return JSONResponse(run_alerts_once(req.user_id, req.email))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Alert run error: {e}")
+
+
+# ---------------------------
+# 9) QUICK TEST CURLS (copy/paste)
+# ---------------------------
+"""
+# QA (mobile compact)
+curl -s http://localhost:8000/qa -H "Content-Type: application/json" -d '{
+  "query":"How to manage hyaluronic acid vascular occlusion?",
+  "filters":{"domain":"aesthetics"},
+  "view":"mobile",
+  "compact":true
+}' | jq .
+
+# Compare (Phase 2)
+curl -s http://localhost:8000/tools/compare -H "Content-Type: application/json" -d '{
+  "treatments":["Botox","Dysport","Xeomin"],
+  "context":"glabellar lines; adult female",
+  "view":"mobile"
+}' | jq .
+
+# Protocol (Phase 2)
+curl -s http://localhost:8000/tools/protocol -H "Content-Type: application/json" -d '{
+  "topic":"Botulinum toxin for glabellar lines",
+  "patient_profile":"no pregnancy; no neuromuscular disease",
+  "view":"mobile"
+}' | jq .
+
+# Handout (Phase 2)
+curl -s http://localhost:8000/tools/handout -H "Content-Type: application/json" -d '{
+  "topic":"Dermal filler for nasolabial folds",
+  "language":"en",
+  "reading_level":"middle_school",
+  "view":"mobile"
+}' | jq .
+
+# Export citations (Phase 3)
+curl -s http://localhost:8000/tools/citations/export -H "Content-Type: application/json" -d '{
+  "format":"bibtex",
+  "citations":[{"title":"Example","authors":["A. Author"],"journal":"J Test","year":2022,"doi":"10.1/2","url":"https://x"}]
+}' | jq -r .content
+
+# Alerts (Phase 4)
+curl -s http://localhost:8000/alerts/interests/add -H "Content-Type: application/json" -d '{
+  "user_id":"user123",
+  "topics":["hyaluronidase","vascular occlusion","botulinum toxin dosing"]
+}' | jq .
+
+curl -s http://localhost:8000/alerts/run -H "Content-Type: application/json" -d '{
+  "user_id":"user123",
+  "email":"doctor@example.com"
+}' | jq .
+"""

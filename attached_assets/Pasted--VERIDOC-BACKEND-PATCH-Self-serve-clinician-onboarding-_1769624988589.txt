@@ -1,0 +1,280 @@
+# VERIDOC BACKEND PATCH: Self-serve clinician onboarding (request access -> email set-password link)
+# Adds:
+# - users table fields: full_name, practitioner_id
+# - auth_access_requests table for magic-link tokens
+# - /auth/request-access (public)
+# - /auth/set-password (public, token-based)
+# - /auth/login returns JWT as before
+#
+# Requires EMAIL sending (SMTP). Set in Replit Secrets:
+#   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+#   APP_PUBLIC_URL (e.g., https://your-frontend.replit.app)
+#
+# Paste into backend Replit AI Agent and restart API.
+
+set -e
+mkdir -p app/api app/core app/schemas
+
+echo "==> 1) Add SMTP email sender"
+cat > app/core/emailer.py <<'PY'
+import os, smtplib
+from email.mime.text import MIMEText
+
+def send_email(to_email: str, subject: str, body: str):
+    host = os.getenv("SMTP_HOST", "")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "")
+    pw = os.getenv("SMTP_PASS", "")
+    sender = os.getenv("SMTP_FROM", user)
+
+    if not host or not user or not pw or not sender:
+        raise RuntimeError("SMTP is not configured. Set SMTP_HOST/PORT/USER/PASS/FROM in env.")
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_email
+
+    with smtplib.SMTP(host, port) as s:
+        s.starttls()
+        s.login(user, pw)
+        s.sendmail(sender, [to_email], msg.as_string())
+PY
+
+echo "==> 2) Extend users table + create access request table"
+cat > app/core/startup.py <<'PY'
+from sqlalchemy import text
+from app.db.session import engine
+
+DDL = """
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  role TEXT NOT NULL DEFAULT 'clinician',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  -- New fields:
+  full_name TEXT,
+  practitioner_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Magic-link / access requests for password setup
+CREATE TABLE IF NOT EXISTS auth_access_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT NOT NULL,
+  token TEXT UNIQUE NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_requests_email ON auth_access_requests(email);
+"""
+
+def ensure_users_table():
+    with engine.begin() as conn:
+        conn.execute(text(DDL))
+PY
+
+echo "==> 3) Add request-access schemas"
+cat > app/schemas/access.py <<'PY'
+from pydantic import BaseModel, EmailStr, Field
+
+class RequestAccess(BaseModel):
+    full_name: str = Field(..., min_length=3, max_length=120)
+    email: EmailStr
+    practitioner_id: str = Field(..., min_length=3, max_length=60)
+
+class SetPassword(BaseModel):
+    token: str = Field(..., min_length=20, max_length=300)
+    password: str = Field(..., min_length=8, max_length=200)
+PY
+
+echo "==> 4) Patch auth module: include name/practitioner_id in /auth/me and support null password (pre-activation)"
+# Update get_current_user to return full_name + practitioner_id
+python - <<'PY'
+from pathlib import Path
+p = Path("app/core/auth.py")
+txt = p.read_text()
+
+# Expand SELECT in get_current_user
+txt = txt.replace(
+    "SELECT id::text, email, is_active, role, created_at",
+    "SELECT id::text, email, is_active, role, created_at, full_name, practitioner_id"
+)
+
+p.write_text(txt)
+print("✅ app/core/auth.py updated")
+PY
+
+echo "==> 5) Create /auth/request-access and /auth/set-password"
+cat > app/api/access.py <<'PY'
+from __future__ import annotations
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from app.db.session import get_db
+from app.schemas.access import RequestAccess, SetPassword
+from app.core.emailer import send_email
+from app.core.auth import hash_password
+
+router = APIRouter(prefix="/auth", tags=["auth-access"])
+
+def _public_url() -> str:
+    # Frontend URL where the user sets password (e.g. https://veridoc-frontend.replit.app)
+    url = os.getenv("APP_PUBLIC_URL", "").rstrip("/")
+    if not url:
+        raise RuntimeError("APP_PUBLIC_URL is not set.")
+    return url
+
+@router.post("/request-access")
+def request_access(payload: RequestAccess, db: Session = Depends(get_db)):
+    """
+    Public endpoint:
+    - Creates/updates a clinician user WITHOUT password (temporary placeholder)
+    - Sends a set-password link to email
+    """
+    email = payload.email.lower().strip()
+    full_name = payload.full_name.strip()
+    practitioner_id = payload.practitioner_id.strip()
+
+    # Create user if doesn't exist. Use a temporary random password hash that will be replaced.
+    # (We don't allow login until password is set.)
+    temp_hash = hash_password("TEMP-" + secrets.token_urlsafe(16))
+
+    db.execute(text("""
+      INSERT INTO users (email, password_hash, role, is_active, full_name, practitioner_id)
+      VALUES (:email, :ph, 'clinician', true, :full_name, :practitioner_id)
+      ON CONFLICT (email) DO UPDATE SET
+        full_name=EXCLUDED.full_name,
+        practitioner_id=EXCLUDED.practitioner_id,
+        is_active=true;
+    """), {
+        "email": email,
+        "ph": temp_hash,
+        "full_name": full_name,
+        "practitioner_id": practitioner_id,
+    })
+
+    # Create a magic token (valid 60 minutes)
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=60)
+
+    db.execute(text("""
+      INSERT INTO auth_access_requests (email, token, expires_at)
+      VALUES (:email, :token, :exp);
+    """), {"email": email, "token": token, "exp": expires_at})
+
+    db.commit()
+
+    link = f"{_public_url()}/set-password?token={token}"
+    subject = "VeriDoc — Set your password"
+    body = (
+        f"Hello Dr. {full_name},\n\n"
+        f"Your VeriDoc access request has been received.\n"
+        f"Practitioner number: {practitioner_id}\n\n"
+        f"To set your password, use this secure link (valid for 60 minutes):\n{link}\n\n"
+        f"If you did not request access, you can ignore this email.\n\n"
+        f"— VeriDoc"
+    )
+
+    try:
+        send_email(email, subject, body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Email delivery failed: {e}")
+
+    return {"ok": True, "message": "Check your email to set your password."}
+
+@router.post("/set-password")
+def set_password(payload: SetPassword, db: Session = Depends(get_db)):
+    """
+    Public endpoint:
+    - Validates token
+    - Sets password for that email
+    - Deletes token
+    """
+    token = payload.token.strip()
+    row = db.execute(text("""
+      SELECT email, expires_at
+      FROM auth_access_requests
+      WHERE token = :token
+    """), {"token": token}).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid token.")
+    if row["expires_at"] < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Token expired.")
+
+    email = row["email"]
+    pw_hash = hash_password(payload.password)
+
+    db.execute(text("""
+      UPDATE users
+      SET password_hash = :ph, is_active = true
+      WHERE email = :email;
+    """), {"ph": pw_hash, "email": email})
+
+    db.execute(text("DELETE FROM auth_access_requests WHERE token = :token;"), {"token": token})
+    db.commit()
+
+    return {"ok": True, "message": "Password set. You can now log in."}
+PY
+
+echo "==> 6) Update /auth/me schema to include full_name"
+cat > app/schemas/auth.py <<'PY'
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=6, max_length=200)
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+class UserOut(BaseModel):
+    id: str
+    email: EmailStr
+    is_active: bool
+    role: str
+    created_at: Optional[str] = None
+    full_name: Optional[str] = None
+    practitioner_id: Optional[str] = None
+
+class AdminCreateUserRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=200)
+    role: str = "clinician"
+PY
+
+echo "==> 7) Wire the new router into main.py"
+python - <<'PY'
+from pathlib import Path
+p = Path("app/main.py")
+txt = p.read_text()
+
+if "access_router" not in txt:
+    txt = txt.replace(
+        "from app.api.auth import router as auth_router",
+        "from app.api.auth import router as auth_router\nfrom app.api.access import router as access_router"
+    )
+    txt = txt.replace("app.include_router(auth_router)", "app.include_router(auth_router)\napp.include_router(access_router)")
+p.write_text(txt)
+print("✅ app/main.py updated")
+PY
+
+echo "==> DONE. Set these in Replit Secrets (backend):"
+echo "SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM"
+echo "APP_PUBLIC_URL=https://<your-frontend-domain>"
+echo ""
+echo "Restart API: uvicorn app.main:app --host 0.0.0.0 --port 8000"

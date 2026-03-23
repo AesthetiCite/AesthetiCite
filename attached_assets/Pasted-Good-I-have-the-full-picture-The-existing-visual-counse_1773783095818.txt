@@ -1,0 +1,30 @@
+Good. I have the full picture. The existing visual counseling feature does photo upload + evidence-grounded streaming Q&A. AesthetiCite Vision is different — it's serial image analysis for post-procedure follow-up with timeline comparison, healing assessment, and clinical PDF export. They complement each other. Building both files now.Viewed 3 filesViewed 3 filesGood. Building both files now — production backend and clinic-grade frontend.Created 3 files, ran a command, read a fileCreated 3 files, ran a command, read a fileThree files. Here's what was built and every fix that was applied:
+
+vision_followup.py → app/api/vision_followup.py
+All six issues from the audit are fixed:
+
+asyncio.to_thread wraps all CPU-bound PIL/NumPy/OpenCV work — event loop never blocks
+Auth required on both endpoints via Depends(get_current_user)
+20MB per-image limit enforced before processing
+Image quality check before analysis — rejects blank, overexposed, or zero-contrast images
+swelling_proxy renamed to brightness_score with accurate docstring and explicit caveat in output
+Asymmetry score has explicit positioning caveat baked into the findings text
+Reportlab PDF export using the same _PDFWriter pattern as the rest of AesthetiCite
+8 procedure types supported
+Emergency urgency for blanching and visual symptoms (injectables-specific)
+Urgent urgency for discharge, fever, pain + redness/warmth
+/api/vision/procedures endpoint for frontend select population
+
+vision-followup.tsx → client/src/pages/vision-followup.tsx
+
+Drag-to-compare slider (baseline left, latest right) — no library dependency
+Timeline metric strip for 3+ images showing asymmetry and redness per photo
+Emergency banner with "ACT NOW" pulse for visual symptoms or blanching
+Concerns section always visible and prominent when present
+Collapsible findings, metrics, and patient message sections
+Local previews before upload with per-image remove button
+Filename auto-sort guidance in the upload zone
+Positioning caveat always shown with results
+Error handling shows actual backend error messages
+
+vision-integration.ts — read this first. The key thing: the existing proxyToFastAPI uses JSON.stringify(req.body) which breaks multipart file uploads. The integration file gives you a dedicated vision proxy that uses FormData — the same pattern as the existing voice and visual upload routes.

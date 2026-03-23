@@ -1,0 +1,710 @@
+"""
+AesthetiCite / VeriDoc — OpenEvidence-like Answering Engine (single-file drop-in)
+
+What you get immediately:
+- Multi-query retrieval (better recall)
+- Re-ranking (better precision)
+- Claim-by-claim grounding with hard “no cite → no claim”
+- Numeric guardrails (no unsourced numbers)
+- Conflict detection + transparent handling
+- OpenEvidence-like output structure (Clinical Summary, Evidence, Strength, Safety, References)
+
+What you must plug in (3 functions):
+1) retrieve_chunks(query: str, k: int) -> list[dict]
+2) llm_json(prompt: str) -> dict
+3) llm_text(prompt: str) -> str
+
+Optional (recommended):
+4) execute_tool(name: str, args: dict) -> dict   # calculators / deterministic tools registry
+
+Chunk format expected (minimal):
+{
+  "id": "unique-id",
+  "title": "Paper title",
+  "text": "chunk content",
+  "url": "https://...",
+  "year": 2023,
+  "source_type": "guideline|review|rct|cohort|case_series|case_report|other"
+}
+
+USAGE:
+- Drop this file into your backend.
+- Call AnswerEngine(...).answer(question, user_ctx)
+- OR run the FastAPI app at bottom.
+
+"""
+
+from __future__ import annotations
+
+import re
+import math
+import hashlib
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+# =========================
+# Plug-in function stubs
+# =========================
+# Replace these with your real implementations.
+
+def retrieve_chunks(query: str, k: int = 20) -> List[Dict[str, Any]]:
+    """YOUR retrieval: hybrid search over your corpus (PubMed/Guidelines/etc.)."""
+    raise NotImplementedError("Plug in retrieve_chunks(query, k)")
+
+def llm_json(prompt: str) -> Dict[str, Any]:
+    """YOUR LLM call that returns JSON reliably."""
+    raise NotImplementedError("Plug in llm_json(prompt)")
+
+def llm_text(prompt: str) -> str:
+    """YOUR LLM call that returns text."""
+    raise NotImplementedError("Plug in llm_text(prompt)")
+
+def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Optional deterministic tools registry (drug dosing calculators, BMI, etc.)."""
+    raise NotImplementedError("Optional: plug in execute_tool(name, args)")
+
+
+# =========================
+# Engine configuration
+# =========================
+
+@dataclass
+class EngineConfig:
+    # Retrieval
+    per_query_k: int = 20
+    max_queries: int = 6
+    max_chunks_after_dedupe: int = 80
+    rerank_top_k: int = 15
+
+    # Evidence gates
+    min_directness_score: float = 0.15  # filter out totally off-topic chunks
+    min_evidence_coverage: float = 0.22 # if too low -> "Insufficient evidence"
+    min_supported_claims_ratio: float = 0.45
+
+    # Strong evidence requirement for actionable claims
+    require_strong_for_actionable: bool = True
+    strong_types: Tuple[str, ...] = ("guideline", "review", "rct")
+
+    # Numeric guardrails
+    forbid_unsourced_numbers: bool = True
+
+    # Output
+    max_claims: int = 14
+    max_citations_per_claim: int = 2
+
+
+# =========================
+# Utility helpers
+# =========================
+
+_WORD = re.compile(r"[A-Za-z0-9]+")
+_NUMBER = re.compile(r"(?<![A-Za-z])(\d+(\.\d+)?)(?![A-Za-z])")
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _tokens(s: str) -> set:
+    return set(_WORD.findall(_norm(s)))
+
+def _hash_chunk(c: Dict[str, Any]) -> str:
+    key = (_norm(c.get("title", "")) + "||" + _norm(c.get("text", ""))[:500]).encode("utf-8")
+    return hashlib.sha1(key).hexdigest()
+
+def _dedupe_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+    for c in chunks:
+        h = _hash_chunk(c)
+        if h in seen:
+            continue
+        seen.add(h)
+        out.append(c)
+    return out
+
+def _quality_weight(source_type: str) -> float:
+    st = _norm(source_type)
+    if st == "guideline":
+        return 1.00
+    if st == "review":
+        return 0.85
+    if st == "rct":
+        return 0.80
+    if st in ("cohort", "case_control"):
+        return 0.60
+    if st in ("case_series", "case_report"):
+        return 0.35
+    return 0.45
+
+def _directness_score(question: str, chunk_text: str) -> float:
+    """
+    Cheap, explainable directness heuristic:
+    - token overlap (Jaccard-like)
+    - boosts for medical/aesthetic keywords in question
+    """
+    q = _tokens(question)
+    c = _tokens(chunk_text)
+    if not q or not c:
+        return 0.0
+    overlap = len(q & c)
+    denom = max(1, len(q))
+    base = overlap / denom  # how much of question vocabulary appears in chunk
+
+    # modest boost if chunk contains typical answer-bearing patterns
+    patterns = ["randomized", "guideline", "consensus", "contraindication", "adverse", "dose", "mg", "units", "weeks", "months"]
+    boost = 0.0
+    text_l = _norm(chunk_text)
+    for p in patterns:
+        if p in text_l:
+            boost += 0.01
+    return min(1.0, base + boost)
+
+def _rerank(question: str, chunks: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+    scored = []
+    for c in chunks:
+        text = (c.get("title","") + " " + c.get("text",""))[:5000]
+        d = _directness_score(question, text)
+        q = _quality_weight(c.get("source_type", "other"))
+        # Combine: directness dominates; quality breaks ties
+        score = 0.78 * d + 0.22 * q
+        scored.append((score, d, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, __, c in scored[:top_k]]
+
+def _is_actionable_claim(text: str) -> bool:
+    t = _norm(text)
+    actionable_markers = [
+        "dose", "dosing", "mg", "units", "inject", "interval", "contraindication",
+        "should", "must", "recommend", "avoid", "do not", "first-line", "treat",
+        "screen", "monitor", "maximum", "minimum", "threshold"
+    ]
+    return any(m in t for m in actionable_markers)
+
+def _has_numbers(text: str) -> bool:
+    return bool(_NUMBER.search(text or ""))
+
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# =========================
+# Core engine
+# =========================
+
+class AnswerEngine:
+    def __init__(
+        self,
+        retrieve_fn: Callable[[str, int], List[Dict[str, Any]]] = retrieve_chunks,
+        llm_json_fn: Callable[[str], Dict[str, Any]] = llm_json,
+        llm_text_fn: Callable[[str], str] = llm_text,
+        execute_tool_fn: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+        config: EngineConfig = EngineConfig(),
+    ):
+        self.retrieve_fn = retrieve_fn
+        self.llm_json_fn = llm_json_fn
+        self.llm_text_fn = llm_text_fn
+        self.execute_tool_fn = execute_tool_fn
+        self.cfg = config
+
+    # ---------
+    # Public API
+    # ---------
+
+    def answer(self, question: str, user_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        user_ctx = user_ctx or {}
+
+        intent_pack = self._understand(question, user_ctx)
+        subqueries = self._build_subqueries(question, intent_pack)[: self.cfg.max_queries]
+
+        raw = self._retrieve(subqueries)
+        deduped = _dedupe_chunks(raw)[: self.cfg.max_chunks_after_dedupe]
+
+        ranked = _rerank(question, deduped, top_k=min(self.cfg.rerank_top_k, len(deduped)))
+        ranked = self._filter_low_directness(question, ranked)
+
+        coverage = self._evidence_coverage(question, ranked)
+        if coverage < self.cfg.min_evidence_coverage:
+            return self._insufficient(question, intent_pack, ranked, coverage)
+
+        claim_plan = self._plan_claims(question, intent_pack, ranked)
+        claims = self._ground_claims(question, claim_plan, ranked)
+
+        supported_ratio = self._supported_ratio(claims)
+        if supported_ratio < self.cfg.min_supported_claims_ratio:
+            return self._insufficient(question, intent_pack, ranked, coverage, supported_ratio=supported_ratio)
+
+        conflicts = self._detect_conflicts(claims)
+        final = self._compose(question, intent_pack, claims, conflicts, ranked)
+
+        return final
+
+    # ----------------
+    # Pass A: Understand
+    # ----------------
+
+    def _understand(self, question: str, user_ctx: Dict[str, Any]) -> Dict[str, Any]:
+        prompt = f"""
+You are a clinical evidence assistant for aesthetic medicine.
+Extract intent and key entities from the question.
+
+Return JSON with:
+- intent: one of ["treatment","diagnosis","safety","contraindication","dosing","procedure","device","guideline","other"]
+- entities: list of key terms (drug/device/procedure/condition/outcomes)
+- patient_factors: list (age/sex/pregnancy/comorbidities/anticoagulants/skin type etc) if present
+- outcome_focus: list (efficacy, duration, adverse events, satisfaction, etc)
+
+Question: {question}
+User context (may be empty): {user_ctx}
+"""
+        try:
+            out = self.llm_json_fn(prompt)
+        except Exception:
+            out = {"intent": "other", "entities": [], "patient_factors": [], "outcome_focus": []}
+        # basic sanitation
+        out["intent"] = out.get("intent", "other")
+        out["entities"] = out.get("entities", []) or []
+        out["patient_factors"] = out.get("patient_factors", []) or []
+        out["outcome_focus"] = out.get("outcome_focus", []) or []
+        return out
+
+    # ----------------
+    # Pass B: Retrieve
+    # ----------------
+
+    def _build_subqueries(self, question: str, intent_pack: Dict[str, Any]) -> List[str]:
+        entities = intent_pack.get("entities", [])
+        intent = intent_pack.get("intent", "other")
+
+        base = [question]
+
+        # Safety and guideline expansions
+        if intent in ("treatment", "procedure", "device"):
+            base += [f"{question} adverse events contraindications"]
+            base += [f"{question} guideline consensus statement"]
+        elif intent in ("safety", "contraindication"):
+            base += [f"{question} adverse events risk factors"]
+            base += [f"{question} guideline contraindication"]
+        elif intent == "dosing":
+            base += [f"{question} dose units interval"]
+            base += [f"{question} guideline dosing"]
+        else:
+            base += [f"{question} review systematic review"]
+            base += [f"{question} guideline"]
+
+        # Entity-focused query
+        if entities:
+            base += [f"{' '.join(entities)} {intent}"]
+
+        # Domain anchoring (prevents general-medicine drift)
+        base += [f"{question} aesthetic cosmetic dermatology"]
+
+        # Deduplicate subqueries while preserving order
+        seen = set()
+        out = []
+        for q in base:
+            nq = _norm(q)
+            if nq in seen:
+                continue
+            seen.add(nq)
+            out.append(q.strip())
+        return out
+
+    def _retrieve(self, subqueries: List[str]) -> List[Dict[str, Any]]:
+        chunks: List[Dict[str, Any]] = []
+        for q in subqueries:
+            try:
+                chunks.extend(self.retrieve_fn(q, self.cfg.per_query_k))
+            except Exception:
+                continue
+        return chunks
+
+    def _filter_low_directness(self, question: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        out = []
+        for c in chunks:
+            text = (c.get("title","") + " " + c.get("text",""))[:5000]
+            d = _directness_score(question, text)
+            if d >= self.cfg.min_directness_score:
+                out.append(c)
+        return out
+
+    def _evidence_coverage(self, question: str, chunks: List[Dict[str, Any]]) -> float:
+        """
+        Coverage: fraction of question tokens that appear in at least one chunk.
+        """
+        q = _tokens(question)
+        if not q:
+            return 0.0
+        union = set()
+        for c in chunks:
+            union |= _tokens((c.get("title","") + " " + c.get("text",""))[:5000])
+        covered = len(q & union)
+        return covered / max(1, len(q))
+
+    # ----------------
+    # Pass C: Plan claims
+    # ----------------
+
+    def _plan_claims(self, question: str, intent_pack: Dict[str, Any], ranked: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # Give the model only short source summaries to avoid it "inventing"
+        source_summaries = []
+        for c in ranked[: self.cfg.rerank_top_k]:
+            source_summaries.append({
+                "id": c.get("id"),
+                "title": _clip(c.get("title",""), 140),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "snippet": _clip(c.get("text",""), 260),
+            })
+
+        prompt = f"""
+You are writing an evidence-grounded answer plan.
+Create atomic claims needed to answer the question safely.
+
+RULES:
+- Keep claims short and checkable.
+- Do NOT invent numbers.
+- If uncertain, write a claim that explicitly says evidence is limited.
+- Max {self.cfg.max_claims} claims.
+
+Return JSON: {{ "claims": [ "...", ... ] }}
+
+Question: {question}
+Intent pack: {intent_pack}
+
+Available evidence snippets (for planning only):
+{source_summaries}
+"""
+        out = self.llm_json_fn(prompt)
+        claims = out.get("claims", []) if isinstance(out, dict) else []
+        # sanitize
+        cleaned = []
+        for c in claims:
+            if not isinstance(c, str):
+                continue
+            c = c.strip()
+            if not c:
+                continue
+            cleaned.append(c)
+        return {"claims": cleaned[: self.cfg.max_claims]}
+
+    # ----------------
+    # Pass C2: Ground claims
+    # ----------------
+
+    def _select_support(self, claim: str, ranked: List[Dict[str, Any]], min_n: int = 1) -> List[Dict[str, Any]]:
+        claim_toks = _tokens(claim)
+        scored = []
+        for c in ranked:
+            text = (c.get("title","") + " " + c.get("text",""))[:5000]
+            ctoks = _tokens(text)
+            if not ctoks or not claim_toks:
+                continue
+            overlap = len(claim_toks & ctoks) / max(1, len(claim_toks))
+            score = 0.7 * overlap + 0.3 * _quality_weight(c.get("source_type","other"))
+            scored.append((score, c))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        support = [c for s, c in scored if s > 0.10][: self.cfg.max_citations_per_claim]
+        return support if len(support) >= min_n else []
+
+    def _ground_claims(self, question: str, claim_plan: Dict[str, Any], ranked: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        grounded = []
+        for claim in claim_plan.get("claims", []):
+            support = self._select_support(claim, ranked, min_n=1)
+
+            if not support:
+                grounded.append({
+                    "text": claim,
+                    "status": "UNSUPPORTED",
+                    "citations": [],
+                    "notes": "No supporting evidence found in retrieved sources."
+                })
+                continue
+
+            # Actionable gate: require strong evidence (if configured)
+            if self.cfg.require_strong_for_actionable and _is_actionable_claim(claim):
+                has_strong = any(_norm(c.get("source_type","")) in self.cfg.strong_types for c in support)
+                if not has_strong and len(support) < 2:
+                    grounded.append({
+                        "text": claim,
+                        "status": "WEAK_SUPPORT",
+                        "citations": [c.get("id") for c in support if c.get("id")],
+                        "notes": "Actionable claim but only weak evidence retrieved."
+                    })
+                    continue
+
+            # Rewrite claim using ONLY the supporting chunks
+            support_pack = [{
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "text": _clip(c.get("text",""), 900),
+                "url": c.get("url")
+            } for c in support]
+
+            rewrite_prompt = f"""
+You are an evidence-grounded medical writer.
+Rewrite the claim so it is faithful to the supporting excerpts ONLY.
+
+RULES:
+- Do not add facts not present in the excerpts.
+- If the excerpts do not justify the claim, output: "UNSUPPORTED".
+- If you include numbers (dose/incidence/interval), they MUST appear in the excerpts.
+- Keep it concise.
+
+Original claim: {claim}
+
+Supporting excerpts:
+{support_pack}
+
+Output a single line, no JSON.
+"""
+            rewritten = self.llm_text_fn(rewrite_prompt).strip()
+
+            if rewritten.upper().startswith("UNSUPPORTED"):
+                grounded.append({
+                    "text": claim,
+                    "status": "UNSUPPORTED",
+                    "citations": [],
+                    "notes": "Model determined claim not justified by excerpts."
+                })
+                continue
+
+            # Numeric guard: if claim contains numbers but support doesn't contain those numbers, reject
+            if self.cfg.forbid_unsourced_numbers and _has_numbers(rewritten):
+                nums = set(_NUMBER.findall(rewritten))
+                nums = {n[0] for n in nums}
+                sup_text = " ".join([c.get("text","") for c in support]).lower()
+                ok = all(n in sup_text for n in nums)
+                if not ok:
+                    grounded.append({
+                        "text": claim,
+                        "status": "UNSUPPORTED",
+                        "citations": [],
+                        "notes": "Rejected due to unsourced numeric content."
+                    })
+                    continue
+
+            grounded.append({
+                "text": rewritten,
+                "status": "SUPPORTED",
+                "citations": [c.get("id") for c in support if c.get("id")],
+                "notes": ""
+            })
+        return grounded
+
+    def _supported_ratio(self, claims: List[Dict[str, Any]]) -> float:
+        if not claims:
+            return 0.0
+        ok = sum(1 for c in claims if c.get("status") == "SUPPORTED")
+        return ok / len(claims)
+
+    # ----------------
+    # Pass D: Conflicts
+    # ----------------
+
+    def _detect_conflicts(self, claims: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Lightweight conflict detection:
+        flags opposing modal verbs and negations around same topic tokens.
+        """
+        supported = [c for c in claims if c.get("status") == "SUPPORTED"]
+        conflicts = []
+        for i in range(len(supported)):
+            for j in range(i + 1, len(supported)):
+                a, b = supported[i]["text"], supported[j]["text"]
+                # same topic?
+                ta = _tokens(a)
+                tb = _tokens(b)
+                shared = ta & tb
+                if len(shared) < 3:
+                    continue
+                # opposite polarity?
+                na = (" no " in f" {_norm(a)} " or " not " in f" {_norm(a)} " or "avoid" in _norm(a))
+                nb = (" no " in f" {_norm(b)} " or " not " in f" {_norm(b)} " or "avoid" in _norm(b))
+                if na != nb:
+                    conflicts.append({
+                        "claim_a": a,
+                        "claim_b": b,
+                        "shared_terms": sorted(list(shared))[:8],
+                        "note": "Potential polarity conflict (negation/avoid vs affirmative)."
+                    })
+        return conflicts[:6]
+
+    # ----------------
+    # Compose final response
+    # ----------------
+
+    def _compose(
+        self,
+        question: str,
+        intent_pack: Dict[str, Any],
+        claims: List[Dict[str, Any]],
+        conflicts: List[Dict[str, Any]],
+        ranked: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        supported = [c for c in claims if c.get("status") == "SUPPORTED"]
+        weak = [c for c in claims if c.get("status") in ("WEAK_SUPPORT", "UNSUPPORTED")]
+
+        # Evidence strength grade
+        strength = self._grade_strength(supported, ranked)
+
+        # Build references (dedup by id)
+        ref_map = {}
+        for c in ranked:
+            cid = c.get("id")
+            if not cid:
+                continue
+            if cid in ref_map:
+                continue
+            ref_map[cid] = {
+                "id": cid,
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "url": c.get("url")
+            }
+
+        # Prepare a structured answer text via LLM, but bounded by supported claims only.
+        supported_pack = [{"text": c["text"], "citations": c["citations"]} for c in supported]
+        conflicts_pack = conflicts
+
+        prompt = f"""
+You are AesthetiCite, an evidence-based assistant for aesthetic medicine.
+Write a final answer using ONLY the supported claims provided.
+
+FORMAT:
+1) Clinical Summary (3–6 sentences)
+2) What the evidence says (bullets; each bullet ends with citations like [id1, id2])
+3) Evidence strength (High/Moderate/Low + 1–2 sentences why)
+4) Safety / Contraindications (only if supported claims mention safety; otherwise omit)
+5) If evidence is limited, say so explicitly.
+
+RULES:
+- Do not add new facts or numbers not present in supported claims.
+- If there are conflicts, mention them neutrally in 1–2 bullets.
+
+Question: {question}
+Intent pack: {intent_pack}
+
+Supported claims (use these as your ONLY factual basis):
+{supported_pack}
+
+Potential conflicts:
+{conflicts_pack}
+"""
+        answer_text = self.llm_text_fn(prompt).strip()
+
+        return {
+            "question": question,
+            "intent": intent_pack.get("intent", "other"),
+            "clinical_answer": answer_text,
+            "evidence_strength": strength,
+            "supported_claims": supported,
+            "excluded_claims": weak,
+            "conflicts": conflicts,
+            "references": list(ref_map.values()),
+        }
+
+    def _grade_strength(self, supported: List[Dict[str, Any]], ranked: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not supported:
+            return {"grade": "Insufficient", "why": "No supported claims from retrieved evidence."}
+
+        # Approximate strength: based on presence of high-quality source types and number of supported claims
+        ids_used = set()
+        for c in supported:
+            ids_used |= set(c.get("citations", []))
+
+        used_sources = [c for c in ranked if c.get("id") in ids_used]
+        if not used_sources:
+            return {"grade": "Low", "why": "Supported claims exist but sources could not be resolved."}
+
+        best_q = max(_quality_weight(c.get("source_type","other")) for c in used_sources)
+        n = len(supported)
+
+        if best_q >= 0.85 and n >= 5:
+            return {"grade": "High", "why": "Multiple supported claims with guideline/review/RCT-level evidence."}
+        if best_q >= 0.60 and n >= 3:
+            return {"grade": "Moderate", "why": "Several supported claims with at least moderate-quality evidence."}
+        return {"grade": "Low", "why": "Limited number of supported claims and/or mostly lower-quality evidence."}
+
+    # ----------------
+    # Insufficient evidence response
+    # ----------------
+
+    def _insufficient(
+        self,
+        question: str,
+        intent_pack: Dict[str, Any],
+        ranked: List[Dict[str, Any]],
+        coverage: float,
+        supported_ratio: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        # Provide next search terms to help improve retrieval
+        entities = intent_pack.get("entities", [])
+        intent = intent_pack.get("intent", "other")
+        next_terms = [
+            f"{' '.join(entities)} {intent} guideline" if entities else f"{question} guideline",
+            f"{' '.join(entities)} adverse events contraindications" if entities else f"{question} adverse events",
+            f"{' '.join(entities)} systematic review" if entities else f"{question} systematic review",
+            f"{question} cosmetic aesthetic",
+        ]
+
+        # Return minimal references (top ranked)
+        refs = []
+        for c in ranked[:10]:
+            refs.append({
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "url": c.get("url")
+            })
+
+        msg = "I couldn’t find enough direct, high-confidence evidence in the retrieved sources to answer reliably."
+        details = f"Evidence coverage score: {coverage:.2f}"
+        if supported_ratio is not None:
+            details += f"; supported-claims ratio: {supported_ratio:.2f}"
+
+        return {
+            "question": question,
+            "intent": intent_pack.get("intent", "other"),
+            "clinical_answer": f"{msg}\n\n{details}\n\nTry refining the query (examples):\n- " + "\n- ".join(next_terms[:4]),
+            "evidence_strength": {"grade": "Insufficient", "why": details},
+            "supported_claims": [],
+            "excluded_claims": [],
+            "conflicts": [],
+            "references": refs,
+            "next_search_terms": next_terms[:6],
+        }
+
+
+# =========================
+# Optional: FastAPI wrapper
+# =========================
+# If you want an endpoint /deepconsult/answer that returns the JSON above,
+# uncomment and run: uvicorn this_file:app --reload
+
+"""
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI(title="AesthetiCite Answer Engine")
+
+engine = AnswerEngine(
+    retrieve_fn=retrieve_chunks,
+    llm_json_fn=llm_json,
+    llm_text_fn=llm_text,
+    execute_tool_fn=None,
+    config=EngineConfig()
+)
+
+class Query(BaseModel):
+    question: str
+    user_ctx: dict = {}
+
+@app.post("/deepconsult/answer")
+def deepconsult_answer(q: Query):
+    return engine.answer(q.question, q.user_ctx)
+"""

@@ -1,0 +1,70 @@
+Patch 3 — Apply sanitizer to AI answer routes
+Find the four lines that proxy AI answer routes (around lines 418–440). Change them to pass true for sanitize:
+typescript// Before
+app.post("/api/ask",    (req, res) => proxyToFastAPI(req, res, "/ask"));
+app.post("/api/ask_oe", (req, res) => proxyToFastAPI(req, res, "/ask_oe"));
+
+// After
+app.post("/api/ask",    (req, res) => proxyToFastAPI(req, res, "/ask",    true));
+app.post("/api/ask_oe", (req, res) => proxyToFastAPI(req, res, "/ask_oe", true));
+Leave the safety engine and growth routes without sanitize — they return structured safety objects, not citation-bearing answers, and the sanitizer would strip their evidence field incorrectly:
+typescript// These stay as-is — NOT sanitized
+app.post("/api/safety/preprocedure-check", ...)
+app.all(["/api/growth", "/api/growth/*splat"], ...)
+app.get("/api/complications/protocols", ...)
+
+Patch 4 — Sanitize the SSE citation event in both stream routes
+The SSE streams emit a citations event mid-stream. That's where fake citation objects can leak to the client. In both /api/search and /api/v2/stream, add an interception layer that rewrites the citations SSE event before forwarding.
+Find this pattern (appears twice, in /api/search and /api/v2/stream):
+typescriptwhile (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const chunk = decoder.decode(value, { stream: true });
+  res.write(chunk);   // ← currently passes through unchecked
+}
+Replace both with:
+typescriptlet sseBuffer = "";
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  sseBuffer += decoder.decode(value, { stream: true });
+  const lines = sseBuffer.split("\n");
+  sseBuffer = lines.pop() || "";
+
+  for (const line of lines) {
+    if (!line.startsWith("data: ")) {
+      res.write(line + "\n");
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(line.slice(6));
+      // Intercept citation events — rebuild from evidence only
+      if (
+        parsed?.type === "citations" ||
+        parsed?.type === "meta" ||
+        (parsed?.citations && !parsed?.type)
+      ) {
+        const safe = sanitizeGroundedResponse(parsed);
+        res.write(`data: ${JSON.stringify(safe)}\n`);
+      } else {
+        res.write(line + "\n");
+      }
+    } catch {
+      res.write(line + "\n");
+    }
+  }
+}
+
+Patch 5 — Remove the fake citation generator
+Delete or comment out the generateCitations() function entirely (lines ~162–204). It should never be called again. Any routes still calling it need to return an empty array instead:
+typescript// Before
+const citations = generateCitations(content);
+
+// After
+const citations: CitationItem[] = []; // grounded only — populated by upstream evidence
+
+What this achieves
+RiskStatus after patchFake [1], [2] citations from generateCitations()EliminatedFabricated Author et al. entries in citations arrayEliminatedInline citation markers with no backing sourceStripped from answer textSSE citation events with ungrounded objectsIntercepted and rebuiltSafety engine and growth engine responsesUntouchedDemo showing clinician a hallucinated PubMed URLNo longer possible
+The sanitizeGroundedResponseStrict call is intentionally strict — if the upstream evidence array is empty (backend didn't retrieve anything), the citations field returns empty rather than inventing sources. That's the right behavior for a clinical safety product.

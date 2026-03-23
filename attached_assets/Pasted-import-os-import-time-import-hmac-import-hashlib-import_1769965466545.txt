@@ -1,0 +1,151 @@
+import os
+import time
+import hmac
+import hashlib
+import secrets
+from pathlib import Path
+from datetime import datetime, timezone
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+
+APP_NAME = "AesthetiCite"
+DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+ACCESS_LOG = DATA_DIR / "partner_access.log"
+
+# ---- Secrets / config ----
+# IMPORTANT: set these in Replit Secrets (Environment variables)
+SECRET_KEY = os.getenv("SECRET_KEY", None)
+PARTNER_PREVIEW_TOKEN = os.getenv("PARTNER_PREVIEW_TOKEN", None)
+
+# Default preview duration (e.g., 7 days). Keep short.
+PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "604800"))  # 7 days
+
+if not SECRET_KEY:
+    # fallback for local dev; in production always set SECRET_KEY
+    SECRET_KEY = secrets.token_urlsafe(32)
+
+if not PARTNER_PREVIEW_TOKEN:
+    # fallback for local dev; in production always set PARTNER_PREVIEW_TOKEN
+    PARTNER_PREVIEW_TOKEN = secrets.token_urlsafe(16)
+
+app = FastAPI(title=f"{APP_NAME} Preview", version="1.0")
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    same_site="lax",
+    https_only=False,  # set True when behind HTTPS
+)
+
+templates = Jinja2Templates(directory="templates")
+
+
+# ----------------- Helpers -----------------
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def log_partner_event(msg: str) -> None:
+    with open(ACCESS_LOG, "a", encoding="utf-8") as f:
+        f.write(f"{now_utc_iso()} | {msg}\n")
+
+def constant_time_equals(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+def require_partner_preview(request: Request):
+    s = request.session
+    role = s.get("role")
+    exp = s.get("expires_at", 0)
+
+    if role != "partner_preview":
+        raise HTTPException(status_code=401, detail="Partner preview access required")
+    if not isinstance(exp, (int, float)) or time.time() > float(exp):
+        # Expired session
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Partner preview expired")
+
+def set_partner_session(request: Request, org_label: str = "partner_preview"):
+    request.session["role"] = "partner_preview"
+    request.session["org"] = org_label
+    request.session["expires_at"] = time.time() + PREVIEW_TTL_SECONDS
+
+
+# ----------------- Routes -----------------
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "app": APP_NAME}
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    """
+    Normal login page (keep your real doctor login here).
+    Partner preview is NOT shown here.
+    """
+    return templates.TemplateResponse("login.html", {"request": request, "app": APP_NAME})
+
+@app.get("/partner/preview", response_class=HTMLResponse)
+def partner_preview_entry(request: Request, code: str):
+    """
+    Hidden entry URL:
+      /partner/preview?code=YOUR_PARTNER_PREVIEW_TOKEN
+
+    If code matches, creates a time-limited session and redirects to /app
+    """
+    if not constant_time_equals(code, PARTNER_PREVIEW_TOKEN):
+        log_partner_event("DENY preview (bad code)")
+        raise HTTPException(status_code=403, detail="Invalid preview code")
+
+    # Set partner preview session (do NOT use Unilabs branding yet)
+    set_partner_session(request, org_label="partner_preview")
+    log_partner_event("ALLOW preview session created")
+    return RedirectResponse(url="/app", status_code=302)
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=302)
+
+@app.get("/app")
+def app_home(request: Request):
+    """
+    Your application entry point.
+    If partner preview: read-only mode, show demo questions, etc.
+    """
+    require_partner_preview(request)
+
+    # Example: show a minimal JSON landing. Replace with your UI.
+    return JSONResponse(
+        {
+            "app": APP_NAME,
+            "mode": "partner_preview",
+            "expires_at_utc": datetime.fromtimestamp(request.session["expires_at"], tz=timezone.utc).isoformat(),
+            "message": "Private clinical preview (read-only).",
+            "suggested_questions": [
+                "How should vascular occlusion from HA filler be managed (dosing + timing)?",
+                "What is the safest HA filler approach for tear trough (plane + risks)?",
+                "Is botulinum toxin effective for masseter hypertrophy, and what dosing ranges are supported?",
+            ],
+        }
+    )
+
+@app.get("/deepconsult")
+def deepconsult(request: Request, q: str):
+    """
+    Example protected endpoint for partner preview.
+    Plug your real /deepconsult logic here.
+    """
+    require_partner_preview(request)
+
+    # TODO: call your real DeepConsult engine
+    # Return a safe placeholder for now:
+    log_partner_event(f"QUERY preview | q={q[:120]!r}")
+    return {
+        "query": q,
+        "note": "This is the partner preview route. Connect to your real DeepConsult pipeline here.",
+        "policy": "Read-only preview; no PHI; no saving; no exports unless explicitly enabled.",
+    }

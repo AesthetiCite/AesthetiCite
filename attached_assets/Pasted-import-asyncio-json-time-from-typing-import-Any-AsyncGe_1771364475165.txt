@@ -1,0 +1,118 @@
+import asyncio, json, time
+from typing import Any, AsyncGenerator, Dict, List
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+app = FastAPI()
+
+def sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# ---- Plug these in ----
+async def retrieve(q: str, k: int = 12) -> Dict[str, Any]:
+    """
+    Must return:
+      {
+        "chunks": [...],   # your chunk dicts
+        "sources": [...]   # minimal source list for UI (S1..Sk with title/year/doi/url)
+      }
+    """
+    raise NotImplementedError
+
+async def llm_plan_json(q: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Your current plan+ground call (slow ~4s)."""
+    raise NotImplementedError
+
+async def llm_stream(prompt: str) -> AsyncGenerator[str, None]:
+    """Your current compose stream."""
+    raise NotImplementedError
+
+async def llm_stream_fast(prompt: str) -> AsyncGenerator[str, None]:
+    """
+    OPTIONAL: a faster stream for a 'preview' (can be same model but smaller prompt).
+    If you don't have a fast model, just point this to llm_stream.
+    """
+    async for t in llm_stream(prompt):
+        yield t
+
+def build_preview_prompt(q: str, sources: List[Dict[str, Any]]) -> str:
+    # Short, fast, no heavy grounding—just an interim helpful response.
+    return f"""You are AesthetiCite. Give a very short preliminary answer (<= 6 bullet points)
+based on general clinical knowledge AND the topic, but DO NOT make strong claims.
+End with: "Grounded answer is loading…"
+Question: {q}
+"""
+
+def build_compose_prompt_from_plan(q: str, plan: Dict[str, Any]) -> str:
+    return f"""You are AesthetiCite. Write final grounded answer.
+Use ONLY plan JSON. Include citations as [S1], [S2] per evidence.sids.
+Question: {q}
+Plan JSON: {json.dumps(plan, ensure_ascii=False)}
+"""
+
+class Ask(BaseModel):
+    q: str
+    k: int = 12
+
+@app.post("/ask/stream")
+async def ask_stream(body: Ask, request: Request):
+    q = body.q.strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]), media_type="text/event-stream")
+
+    async def gen() -> AsyncGenerator[str, None]:
+        t0 = time.perf_counter()
+
+        # 1) Retrieval first (yours is ~30–300ms): do it synchronously
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+        r = await retrieve(q, k=body.k)
+        chunks = r["chunks"]
+        sources = r["sources"]
+
+        # 2) Stream sources immediately (OpenEvidence-like)
+        yield sse("sources", {"sources": sources, "ms": int((time.perf_counter()-t0)*1000)})
+
+        if await request.is_disconnected():
+            return
+
+        # 3) Kick off slow plan in the background (NO waiting)
+        plan_task = asyncio.create_task(llm_plan_json(q, chunks))
+
+        # 4) Immediately start a preview stream so user sees content fast
+        #    (this removes the "dead 4 seconds" entirely)
+        yield sse("status", {"phase": "preview", "message": "Drafting a quick preview..."})
+        preview_prompt = build_preview_prompt(q, sources)
+
+        # Stream preview tokens, but cap duration so it doesn't run forever
+        preview_deadline = time.perf_counter() + 1.2  # ~1.2s preview window
+        async for tok in llm_stream_fast(preview_prompt):
+            yield sse("token", {"t": tok, "channel": "preview"})
+            if await request.is_disconnected():
+                return
+            if time.perf_counter() > preview_deadline:
+                break
+
+        # 5) Now wait for plan (likely already partly done by now)
+        yield sse("status", {"phase": "grounding", "message": "Finalizing grounded answer..."})
+        plan = await plan_task
+
+        if await request.is_disconnected():
+            return
+
+        # 6) Stream final composed grounded answer
+        compose_prompt = build_compose_prompt_from_plan(q, plan)
+
+        # Let the client know we’re switching from preview → final
+        yield sse("replace", {"channel": "final", "message": "Grounded answer:"})
+
+        async for tok in llm_stream(compose_prompt):
+            yield sse("token", {"t": tok, "channel": "final"})
+            if await request.is_disconnected():
+                return
+
+        total_ms = int((time.perf_counter() - t0) * 1000)
+        yield sse("meta", {"total_ms": total_ms})
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

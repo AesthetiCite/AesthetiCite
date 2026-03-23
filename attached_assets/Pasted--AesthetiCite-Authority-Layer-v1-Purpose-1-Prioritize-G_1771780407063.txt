@@ -1,0 +1,212 @@
+"""
+AesthetiCite Authority Layer v1
+--------------------------------
+Purpose:
+1) Prioritize Guidelines / Consensus / Position Statements
+2) Boost Tier-A evidence in top results
+3) Increase ACI score organically
+4) Improve clinical trust instantly
+
+Integration:
+Replace your retrieval call with:
+
+bundle = authority_retrieve(question, retrieve_fn=your_retrieve_function)
+
+Then use bundle["sources"] for LLM context
+and bundle["aci"] for scoring.
+"""
+
+from dataclasses import dataclass, asdict
+from typing import List, Dict, Any, Callable, Optional
+from datetime import datetime
+import math
+import re
+
+
+# ===============================
+# CONFIGURATION
+# ===============================
+
+AUTHORITY_KEYWORDS = [
+    "guideline",
+    "consensus",
+    "position statement",
+    "recommendation",
+    "delphi",
+    "expert panel",
+    "society guideline",
+]
+
+HIGH_RISK_TOPICS = [
+    "vascular occlusion",
+    "ischemia",
+    "blindness",
+    "retinal artery",
+    "embol",
+    "necrosis",
+    "complication",
+    "hyaluronidase",
+]
+
+TIER_PRIORITY = {"A": 0, "B": 1, "C": 2}
+
+
+# ===============================
+# DATA MODEL
+# ===============================
+
+@dataclass
+class Source:
+    id: str
+    title: str
+    year: Optional[int]
+    publication_type: Optional[str]
+    source_tier: Optional[str]
+    evidence_rank: Optional[float]
+
+    evidence_type: str = "Other"
+    evidence_tier: str = "C"
+
+
+# ===============================
+# CLASSIFICATION
+# ===============================
+
+def classify_type(title: str, pub_type: Optional[str]) -> str:
+    title = (title or "").lower()
+    pub_type = (pub_type or "").lower()
+
+    for k in AUTHORITY_KEYWORDS:
+        if k in title or k in pub_type:
+            return "Guideline"
+
+    if "systematic" in title or "meta" in title:
+        return "SystematicReview"
+
+    if "randomized" in title or "trial" in title:
+        return "RCT"
+
+    if "cohort" in title:
+        return "Cohort"
+
+    if "case" in title:
+        return "CaseSeries"
+
+    if "review" in title:
+        return "NarrativeReview"
+
+    return "Other"
+
+
+def map_tier(evidence_type: str) -> str:
+    if evidence_type in ["Guideline", "SystematicReview", "RCT"]:
+        return "A"
+    if evidence_type in ["Cohort"]:
+        return "B"
+    return "C"
+
+
+# ===============================
+# ACI ENGINE
+# ===============================
+
+def compute_aci(sources: List[Source]) -> Dict[str, Any]:
+    if not sources:
+        return {"score": 0.0, "badge": "Low"}
+
+    tier_scores = {"A": 1.0, "B": 0.6, "C": 0.3}
+    avg_tier = sum(tier_scores[s.evidence_tier] for s in sources) / len(sources)
+
+    diversity = len(set(s.evidence_type for s in sources)) / 6
+    diversity = min(diversity, 1.0)
+
+    recency_scores = []
+    current_year = datetime.utcnow().year
+    for s in sources:
+        if not s.year:
+            recency_scores.append(0.4)
+        else:
+            age = current_year - s.year
+            recency_scores.append(1 / (1 + age / 6))
+    recency = sum(recency_scores) / len(recency_scores)
+
+    raw = 0.5 * avg_tier + 0.2 * diversity + 0.3 * recency
+    score = round(raw * 10, 1)
+
+    badge = "High" if score >= 8.5 else "Moderate" if score >= 6.5 else "Low"
+
+    return {
+        "score": score,
+        "badge": badge,
+        "components": {
+            "tier_quality": round(avg_tier, 2),
+            "diversity": round(diversity, 2),
+            "recency": round(recency, 2),
+        }
+    }
+
+
+# ===============================
+# AUTHORITY RETRIEVAL
+# ===============================
+
+def authority_retrieve(
+    question: str,
+    retrieve_fn: Callable[[str, int], List[Dict[str, Any]]],
+    k: int = 40
+) -> Dict[str, Any]:
+
+    question_lower = question.lower()
+
+    # 1️⃣ Authority-focused query
+    authority_query = question + " guideline consensus position statement"
+
+    authority_raw = retrieve_fn(authority_query, 20)
+    general_raw = retrieve_fn(question, 40)
+
+    merged = authority_raw + general_raw
+
+    sources: List[Source] = []
+
+    for r in merged:
+        s = Source(
+            id=str(r.get("id")),
+            title=r.get("title"),
+            year=r.get("year"),
+            publication_type=r.get("publication_type"),
+            source_tier=r.get("source_tier"),
+            evidence_rank=r.get("evidence_rank"),
+        )
+
+        s.evidence_type = classify_type(s.title, s.publication_type)
+        s.evidence_tier = map_tier(s.evidence_type)
+
+        sources.append(s)
+
+    # Remove duplicates by id
+    unique = {}
+    for s in sources:
+        unique[s.id] = s
+    sources = list(unique.values())
+
+    # 2️⃣ Rerank — Tier A first, then newer
+    sources.sort(
+        key=lambda s: (
+            TIER_PRIORITY.get(s.evidence_tier, 2),
+            -(s.year or 0)
+        )
+    )
+
+    sources = sources[:k]
+
+    aci = compute_aci(sources)
+
+    return {
+        "sources": [asdict(s) for s in sources],
+        "aci": aci,
+        "meta": {
+            "mode": "authority_first_v1",
+            "retrieved": len(sources),
+            "generated_at": datetime.utcnow().isoformat()
+        }
+    }

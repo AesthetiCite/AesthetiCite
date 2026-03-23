@@ -1,0 +1,228 @@
+import asyncio
+import hashlib
+import json
+import time
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+app = FastAPI()
+
+# ----------------------------
+# 1) Simple TTL cache (in-memory)
+# ----------------------------
+class TTLCache:
+    def __init__(self, max_items: int = 2000, ttl_seconds: int = 1800):
+        self.max_items = max_items
+        self.ttl = ttl_seconds
+        self._store: Dict[str, Tuple[float, Any]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, key: str) -> Optional[Any]:
+        now = time.time()
+        async with self._lock:
+            item = self._store.get(key)
+            if not item:
+                return None
+            exp, val = item
+            if exp < now:
+                self._store.pop(key, None)
+                return None
+            return val
+
+    async def set(self, key: str, value: Any) -> None:
+        now = time.time()
+        async with self._lock:
+            if len(self._store) >= self.max_items:
+                # naive eviction: drop oldest expiry
+                oldest_key = min(self._store.items(), key=lambda kv: kv[1][0])[0]
+                self._store.pop(oldest_key, None)
+            self._store[key] = (now + self.ttl, value)
+
+retrieval_cache = TTLCache(max_items=3000, ttl_seconds=3600)
+answer_cache    = TTLCache(max_items=1500, ttl_seconds=900)  # short-lived
+
+def _key_for_query(q: str, extra: str = "") -> str:
+    h = hashlib.sha256((q.strip().lower() + "|" + extra).encode("utf-8")).hexdigest()
+    return h
+
+# ----------------------------
+# 2) Your existing hooks (implement these)
+# ----------------------------
+async def embed_query(text: str) -> List[float]:
+    """
+    Return embedding vector.
+    Replace with your embedding call.
+    """
+    raise NotImplementedError
+
+async def retrieve_chunks_by_embedding(emb: List[float], k: int = 12) -> List[Dict[str, Any]]:
+    """
+    Return list of chunks: [{id, text, title, year, doi, url, ...}, ...]
+    Replace with your DB/vector search.
+    """
+    raise NotImplementedError
+
+async def llm_json(prompt: str) -> Dict[str, Any]:
+    """
+    One non-streaming LLM call returning JSON.
+    """
+    raise NotImplementedError
+
+async def llm_stream(prompt: str) -> AsyncGenerator[str, None]:
+    """
+    Streaming LLM call yielding text tokens/chunks.
+    """
+    raise NotImplementedError
+
+# ----------------------------
+# 3) Prompts: collapse plan+ground into one JSON call
+# ----------------------------
+def build_plan_ground_prompt(question: str, chunks: List[Dict[str, Any]]) -> str:
+    # Keep chunks small: include only essential fields and trim text length
+    compact_sources = []
+    for i, c in enumerate(chunks):
+        txt = (c.get("text") or "")[:1200]  # hard cap
+        compact_sources.append({
+            "sid": f"S{i+1}",
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+            "text": txt
+        })
+
+    return f"""You are AesthetiCite. Create a grounded answer plan and extract only cite-supported claims.
+
+Return STRICT JSON with this schema:
+{{
+  "clinical_summary": "1-3 sentences",
+  "key_points": ["...", "...", "..."],
+  "claims": [
+    {{
+      "claim": "short factual claim",
+      "evidence": [{{"sid":"S1","quote":"<=20 words excerpt","why":"relevance"}}]
+    }}
+  ],
+  "limitations": ["..."],
+  "follow_ups": ["...","..."]
+}}
+
+Rules:
+- Every claim MUST have at least one evidence item from the provided sources.
+- If evidence is insufficient, say so and keep claims minimal.
+- Quotes must be <= 20 words.
+- Do NOT invent citations.
+
+Question:
+{question}
+
+Sources:
+{json.dumps(compact_sources, ensure_ascii=False)}
+"""
+
+def build_compose_prompt(question: str, plan: Dict[str, Any]) -> str:
+    return f"""You are AesthetiCite. Write the final answer in a concise clinical style.
+
+Use ONLY the supplied JSON content. Do not add new facts.
+Include citations inline as [S1], [S2] based on evidence.sids.
+
+Question:
+{question}
+
+Plan JSON:
+{json.dumps(plan, ensure_ascii=False)}
+"""
+
+# ----------------------------
+# 4) SSE streaming helpers
+# ----------------------------
+def sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+class AskBody(BaseModel):
+    q: str
+    k: int = 12
+    use_answer_cache: bool = True
+
+@app.post("/ask/stream")
+async def ask_stream(body: AskBody, request: Request):
+    q = body.q.strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]), media_type="text/event-stream")
+
+    async def gen() -> AsyncGenerator[str, None]:
+        t0 = time.time()
+        yield sse("meta", {"status": "started"})
+
+        # Optional: answer cache (fast path)
+        ans_key = _key_for_query(q, extra=f"k={body.k}")
+        if body.use_answer_cache:
+            cached = await answer_cache.get(ans_key)
+            if cached:
+                yield sse("meta", {"status": "cache_hit", "total_ms": int((time.time()-t0)*1000)})
+                # Stream cached answer chunks so UI still looks consistent
+                for chunk in cached.get("chunks", []):
+                    yield sse("token", {"t": chunk})
+                yield sse("done", {"ok": True, "cached": True})
+                return
+
+        # 1) Immediately send "thinking" so UI updates within <200ms
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+
+        # Retrieval cache keyed by normalized query (you can also key by embedding hash)
+        rkey = _key_for_query(q, extra=f"k={body.k}")
+        chunks = await retrieval_cache.get(rkey)
+        if chunks is None:
+            # Embedding + retrieval
+            emb = await embed_query(q)
+            chunks = await retrieve_chunks_by_embedding(emb, k=body.k)
+            await retrieval_cache.set(rkey, chunks)
+
+        # If client disconnects, stop work
+        if await request.is_disconnected():
+            return
+
+        yield sse("status", {"phase": "grounding", "message": "Grounding claims..."})
+        plan_prompt = build_plan_ground_prompt(q, chunks)
+
+        # 2) LLM JSON (plan + grounding) (single call)
+        plan = await llm_json(plan_prompt)
+
+        if await request.is_disconnected():
+            return
+
+        # Provide sources early (OpenEvidence-like)
+        sources_payload = []
+        for i, c in enumerate(chunks):
+            sources_payload.append({
+                "sid": f"S{i+1}",
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "doi": c.get("doi"),
+                "url": c.get("url")
+            })
+        yield sse("sources", {"sources": sources_payload})
+
+        # 3) Stream final composition (second call) so first tokens appear fast
+        yield sse("status", {"phase": "answer", "message": "Composing answer..."})
+        compose_prompt = build_compose_prompt(q, plan)
+
+        streamed_chunks: List[str] = []
+        async for tok in llm_stream(compose_prompt):
+            streamed_chunks.append(tok)
+            yield sse("token", {"t": tok})
+            if await request.is_disconnected():
+                return
+
+        total_ms = int((time.time() - t0) * 1000)
+        yield sse("meta", {"status": "finished", "total_ms": total_ms})
+
+        # Save to short-lived answer cache (big perceived win)
+        await answer_cache.set(ans_key, {"chunks": streamed_chunks, "total_ms": total_ms})
+
+        yield sse("done", {"ok": True, "cached": False})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

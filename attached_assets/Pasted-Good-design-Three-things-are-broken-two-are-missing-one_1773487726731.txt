@@ -1,0 +1,102 @@
+Good design. Three things are broken, two are missing, one is a risk.
+Broken:
+The endpoint is still /api/safety/v2/protocol. Same 404 as before. Fix:
+typescript// FIND:
+fetch("/api/safety/v2/protocol", { body: JSON.stringify({ procedure, product, region, symptom... }) })
+
+// REPLACE:
+fetch("/api/complications/protocol", {
+  body: JSON.stringify({
+    query: `${symptom} after ${procedure} to ${region}`,
+    context: { region, procedure, product_type: product, symptoms: symptom.split(",").map(s => s.trim()) },
+    mode: "decision_support"
+  })
+})
+The export downloads a .txt file using URL.createObjectURL. Your backend already generates a proper PDF at /api/complications/export-pdf. Replace exportReport() with a fetch to that endpoint.
+The ProtocolResult type uses treatment which doesn't exist in your ProtocolResponse. The real field is dose_guidance (objects with substance, recommendation, notes). The rendering will silently show nothing. Map dose_guidance items to the treatment list display.
+Missing:
+patient_message doesn't exist in your schema. Either remove that panel or populate it from clinical_summary. Don't invent a field.
+escalation is a real field in ProtocolResponse that this component ignores entirely. It's one of the most clinically important sections. Add it.
+Risk:
+The catch block falls back to DEMO_RESULT silently:
+typescript} catch {
+  setResult(DEMO_RESULT)  // ← hides all errors in production
+}
+During a real demo, if the backend is down or the payload is wrong, the clinician sees a convincing result that isn't real. Change to show an error state instead.
+
+The layout and visual design are genuinely good — the sidebar, the grid, the card style, the urgency badge. That's worth keeping. It just needs the three endpoint/schema fixes before it can be used with real data.
+The fixed version of runProtocol and the type mapping:
+typescript// Fixed ProtocolResult type — mirrors real ProtocolResponse
+type ProtocolResult = {
+  matched_protocol_name: string      // was: protocol_title
+  risk_assessment: {
+    severity: string
+    urgency: string
+    risk_score: number
+    likely_time_critical: boolean
+    evidence_strength: string
+  }
+  confidence: number                 // 0-1 float, not string
+  clinical_summary: string           // was: summary
+  immediate_actions: ProtocolStep[]  // was: string[]
+  dose_guidance: DoseGuidance[]      // was: treatment (string[])
+  escalation: string[]               // was: missing
+  monitoring: string[]
+  red_flags: string[]
+  evidence: EvidenceItem[]           // was: citations
+  disclaimer: string
+}
+
+// Fixed fetch
+async function runProtocol() {
+  setLoading(true)
+  setError(null)
+  try {
+    const token = getToken()
+    const res = await fetch("/api/complications/protocol", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        query: `${symptom} after ${procedure} to ${region}`,
+        context: {
+          region,
+          procedure,
+          product_type: product,
+          symptoms: symptom.split(",").map(s => s.trim()).filter(Boolean),
+        },
+        mode: "decision_support",
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data?.detail || "Protocol failed")
+    setResult(data)
+  } catch (err: any) {
+    setError(err.message)          // show error, don't fall back to fake data
+  } finally {
+    setLoading(false)
+  }
+}
+
+// Fixed PDF export
+async function exportReport() {
+  const token = getToken()
+  const res = await fetch("/api/complications/export-pdf", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      query: `${symptom} after ${procedure} to ${region}`,
+      context: { region, procedure, product_type: product,
+        symptoms: symptom.split(",").map(s => s.trim()) },
+      mode: "decision_support",
+    }),
+  })
+  const data = await res.json()
+  if (data.filename) window.open(`/exports/${data.filename}`, "_blank")
+}
+Apply those four fixes and keep the layout exactly as it is. The design is the strongest demo screen you have.

@@ -1,0 +1,243 @@
+================================================================================
+EVIDENCE HIERARCHY — INTEGRATION PATCHES
+================================================================================
+These are ADDITIVE patches only. They replace scattered per-file logic
+with calls to the single canonical module.
+
+================================================================================
+PATCH 1 — app/api/ask_v2.py  (the primary answer endpoint)
+================================================================================
+
+FIND the section that builds citations and evidence badge (around the
+`qf_sources` / `source_to_citation_dict` block). REPLACE that entire
+citation-building section with:
+
+    from app.engine.evidence_hierarchy import enrich_chunks_for_api, backfill_documents_meta
+
+    # Inside your async ask handler, after retrieving chunks:
+    citations_payload, top_badge = enrich_chunks_for_api(chunks_for_prompt)
+
+    # Backfill documents_meta in background (non-blocking)
+    import asyncio
+    asyncio.create_task(
+        asyncio.to_thread(backfill_documents_meta, db, chunks_for_prompt)
+    )
+
+    # Replace the existing evidence_badge dict construction with:
+    evidence_badge = {
+        "level":     top_badge["level"],
+        "label":     f"{top_badge['emoji']} {top_badge['label']}",
+        "color":     top_badge["color"],
+        "best_type": top_badge["best_type"],
+    }
+
+    # The meta_payload already uses citations_payload and evidence_badge — no
+    # other changes needed in the SSE emission block.
+
+
+================================================================================
+PATCH 2 — app/api/oe_upgrade.py  (OE-mode answer endpoint)
+================================================================================
+
+FIND the `_build_citations_payload` call and the `_compute_badge` call.
+REPLACE both with:
+
+    from app.engine.evidence_hierarchy import enrich_chunks_for_api
+
+    citations_payload, top_badge = enrich_chunks_for_api(chunks)
+    badge_dict = {
+        "score":  1.0 if top_badge["level"] == "High" else 0.7 if top_badge["level"] == "Moderate" else 0.4,
+        "badge":  top_badge["level"],
+        "badge_color": "green" if top_badge["level"] == "High" else "yellow" if top_badge["level"] == "Moderate" else "red",
+        "why":    top_badge["best_type"],
+        "unique_sources": len(citations_payload),
+    }
+
+
+================================================================================
+PATCH 3 — app/engine/veridoc.py  (VeriDoc ranking inside _rerank)
+================================================================================
+
+FIND the `_rerank` function (or wherever chunks are sorted before passing
+to the LLM). ADD this call right after existing reranking:
+
+    from app.engine.evidence_hierarchy import rank_documents
+
+    # Apply canonical evidence hierarchy on top of VeriDoc's semantic ranking
+    # This ensures guidelines always surface above case reports even if the
+    # case report had a slightly higher cosine similarity.
+    ranked = rank_documents(ranked)
+
+
+================================================================================
+PATCH 4 — app/engine/improvements.py  (backwards compat shim)
+================================================================================
+
+ADD at the bottom of improvements.py so all existing callers still work:
+
+    # ── Evidence hierarchy shim — import from canonical module ──────────────
+    from app.engine.evidence_hierarchy import (
+        classify_document  as classify_chunk,          # noqa: F401
+        EVIDENCE_TYPE_MAP  as _TYPE_MAP,
+        badge_for_type     as _badge_for_type,
+        enrich_chunks_for_api,                         # noqa: F401
+    )
+
+    # Keep DISPLAY_LABELS working (existing code imports this)
+    DISPLAY_LABELS = {k: v[0] for k, v in _TYPE_MAP.items()}
+
+    def evidence_rank_from_display(display: str) -> int:
+        for canonical, (label, rank) in _TYPE_MAP.items():
+            if label == display:
+                return rank
+        return 10
+
+
+================================================================================
+PATCH 5 — app/engine/quality_fusion.py  (hybrid_rerank_sources)
+================================================================================
+
+FIND `hybrid_rerank_sources`. ADD this single line at the END (after the
+existing sort), to guarantee evidence hierarchy wins over pure score blending:
+
+    from app.engine.evidence_hierarchy import rank_documents as _eh_rank
+
+    # After your existing sort by _rank_score:
+    # Apply evidence hierarchy as a secondary sort key.
+    # Primary: _rank_score (existing). Secondary: evidence_rank (hierarchy).
+    enriched_sources.sort(
+        key=lambda s: (
+            -float(s.get("_rank_score", 0)),
+            int(s.get("evidence_rank") or 10),
+        )
+    )
+
+    # Enrich any un-tagged sources
+    for s in enriched_sources:
+        if "evidence_type_display" not in s:
+            from app.engine.evidence_hierarchy import classify_document
+            tagged = classify_document(s)
+            s.update(tagged)
+
+
+================================================================================
+PATCH 6 — app/engine/protocol_gap_fix.py  (query rewriting)
+================================================================================
+
+FIND `rewrite_query_rules` or equivalent query expansion.
+REPLACE with:
+
+    from app.engine.evidence_hierarchy import rewrite_query_for_evidence
+
+    rewrite_result = rewrite_query_for_evidence(query)
+    retrieval_query = rewrite_result["rewritten_query"]
+    intent = rewrite_result["intent"]
+    boost_types = rewrite_result["boost_types"]
+
+
+================================================================================
+PATCH 7 — client/src/pages/ask.tsx  (frontend citation rendering)
+================================================================================
+
+ADD import at top:
+
+    import { CitationCard, EvidencePanel, TopEvidenceBadge, type Citation }
+      from "@/components/evidence-hierarchy-badge";
+
+FIND where citations are currently rendered (usually a .map() over citations
+inside the answer display area). REPLACE the entire citation section with:
+
+    {/* Evidence Panel — ranked, badged citations */}
+    {citations.length > 0 && (
+      <EvidencePanel
+        citations={citations as Citation[]}
+        topBadge={aciMeta?.evidence_badge}
+        className="mt-4"
+      />
+    )}
+
+WHERE `aciMeta` is the SSE meta payload received from the stream.
+
+ALSO: In the answer header (where the evidence level badge currently shows
+as High/Moderate/Low), replace with:
+
+    <TopEvidenceBadge
+      badge={aciMeta?.evidence_badge}
+      citations={citations as Citation[]}
+      size="md"
+    />
+
+The TopEvidenceBadge reads the `best_type` field from the badge object
+returned by `enrich_chunks_for_api` — now set correctly in Patch 1.
+
+
+================================================================================
+PATCH 8 — app/main.py  (startup backfill — optional but recommended)
+================================================================================
+
+Inside the startup handler, ADD after migrations:
+
+    # Backfill evidence metadata for all un-tagged documents
+    # Run once at startup; subsequent runs are no-ops (ON CONFLICT DO UPDATE
+    # WHERE evidence_type IS NULL)
+    from app.engine.evidence_hierarchy import backfill_documents_meta, INSERT_META_SQL
+    from app.db.session import SessionLocal
+    from sqlalchemy import text
+
+    with SessionLocal() as db:
+        # Fetch un-tagged source_ids
+        rows = db.execute(text("""
+            SELECT DISTINCT source_id, title, year, journal
+            FROM chunks
+            WHERE source_id NOT IN (
+                SELECT source_id FROM documents_meta
+                WHERE evidence_type IS NOT NULL AND evidence_type != ''
+            )
+            LIMIT 10000
+        """)).fetchall()
+
+        if rows:
+            chunk_dicts = [dict(r) for r in rows]
+            n = backfill_documents_meta(db, chunk_dicts)
+            print(f"[startup] Backfilled evidence metadata for {n} documents.")
+
+
+================================================================================
+WHAT THIS ACHIEVES — END TO END
+================================================================================
+
+Before these patches (existing state):
+  - 4 different scoring functions across 4 files
+  - evidence_badge is High/Moderate/Low only (no 🟢/🔵/🟡/⚪ per citation)
+  - Frontend renders citation type as raw text ("guideline") if at all
+  - No canonical formula callable from other modules
+  - documents_meta backfill never happens
+
+After these patches:
+  - ONE formula: evidence_score() in evidence_hierarchy.py
+  - Every citation has evidence_type_display, evidence_rank, evidence_badge
+  - Frontend renders 4-tier badges on every citation card with hover descriptions
+  - TopEvidenceBadge shows best source type in answer header
+  - EvidencePanel shows all citations sorted by hierarchy with type breakdown
+  - documents_meta backfilled at startup for all existing chunks
+  - New documents tagged at ingest time via enrich_document_for_ingest()
+  - All existing callers still work via shim in improvements.py
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  app/engine/evidence_hierarchy.py               — Canonical engine module
+  client/src/components/evidence-hierarchy-badge.tsx — React badge system
+
+FILES PATCHED (additions only):
+  app/api/ask_v2.py             — Replace citation builder with enrich_chunks_for_api
+  app/api/oe_upgrade.py         — Replace _build_citations_payload + _compute_badge
+  app/engine/veridoc.py         — Add rank_documents after _rerank
+  app/engine/improvements.py    — Add backwards-compat shim
+  app/engine/quality_fusion.py  — Extend hybrid_rerank_sources
+  app/engine/protocol_gap_fix.py — Replace rewrite_query_rules
+  client/src/pages/ask.tsx       — Replace citation list with EvidencePanel
+  app/main.py                    — Add startup backfill
+================================================================================

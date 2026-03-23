@@ -1,0 +1,548 @@
+RESEARCH ARTICLE
+Detection of meat from horse, donkey and
+their hybrids (mule/hinny) by duplex real-time
+fluorescent PCR
+Dan Wang, Liping Wang, Chenyu Xue, Yuebei Han, Hejing Li, Jianqiang Geng, Jiang Jie*
+Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China
+* cfqs20200519@126.com
+Abstract
+Meat adulteration is currently a common practice worldwide. In China, adulteration of don-
+key meat products with the similar species (horse and mule/hinny) meat and mislabeling are
+becoming widespread concerns. In this study, a sensitive and species-specific duplex real-
+time PCR assay based on the simultaneous amplification of fragments of the creatine kinase
+muscle gene family, was developed and optimized for the identification of horse, donkey
+and mule /hinny species in raw and heat-processed meat products. Duplex real-time PCR
+results showed different fluorescence amplification curves for horse and donkey. Both kinds
+of fluorescence amplification curves appeared simultaneously for mule/hinny. The limit of
+detection (LOD) of the method was up to 0.01 ng /μL. The method and strategy developed
+in this study could be applied to detect the presence of adulterants from horse and mule
+/hinny meat in raw donkey meat and meat products.
+Introduction
+Donkey-related meat products have received attention due to their high nutritional value and
+unique taste in China. Due to donkey resource scarcity, long growth cycle, and gradually
+increasing market demand, the price of donkey meat is continuously rising. Donkey meat with
+other low-cost animal meat, especially from similar species, including horse and mule or
+hinny, is common in markets and in restaurants [1, 2]. Because horse, donkey and mule/hinny
+are equine animals, it is difficult to accurately identify the source of meat through their muscle
+structure. The fraudulent substitution or undeclared adulteration of meat species in commi-
+nuted and highly processed meat products could bring potential risks to people who have aller-
+gies to certain types of meat proteins. Furthermore, consuming food containing donkey and
+horse sources is haram for Muslims. Therefore, it is particularly important and urgent to estab-
+lish a fast, accurate and reliable method for identifying adulterated donkey meat.
+The methods currently applied to detect meat adulteration rely on either protein or DNA
+analysis. Protein-based techniques have a number of limitations due to the denaturation of
+protein during thermal processing. DNA is stable even with processing or heat treatment.
+DNA-based techniques include PCR [3], real-time PCR [4, 5], digital PCR [6], restriction
+PLOS ONE
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+1 / 9
+a1111111111
+a1111111111
+a1111111111
+a1111111111
+a1111111111
+OPEN ACCESS
+Citation: Wang D, Wang L, Xue C, Han Y, Li H,
+Geng J, et al. (2020) Detection of meat from horse,
+donkey and their hybrids (mule/hinny) by duplex
+real-time fluorescent PCR. PLoS ONE 15(12):
+e0237077. https://doi.org/10.1371/journal.
+pone.0237077
+Editor: Ruslan Kalendar, University of Helsinki,
+FINLAND
+Received: January 16, 2020
+Accepted: July 19, 2020
+Published: December 29, 2020
+Copyright: © 2020 Wang et al. This is an open
+access article distributed under the terms of the
+Creative Commons Attribution License, which
+permits unrestricted use, distribution, and
+reproduction in any medium, provided the original
+author and source are credited.
+Data Availability Statement: All relevant data are
+within the manuscript and its Supporting
+Information files.
+Funding: This study was funded by Ministry of
+Science and Technology of the People’s Republic
+of China in the form of a grant awarded to GJ
+(2019YFC1605001). The funder covered the cost
+of testing and test materials, but had no role in
+study design, data collection and analysis, decision
+to publish, or preparation of the manuscript.
+
+
+fragment length polymorphism(RFLP) [7], DNA hybridization [8], and DNA barcoding [9].
+In particular, the real-time PCR method has been widely applied for meat adulteration identifi-
+cation. These assays are rapid and can be used for routine high-throughput screening of multi-
+ple samples. Additionally, real-time PCR reduces the potential of contamination of the PCR
+mixture as the reaction tubes remain closed throughout the assay. Research papers from differ-
+ent countries, including the USA [10], Germany [11], Switzerland [12, 13], Portugal [14], and
+Malaysia [15], for the detection of meat origin and adulteration with this method have been
+published.
+Animal mitochondrial DNA was the research target in these technical methods because of
+its high sensitivity and specificity. Moreover, these detection techniques based on DNA over-
+come the limitations of the animal meat fiber structure, have a much higher objectivity and
+accuracy, and are suitable for the classification and identification of species. Research papers
+related to identification of donkey and horse meat have also been published [16–18]. However,
+mitochondrial DNA is not applicable for the detection of hybrid animals because the mode of
+inheritance of mitochondria is generally thought to be strictly maternal [19, 20]. Mules are the
+offspring of jacks and mares, and hinnies are the offspring of stallions and jennies. The close
+relationship makes the mitochondrial DNA of these animals very similar Therefore, nuclear
+DNA is the optimal choice for the identification of hybrid animal species present in meat
+products [21].
+Mule and hinny are hybrids of horse and donkey. They have both donkey and horse nuclear
+genes in their cytoblasts, there are 32 chromosomes in horses and 31 chromosomes in donkey.
+Few articles or standard identification methods which aim at nuclear genes by fluorescent
+quantitative PCR methods for the detection ingredient of mule or hinny in raw meat have
+been published.
+Hence, in this study, a duplex PCR assay with two species-specific probes for donkey and
+horse was developed and validated, and distinguish donkey from horse and mule/hinny by
+showing different fluorescence amplification curves. The goals of this study were to identify
+fraudulently imitated donkey meat from mule/hinny and to provide a precise method to aid
+law enforcement agencies in the control of food adulteration.
+Materials and methods
+Test material preparation
+Authentic frozen lean meat of multiple species of animals used as reference material was
+obtained from our lab and saved at -20˚C. These species included cow (Bos taurus), sheep
+(Ovisaries), goat (Capra hircus), donkey (Equus asinus), horse (Equus caballus), chicken (Gal-
+lus gallus), duck (Anas platyrhynchos), goose (Anse ranser), turkey (Meleagris gallopavo), pig
+(Sus scrofa), quail (Coturnix coturnix), camel (Camelus dromedarius), dog (Canis lupus famil-
+iaris), ferret (Mustela putorius furo), rabbit (Oryctolagus cuniculus), pigeon (Columba livia),
+mouse (Mus musculus), rat (Rattusnorvegicus), deer (Cervus nippon) and fox (Vulpes). Mule/
+hinny blood samples were collected from farmers who raised mules/hinnies for farm work. All
+the market samples were purchased from supermarkets, inns, farmers’ markets and online
+stores. All samples (whether raw or heat-processed meat) were minced with meat grinders,
+placed in clean plastic bags and stored at -20˚C until DNA extraction.
+DNA extraction
+Total genomic DNA was extracted from 200 mg of each meat sample by using a TIANamp
+Genomic DNA Kit (Tiangen, China) according to the supplier’s manual. Following DNA
+extraction, the purity and concentration of the DNA solutions were measured by UV
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+2 / 9
+Competing interests: The authors have declared
+that no competing interests exist.
+
+
+photometry with a NanoDrop 1000 Spectrophotometer (Thermo, USA). Extracted DNA sam-
+ples(100 μL) were placed in a 1.5 mL microcentrifuge and stored at -20˚C.
+Primers and probes
+The housekeeping gene, which encodes creatine kinase muscle (MCK), was selected as the tar-
+get detection sequence. MCK sequences from donkeys and horses were searched against repre-
+sentative species using BLAST. Primers and probes were designed using Primer Premier 5.0,
+and target sequences were aligned using DNAMAN. The length of the amplified fragment was
+217 bp (Fig 1) Universal primers were designed for horse and donkey (Table 1).
+Duplex real-time PCR quantification approaches
+The 20 μL PCR reaction mixture consisted of 0.6 μL of each primer (10 μM), 0.3 μL of horse-
+probe (10 μM), 0.5 μL of donkey-probe (10 μM),10 μL of 2xSuperReal PreMix (Tiangen,
+Fig 1. MCK sequences of horse and donkey used in duplex real-time PCR. Green characters: universal forward primer
+sequence; purple characters: universal reverse primer sequence; red characters: probe sequence; blue character: differing
+bases between horse and donkey MCK gene sequences.
+https://doi.org/10.1371/journal.pone.0237077.g001
+Table 1. Primers and probes used for duplex real-time PCR assays.
+Primer/Probe
+Sequence/labeling
+NCBI Reference Sequence
+HD-F
+5’-TCATCGTAGCATCGAGGGGA-3’
+HM151344.1
+HD-R
+5’-AGCAGAGCAGGAAGGGAGT-3’
+HQ336263.1
+Horse-P
+5’-(FAM)AAACAACCGGATCTTTCAAGT(MGB) -3’
+HM151344.1
+Donkey-P
+5’-(VIC)AAATAACTGGATCTTTTAAGT(MGB) -3’
+HQ336263.1
+https://doi.org/10.1371/journal.pone.0237077.t001
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+3 / 9
+
+
+China), 1 μL of template DNA (20 ng~40 ng), and 7 μL of nuclease-free water (Tiangen,
+China). PCR was performed on an Applied Biosystems 12K Real-time system (Applied Biosys-
+tems, USA) according to the following cycling protocol: an initial step of 3 min at 95˚C; fol-
+lowed by 40 cycles of 3 s at 95˚C and 32 s at 62˚C.
+Specificity
+To evaluate the species specificity in the assay, DNA from different animal species was used as
+templates for duplex real-time PCR. These animal species are listed in the test material prepa-
+ration section.
+Detection sensitivity and repeatability
+To test the detection sensitivity of the duplex real-time PCR in detecting meat from these three
+species, DNA-extracts of each target species (100 ng/μL DNA) were diluted to 0.01 ng/μL by a
+10-fold series dilution in logarithmic steps with 0.2x TE buffer. Three replicates of PCR tests
+and three independent experiments were run for each level. Five independent experiments
+were carried out to determine the repeatability of the method system. Repeatability (intra-run
+variation) for the assay was reported by the percent coefficient of variance (% CV) within the
+assays.
+Analysis of commercial samples
+For testing the robustness and real-world performance, the developed method was used to test
+158 samples, including 20 raw and 138 heat-processed meat samples that were purchased from
+inns and supermarkets and online stores. All samples were tested using the national standard
+method first. SN/T 3730.5–2013 was used to detect horse ingredient, and SN/T 3730.4–2013
+was used to detect donkey ingredient.
+Results
+Target gene selection
+The equine MCK gene is a housekeeping gene. In this study, the amplified fragment length
+was 217 bp. The sequence was identical to the sequence downloaded from GenBank. Only
+three different bases occurred in the amplified probe sequence fragment between horse and
+donkey DNA (Fig 1). The probes can completely distinguish these two kinds of DNA
+fragments.
+Specificity
+The specificity of this duplex real-time PCR detection system was evaluated for the animal spe-
+cies listed above. Donkey and horse primer/probe combinations were evaluated in this real-
+time PCR detection system to assess the presence of cross-reactivity with other species. No
+cross-amplifications were observed, indicating that the primer/probe combinations used in
+this study could be used to specifically and reliably identify donkey, horse and mule/hinny
+materials in raw meat products (Fig 2).
+Sensitivity and repeatability
+The LOD in this study was defined as the smallest concentration at which all sample replicates
+gave a positive qualitative result, indicating that the detection rate should be above 95%
+(Table 2). In three independent experiments, the duplex PCR detection method demonstrated
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+4 / 9
+
+
+good assay performance and high sensitivity. The LOD was determined to be as low as 0.01
+ng/μL for donkey, horse and mule/hinny (S1 Fig). As a template, the DNA of mule/hinny is
+subjected to three reactions and three independent assays.
+Coefficient of variation: a measure of the dispersion of data points around the mean in a
+series.
+The repeatability of the system was evaluated by variance. The results are shown in Table 2.
+The average values of Ct values of horse and donkey were 24.46 and 26.34, respectively. The
+standard deviations were 0.23 and 0.32, respectively. The assays were determined to have high
+repeatability with very low intra-run %CV, which were 0.82% and 1.14% respectively. The
+very low %CV (<5%) indicates that these assays have high repeatability. These results indicate
+Fig 2. The specificity results of this duplex real-time PCR detection system. A. The specificity results of horse primers and
+probe. The fluorescence curve of the horse MCK gene. Real-time PCR amplification and detection of the horse MCK gene (probe
+labeled with the fluorescent dye FAM). B. The specificity results of donkey primers and probe. The fluorescence curve of the
+donkey MCK gene (probe labeled with fluorescent dye VIC). C. The specificity results of mule/hinny primers and probes. The
+fluorescence curve of the mule/hinny MCK genes. Real-time PCR amplification and detection of the mule/hinny MCK genes. The
+yellow fluorescence curve represents horse; the green fluorescence curve represents donkey.
+https://doi.org/10.1371/journal.pone.0237077.g002
+Table 2. Repeatability tests.
+Mule/hinny Meat
+Five Parallel Independent Tests
+Mean Value
+RSD
+Coefficient of variation (%)
+1
+2
+3
+4
+5
+Horse (Ct)
+24.31
+24.33
+24.58
+24.45
+24.63
+24.46
+0.23
+0.82
+Donkey(Ct)
+26.13
+26.42
+26.34
+26.56
+26.27
+26.34
+0.32
+1.14
+https://doi.org/10.1371/journal.pone.0237077.t002
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+5 / 9
+
+
+that the detection limit of this test is accurate and stable and can be used for the detection of
+donkey, horse and mule/hinny.
+Detection of commercial samples
+The duplex real-time PCR assay was then utilized for the detection of one hundred and fifty-
+eight market samples. Table 3 shows the results from all samples. In 20 raw meat samples, the
+test results coincide with the standard method. 4 samples were simultaneously detected horse
+and donkey in 78 heat–processed donkey meat samples and were hinnies. The remaining sam-
+ples were derived from donkey. In addition, 9 samples were simultaneously detected horse and
+donkey in 60 heat–processed horse meat samples and were identified as mules. The remaining
+51 samples were derived from horse. The results showed that the duplex real-time PCR assay is
+robust and could be successfully applied.
+Discussion
+Horse and donkey have close genetic backgrounds. They belong to the Equine family and have
+highly homologous sequences. Probe design is particularly important for distinguishing horse
+from donkey. Usual fluorescent probes have difficulty distinguishing highly similar template
+sequences and reduce the specificity of species origin [22, 23]. In this study, the length of the
+amplified sequence of the MCK gene was 217 bp. There are only three different bases in the
+common amplified sequences between horse and donkey, and they have been differentiated
+completely using the MGB probe. In both raw and heat-processed meat samples, their ingredi-
+ents were identified by duplex real-time PCR. The heat-processed technique had no impact on
+DNA extraction from meat. This is due to the heat tolerance of DNA.
+Mitochondrial DNA is widely used in species identification and is an effective genetic
+marker for lineage generation and migration in biological evolution [24, 25] Mitochondria are
+generally thought to be maternally inherited. These claims were supported by hybridization
+test results with donkey and horses, goat and sheep, and with progeny from different human
+mtDNAs [26]. Mitochondrial DNA has certain application limitation for identifying hybrid
+animal. For instance, the identification of mule or hinny meat cannot be detected by the stan-
+dard detection methods in China, which take mitochondrial ATPase 6 as a target DNA
+sequence.
+Nuclear DNA is stable in heredity and has a stable single copy number, which is more
+advantageous and prospective in animal species identification, especially in the identification
+of hybrid animals [27, 28]. Many studies for identifying animal species have been published
+using nuclear genomic DNA. Rehbein successfully established a PCR method for detecting
+fish-derived DNA based on nuclear genomic DNA [29]. Wu et al established a multiplex quan-
+titative PCR method targeting nuclear genomic DNA for the detection of fox, dog and rabbit
+[30]. Satkoski et al have developed a species determination assay for common poultry species
+based on nuclear DNA [31]. These research results showed that nuclear DNA-based species
+Table 3. Samples from the market were analyzed by duplex real-time PCR.
+Type
+Species
+NO.
+Standard method
+Duplex real-time PCR
+Horse
+Donkey
+Horse
+Donkey
+Mule/hinny
+Raw meat
+Horse
+10
+10
+0
+10
+0
+0
+Raw meat
+Donkey
+10
+0
+10
+0
+10
+0
+Heat-proceed product
+Donkey
+78
+0
+78
+4
+78
+4
+Heat-proceed product
+Horse
+60
+60
+0
+60
+9
+9
+https://doi.org/10.1371/journal.pone.0237077.t003
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+6 / 9
+
+
+determination is feasible. Xu et al found that the difference in mtDNA between horse and don-
+key was confirmed by a DNA endonuclease analysis [32]. The MCK gene is highly conserved
+and can be used to identify animal species with different genetic backgrounds. MCK is mainly
+expressed in different muscle cells and is highly expressed in cardiac and skeletal cells [33]. In
+this study, the primers and probes designed could distinguish meat originating from donkey,
+horse and mule/hinny in a duplex fluorescent PCR detection system. The quick and accurate
+detection of Equus species could reduce fraudulent replacement of donkey meat with horse
+and mule/hinny meat.
+In conclusion, the utility of duplex real-time PCR for the detection of nuclear DNA
+retrieved from donkey, horse, and mule species in meat products has been demonstrated. The
+duplex real-time PCR showed different fluorescence amplification curves for horse and don-
+key. For mule/hinny, both horse and donkey fluorescence amplification curves appeared
+simultaneously. This new molecular technique was shown to be a highly specific, sensitive, and
+efficient tool for the determination of meat adulteration in both raw and heat-processed meat
+samples. This detection method is not applicable for the identification of mixed livestock meat.
+A detection method for mixed meat components would be studied further.
+Supporting information
+S1 Fig. Amplification plots from dilution series of genomic DNA from horse and donkey.
+Genomic DNA dilutions ranged from final concentration of 0.01 ng to 100 ng, in a total of 5
+data points. The species were horse and donkey in A and B respectively.
+(PDF)
+Acknowledgments
+The authors would like to thank Hongen Wang for providing mule blood. We also thank Lip-
+ing Song for assistance with exercise experiments.
+Author Contributions
+Conceptualization: Dan Wang, Liping Wang, Jianqiang Geng, Jiang Jie.
+Data curation: Chenyu Xue.
+Formal analysis: Liping Wang, Chenyu Xue.
+Funding acquisition: Jianqiang Geng.
+Investigation: Yuebei Han.
+Methodology: Dan Wang, Liping Wang.
+Project administration: Jiang Jie.
+Resources: Yuebei Han, Jianqiang Geng, Jiang Jie.
+Software: Hejing Li.
+Supervision: Jianqiang Geng.
+Validation: Yuebei Han.
+Visualization: Hejing Li.
+Writing – original draft: Liping Wang, Chenyu Xue, Yuebei Han, Jiang Jie.
+Writing – review & editing: Dan Wang, Hejing Li.
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+7 / 9
+
+
+References
+1.
+Chen AL, Wei CB, Chen G, Zhao Y, Y SM. Duplex PCR approach for the detection and quantification of
+donkey, horse and mule in raw and heat-processed meat products. International Journal of Food Sci-
+ence & Technology. 2017; 50(3): 834–839. https://doi.org/10.1111/ijfs.12720
+2.
+Yuan Y. Real-time Fluorescent PCR for Identifying Ingredients of Horse and Donkey in Halal Food.
+Hubei Agricultural Sciences. 2014; 53(22): 5518–5522. https://doi.org/10.7506/spkx1002-6630-
+201408016
+3.
+Matsunaga T, Chikuni K, Tanabe R. A quick and simple method for the identification of meat species
+and meat products by PCR assay. Meat Science. 1999; 51(2): p.143–148. https://doi.org/10.1016/
+s0309-1740(98)00112-0 PMID: 22061698
+4.
+Dalsecco L, Palhares R, Oliveira P, Teixeira L, Drummond M, D d O. A Fast and Reliable Real-Time
+PCR Method for Detection of Ten Animal Species in Meat Products. Journal of Food Science. 2018; 83
+(2): 258–265. https://doi.org/10.1111/1750-3841.14001 PMID: 29377112
+5.
+Anna W, Ilona P, Agata G, Krzysztof K. Application of real-time PCR for DNA identification of ruminants
+in raw animal products. Medycyna Weterynaryjna. 2018; 74: 6061–2018. https://doi.org/10.21521/mw.
+6061
+6.
+Ren J, Tingting D, Wensheng H, Ying C, Yiqiang G, Hideyuki D. A digital PCR method for identifying
+and quantifying adulteration of meat species in raw and processed food. Plos One. 2017; 12(3): 1–17.
+https://doi.org/10.1371/journal.pone.0173567 PMID: 28319152
+7.
+Matsumoto C, Kyota Y, Yamanaka S, Murakawa N, Kawachi H. Molecular identification of biwa trout
+(Oncorhynchus masou rhodurus) using PCR–RFLP method. Journal of Food Science and Technology
+2019; 56(10): 4705–4713. https://doi.org/10.1007/s13197-019-03914-3 PMID: 31686702
+8.
+EbbehoJ K F,Thomsen P D. Species differentiation of heated meat products by DNA hybridization.
+Meat Science. 1991; 30(3): 221–234. https://doi.org/10.1016/0309-1740(91)90068-2 PMID: 22061971
+9.
+Quinto C A., Tinoco Rebecca, Hellberg R S. DNA barcoding reveals mislabeling of game meat species
+on the U.S. commercial market. Food Control. 2016; 59: 386–392. https://doi.org/10.1016/j.foodcont.
+2015.05.043
+10.
+Perestam A T, Fujisaki K K, Nava O, Hellberg R S. Comparison of real-time PCR and ELISA-based
+methods for the detection of beef and pork in processed meat products. Food Control. 2017; 71: 346–
+352. https://doi.org/10.1016/j.foodcont.2016.07.017
+11.
+Iwobi A, Sebah D, Kraemer I, Losher C, Fischer G, Busch U, et al. A multiplex real-time PCR method for
+the quantification of beef and pork fractions in minced meat. Food Chemistry. 2015; 169: 305–313.
+https://doi.org/10.1016/j.foodchem.2014.07.139 PMID: 25236231
+12.
+Koppel R, Zimmerli F, Breitenmoser A. Heptaplex real-time PCR for the identification and quantification
+of DNA from beef, pork, chicken, turkey, horse meat, sheep (mutton) and goat. European Food
+Research & Technology. 2009; 230(1): 125–133. https://doi.org/10.1007/s00217-009-1154-5
+13.
+Koppel R, Ruf J, Zimmerli F, A Breitenmoser. Multiplex real-time PCR for the detection and quantifica-
+tion of DNA from beef, pork, chicken and turkey. European Food Research & Technology. 2008; 227
+(4): 1199–1203. https://doi.org/10.1007/s00217-008-0837-7
+14.
+Meira L, Costa J, Villa C, Ramos F, Mafra I. EvaGreen real-time PCR to determine horse meat adultera-
+tion in processed foods. LWT- Food Science and Technology. 2016; 75: 408–416. https://doi.org/10.
+1016/j.lwt.2016.08.061
+15.
+Hossain MAM, Uddin SMK, Sultana S, K M Bonny SQ, Chowdhury ZZ, Johan MR, et al. Heptaplex
+Polymerase Chain Reaction Assay for the Simultaneous Detection of Beef, Buffalo, Chicken, Cat, Dog,
+Pork, and Fish in Raw and Heat-Treated Food Products. Journal of Agricultural and Food Chemistry.
+2019; 67(29): 8268–8278. https://doi.org/10.1021/acs.jafc.9b02518 PMID: 31283221
+16.
+Ilahi A, Hadrich I, Neji S, Trabelsi H, Makni F, Ayadi A. Real-Time PCR Identification of SixMalasseziaS-
+pecies. Current Microbiology. 2017; 74(6): 671–677. https://doi.org/10.1007/s00284-017-1237-7
+PMID: 28332161
+17.
+Wu YJ W B, Liu MC,Han JX,Chen Y. A Real-Time PCR to Detect Horse and Donkey Ingredients in Don-
+key Hide Glue. Food Science. 2014; 35(8): 85–88. https://doi.org/10.7506/spkx1002-6630-201408016
+18.
+You J, Huang L, Zhuang J, Mou Z. Species-specific multiplex real-time PCR assay for identification of
+deer and common domestic animals. Food Science and Biotechnology. 2014; 23(1): 133–139. https://
+doi.org/10.1007/s10068-014-0018-3
+19.
+Boore J L. Animal mitochondrial genomes. Nucleic Acids Research. 1999; 27(8): 1767–1780. https://
+doi.org/10.1093/nar/27.8.1767 PMID: 10101183
+20.
+Moustafa G G, Y M Abd-Elhakim, Sharkawy N I El. Genetic Profiling of Equid Hybrids Using PCR-RFLP
+and Partial Sequence Analysis of Cytochrome b Gene: Forensic Implication. Journal of Equine Veteri-
+nary Science. 2017; 54: 37–41. https://doi.org/10.1016/j.jevs.2017.02.014
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+8 / 9
+
+
+21.
+Alonso A, Martı´n P, Albarra´n C, Albarra´n C, Garcı´a P, Garcı´a O, e al. Real-time PCR designs to esti-
+mate nuclear and mitochondrial DNA copy number in forensic and ancient DNA studies. Forensic Sci-
+ence International. 2004; 139(2–3): 141–149. https://doi.org/10.1016/j.forsciint.2003.10.008 PMID:
+15040907
+22.
+Livak K J. Allelic discrimination using fluorogenic probes and the 5’ nuclease assay. Genetic Analysis
+Biomolecular Engineering. 1999; 14(5–6): 143–149. https://doi.org/10.1016/s1050-3862(98)00019-9
+PMID: 10084106
+23.
+Li Q, Yuan Y-Y, Huang D-L, Han D-Y, Dai P. Rapid screening for the mitochondrial DNA C1494T muta-
+tion in a deaf population in China using real-time quantitative PCR. Acta Oto-laryngologica. 2012; 132
+(8): 1–5. https://doi.org/10.3109/00016489.2012.664781 PMID: 22497215
+24.
+Henriques D, Parejo M, Lopes A R, Pinto M A. Mitochondrial SNP markers to monitor evolutionary line-
+age ancestry in Apis melliferamellifera conservation programs. Apidologie. 2019; 50(4): 538–541.
+https://doi.org/10.1007/s13592-019-00666-z
+25.
+Zhang D X, Hewitt G M. Nuclear integrations: challenges for mitochondrial DNA markers. Trends in
+ecology & evolution. 1996; 11(6): 247–251. https://doi.org/10.1016/0169-5347(96)10031-8 PMID:
+21237827
+26.
+Lansman R A, Avise J C, Huettel M D. Critical experimental test of the possibility of \"paternal leakage\"
+of mitochondrial DNA. Proceedings of the National Academy of Sciences of the United States of Amer-
+ica. 1983; 80(7): 1969–1971. https://doi.org/10.1073/pnas.80.7.1969 PMID: 6300883
+27.
+Lavergne A, Catzeflis F, Lacoˆte S, Barnaud A, Bordier M, Mercereau-Puijalon O, et al. Genetic analysis
+of the Saimiri breeding colony of the Pasteur Institute (French Guiana): development of a molecular typ-
+ing method using a combination of nuclear and mitochondrial DNA markers&nbsp. Journal of Medical
+Primatology. 2003; 32(6): 330–340. https://doi.org/10.1046/j.1600-0684.2003.00038.x PMID:
+14641788
+28.
+Ropiquet A, Hassanin A. Hybrid origin of the Pliocene ancestor of wild goats. Molecular Phylogenetics
+& Evolution. 2006; 41(2): 395–404. https://doi.org/10.1016/j.ympev.2006.05.033 PMID: 16837213
+29.
+Rehbein H. Differentiation of fish species by PCR-based DNA analysis of nuclear genes. European
+Food Research and Technology. 2013; 236(6): 979–990. https://doi.org/10.1007/s00217-013-1961-6
+30.
+Wu Q Q, Xiang S N, Wang W J, Zhao J A, Xia J H, Zhen Y R, et al. Species Identification of Fox-, Mink-,
+Dog-, and Rabbit-Derived Ingredients by Multiplex PCR and Real-Time PCR Assay. Applied Biochemis-
+try and Biotechnology. 2018; 185(1): 1–12. https://doi.org/10.1007/s12010-017-2621-2 PMID:
+29071458
+31.
+Ng J, Satkoski J, Premasuthan A, Kanthaswamy S. A nuclear DNA-based species determination and
+DNA quantification assay for common poultry species. Journal of Food Science and Technology. 2014;
+51(12): 4060–4065. https://doi.org/10.1007/s13197-012-0893-7 PMID: 25477681
+32.
+Xu X, Gullberg A, Arnason U. The Complete Mitochondrial DNA (mtDNA) of the Donkey and mtDNA
+Comparisons Among Four Closely Related Mammalian Species-Pairs. Journal of Molecular Evolution.
+1996; 43(5): 438–446. https://doi.org/10.1007/BF02337515 PMID: 8875857
+33.
+Kang Dencuo, Qi Geri, Qinan ZHAO, ZHAO Y. Analysis of the Expression of MSTN Gene and CKM
+Gene before and after High Load Exercise Training in Mongolian Horses. Chinese Journal of Animal
+Science. 2018; 54(1): 34–37.DOI: CNKI:SUN:ZGXM.0.2018-01-007.
+PLOS ONE
+Real-time fluorescent PCR detection of mule/hinny meat
+PLOS ONE | https://doi.org/10.1371/journal.pone.0237077
+December 29, 2020
+9 / 9

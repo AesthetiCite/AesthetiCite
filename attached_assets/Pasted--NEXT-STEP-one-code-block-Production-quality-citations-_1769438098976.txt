@@ -1,0 +1,511 @@
+# NEXT STEP (one code block): Production-quality citations + evidence grading + “no step-by-step dosing unless quoted”
+# + Better chunk metadata (page labels) + Simple admin endpoint to list documents + health metrics
+#
+# This patch:
+# 1) Enforces Veridoc’s core policy: if a claim isn’t supported by retrieved text, don’t say it.
+# 2) Adds short, compliant excerpts (“supporting snippets”) per citation (<= 240 chars) to justify key statements.
+# 3) Adds evidence grading labels (Guideline/Consensus/IFU/Review/RCT/Other) consistently.
+# 4) Improves PDF ingestion to tag chunks with page numbers when possible.
+# 5) Adds /admin/documents (list) and /admin/document/{source_id} (inspect) for QA.
+# 6) Adds /metrics-lite (basic service stats) for sanity checks.
+
+set -e
+mkdir -p app/core app/api app/rag ingestion
+
+echo "==> 1) Update schemas to include optional 'snippet' in citations (QA trust)"
+cat > app/schemas/ask.py <<'EOF'
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, List
+
+
+Mode = Literal["clinic", "deep_dive"]
+Domain = Literal["medicine", "dermatology", "aesthetic_medicine"]
+
+
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=5, max_length=2000)
+    mode: Mode = "clinic"
+    domain: Domain = "medicine"
+    language: Optional[Literal["auto", "en", "fr"]] = "auto"
+
+
+class Citation(BaseModel):
+    source_id: str
+    title: str
+    year: Optional[int] = None
+    organization_or_journal: Optional[str] = None
+    page_or_section: Optional[str] = None
+    evidence_level: Optional[str] = None
+    snippet: Optional[str] = None  # short supporting excerpt (QA)
+
+
+class AskResponse(BaseModel):
+    answer: str
+    citations: List[Citation]
+    refusal: bool = False
+    refusal_reason: Optional[str] = None
+    request_id: Optional[str] = None
+    latency_ms: Optional[int] = None
+EOF
+
+echo "==> 2) Evidence grading helper (consistent labels)"
+cat > app/core/evidence.py <<'EOF'
+from __future__ import annotations
+
+def normalize_evidence_level(raw: str | None) -> str:
+    if not raw:
+        return "Other"
+    r = raw.strip().lower()
+    mapping = {
+        "guideline": "Guideline",
+        "guidelines": "Guideline",
+        "consensus": "Consensus",
+        "position statement": "Consensus",
+        "ifu": "IFU",
+        "instructions for use": "IFU",
+        "review": "Review",
+        "systematic review": "Review",
+        "meta-analysis": "Review",
+        "rct": "RCT",
+        "randomized": "RCT",
+        "other": "Other",
+        "textbook": "Other",
+    }
+    # match by inclusion
+    for k, v in mapping.items():
+        if k in r:
+            return v
+    return "Other"
+EOF
+
+echo "==> 3) PDF extractor upgraded to return per-page text for better page citations"
+cat > ingestion/pdf_extract.py <<'EOF'
+from __future__ import annotations
+import pdfplumber
+from typing import List, Tuple
+
+def extract_pages_from_pdf(pdf_path: str) -> List[Tuple[int, str]]:
+    """
+    Returns a list of (page_number_1_based, text).
+    """
+    pages: List[Tuple[int, str]] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            txt = page.extract_text() or ""
+            txt = txt.strip()
+            if txt:
+                pages.append((i + 1, txt))
+    return pages
+
+def extract_text_from_pdf(pdf_path: str) -> str:
+    pages = extract_pages_from_pdf(pdf_path)
+    return "\n\n".join([t for _, t in pages])
+EOF
+
+echo "==> 4) Chunker upgraded: keeps page numbers in page_or_section"
+cat > ingestion/chunker.py <<'EOF'
+from __future__ import annotations
+from typing import List, Tuple
+from app.core.config import settings
+
+def chunk_text_with_page(page_no: int, text: str) -> List[Tuple[str, str]]:
+    clean = " ".join(text.split())
+    if not clean:
+        return []
+    size = settings.CHUNK_SIZE_CHARS
+    overlap = settings.CHUNK_OVERLAP_CHARS
+    chunks: List[Tuple[str, str]] = []
+    i = 0
+    idx = 0
+    n = len(clean)
+    while i < n:
+        j = min(i + size, n)
+        chunk = clean[i:j].strip()
+        if chunk:
+            chunks.append((f"p{page_no}-c{idx}", chunk))
+            idx += 1
+        if j == n:
+            break
+        i = max(0, j - overlap)
+    return chunks
+EOF
+
+echo "==> 5) Citations builder now attaches a short supporting snippet from retrieved text"
+cat > app/rag/citations.py <<'EOF'
+from __future__ import annotations
+from typing import List, Dict
+from app.schemas.ask import Citation
+from app.core.evidence import normalize_evidence_level
+
+SNIPPET_MAX = 240  # keep short (QA only)
+
+def _snippet(text: str | None) -> str | None:
+    if not text:
+        return None
+    t = " ".join(text.split())
+    if len(t) <= SNIPPET_MAX:
+        return t
+    return t[:SNIPPET_MAX].rstrip() + "…"
+
+def to_citations(chunks: List[Dict]) -> List[Citation]:
+    citations: List[Citation] = []
+    seen = set()
+    for c in chunks:
+        key = (c.get("source_id"), c.get("page_or_section"))
+        if key in seen:
+            continue
+        seen.add(key)
+        citations.append(Citation(
+            source_id=c.get("source_id", ""),
+            title=c.get("title", "Unknown source"),
+            year=c.get("year"),
+            organization_or_journal=c.get("organization_or_journal"),
+            page_or_section=c.get("page_or_section"),
+            evidence_level=normalize_evidence_level(c.get("evidence_level")),
+            snippet=_snippet(c.get("text")),
+        ))
+    return citations
+EOF
+
+echo "==> 6) Answer builder: stricter, evidence-bounded, avoids step-by-step dosing unless quoted"
+cat > app/rag/answer.py <<'EOF'
+from __future__ import annotations
+from typing import List, Dict, Optional
+from app.core.config import settings
+
+def build_answer(
+    question: str,
+    mode: str,
+    domain: str,
+    retrieved: List[Dict],
+    escalation_note: Optional[str] = None,
+) -> str:
+    """
+    Veridoc answer policy (strict):
+    - Summarize only what retrieved text supports.
+    - Do NOT provide dosing/step-by-step emergency instructions unless explicitly present in retrieved chunks.
+    - Always emphasize consultation of local protocols for time-critical emergencies.
+    """
+    # Minimal synthesis: pull key supported points from retrieved text
+    # (We keep it conservative; you can later add claim-to-citation mapping.)
+    supported_points = []
+    for r in retrieved[:6]:
+        txt = " ".join((r.get("text") or "").split())
+        if not txt:
+            continue
+        # Take one short supported point per chunk (non-protocol)
+        supported_points.append(txt[:220].rstrip() + ("…" if len(txt) > 220 else ""))
+
+    sources_lines = []
+    for r in retrieved[:10]:
+        sources_lines.append(
+            f"- {r.get('title')} ({r.get('year','n.d.')}) — {r.get('evidence_level','Other')} — {r.get('page_or_section','')}".strip()
+        )
+    sources_block = "\n".join(sources_lines) if sources_lines else "- None"
+
+    summary = (
+        "Clinical summary\n"
+        f"- Domain: {domain}\n"
+        "- This response is generated strictly from retrieved evidence.\n"
+    )
+
+    actions = "Evidence-supported points\n"
+    if supported_points:
+        for p in supported_points[:6]:
+            actions += f"- {p}\n"
+    else:
+        actions += "- Retrieved sources did not contain extractable, specific guidance for this question.\n"
+
+    safety = (
+        "Safety & escalation\n"
+        "- If this is time-critical (e.g., suspected ischemia/necrosis or visual symptoms), escalate urgently per local emergency pathways.\n"
+        "- Veridoc does not replace clinical judgment.\n"
+    )
+    if escalation_note:
+        safety += f"- Note: {escalation_note}\n"
+
+    evidence = (
+        "Evidence level\n"
+        "- The strength of evidence varies by topic; many aesthetic complication protocols rely on consensus/reviews rather than randomized trials.\n"
+    )
+
+    limits = (
+        "Limits and uncertainty\n"
+        "- No step-by-step dosing/procedural emergency instructions are provided unless explicitly present in retrieved sources.\n"
+        "- Consult your approved local protocols and the original sources for definitive guidance.\n"
+    )
+
+    sources = "Sources\n" + sources_block
+
+    answer = "\n".join([summary, actions, safety, evidence, sources, limits])
+    return answer[: settings.MAX_CONTEXT_CHARS]
+EOF
+
+echo "==> 7) Admin endpoints for QA: list documents and inspect a document + its chunks"
+cat > app/api/admin.py <<'EOF'
+from __future__ import annotations
+import os
+import uuid
+from fastapi import APIRouter, Depends, UploadFile, File, Form
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from app.core.config import settings
+from app.core.admin_auth import require_admin
+from app.db.session import get_db
+from app.rag.embedder import embed_text
+from ingestion.pdf_extract import extract_pages_from_pdf
+from ingestion.chunker import chunk_text_with_page
+from app.schemas.admin import IngestMetadata
+from app.core.limiter import limiter
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+@router.get("/documents")
+def list_documents(_: bool = Depends(require_admin), db: Session = Depends(get_db), limit: int = 50, offset: int = 0):
+    rows = db.execute(text("""
+      SELECT source_id, title, year, document_type, domain, status, updated_at
+      FROM documents
+      ORDER BY updated_at DESC NULLS LAST
+      LIMIT :limit OFFSET :offset;
+    """), {"limit": int(limit), "offset": int(offset)}).mappings().all()
+    return {"ok": True, "documents": list(rows)}
+
+@router.get("/document/{source_id}")
+def inspect_document(source_id: str, _: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    doc = db.execute(text("""
+      SELECT id, source_id, title, authors, organization_or_journal, year, document_type, domain, version, status, url, file_path, updated_at
+      FROM documents WHERE source_id = :sid;
+    """), {"sid": source_id}).mappings().first()
+    if not doc:
+        return {"ok": False, "reason": "Not found"}
+
+    chunks = db.execute(text("""
+      SELECT chunk_index, page_or_section, LEFT(text, 300) AS preview
+      FROM chunks
+      WHERE document_id = :doc_id
+      ORDER BY chunk_index ASC
+      LIMIT 200;
+    """), {"doc_id": doc["id"]}).mappings().all()
+
+    return {"ok": True, "document": dict(doc), "chunks_preview": list(chunks)}
+
+@router.post("/ingest_pdf")
+@limiter.limit(settings.RATE_LIMIT_INGEST)
+def ingest_pdf(
+    _: bool = Depends(require_admin),
+    metadata_json: str = Form(...),
+    pdf: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    meta = IngestMetadata.model_validate_json(metadata_json)
+
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    file_id = str(uuid.uuid4())
+    filename = (pdf.filename or "upload.pdf").replace("/", "_").replace("\\", "_")
+    saved_path = os.path.join(settings.UPLOAD_DIR, f"{file_id}_{filename}")
+
+    with open(saved_path, "wb") as f:
+        f.write(pdf.file.read())
+
+    pages = extract_pages_from_pdf(saved_path)
+    if not pages:
+        return {"ok": False, "reason": "No extractable text found in PDF.", "file_path": saved_path}
+
+    # Build chunks with page labels
+    all_chunks = []
+    for page_no, page_text in pages:
+        all_chunks.extend(chunk_text_with_page(page_no, page_text))
+
+    if not all_chunks:
+        return {"ok": False, "reason": "Chunking produced no content.", "file_path": saved_path}
+
+    doc_id = db.execute(text("""
+      INSERT INTO documents (source_id, title, authors, organization_or_journal, year, document_type, domain, version, status, url, file_path)
+      VALUES (:source_id, :title, :authors, :org, :year, :dtype, :domain, :version, 'active', :url, :file_path)
+      ON CONFLICT (source_id) DO UPDATE SET
+        title=EXCLUDED.title,
+        authors=EXCLUDED.authors,
+        organization_or_journal=EXCLUDED.organization_or_journal,
+        year=EXCLUDED.year,
+        document_type=EXCLUDED.document_type,
+        domain=EXCLUDED.domain,
+        version=EXCLUDED.version,
+        status='active',
+        url=EXCLUDED.url,
+        file_path=EXCLUDED.file_path,
+        updated_at=now()
+      RETURNING id;
+    """), {
+        "source_id": meta.source_id,
+        "title": meta.title,
+        "authors": meta.authors,
+        "org": meta.organization_or_journal,
+        "year": meta.year,
+        "dtype": meta.document_type,
+        "domain": meta.domain,
+        "version": meta.version,
+        "url": meta.url,
+        "file_path": saved_path,
+    }).scalar_one()
+
+    db.execute(text("DELETE FROM chunks WHERE document_id = :doc_id;"), {"doc_id": doc_id})
+
+    for idx, (pos, txt) in enumerate(all_chunks):
+        vec = embed_text(txt)
+        db.execute(text("""
+          INSERT INTO chunks (document_id, chunk_index, text, page_or_section, evidence_level, embedding)
+          VALUES (:doc_id, :idx, :text, :pos, NULL, :emb);
+        """), {
+            "doc_id": doc_id,
+            "idx": idx,
+            "text": txt,
+            "pos": pos,
+            "emb": vec,
+        })
+
+    db.execute(text("ANALYZE;"))
+    db.commit()
+
+    return {"ok": True, "source_id": meta.source_id, "stored_pdf": saved_path, "chunks_inserted": len(all_chunks)}
+EOF
+
+echo "==> 8) Ask endpoint: ensure it uses updated citations schema (snippets) + answer builder"
+cat > app/api/ask.py <<'EOF'
+from __future__ import annotations
+import time
+import uuid
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from app.schemas.ask import AskRequest, AskResponse
+from app.core.config import settings
+from app.core.safety import safety_screen
+from app.core.limiter import limiter
+from app.db.session import get_db
+from app.rag.retriever import retrieve_db
+from app.rag.citations import to_citations
+from app.rag.answer import build_answer
+
+router = APIRouter(prefix="", tags=["ask"])
+
+@router.post("/ask", response_model=AskResponse)
+@limiter.limit(settings.RATE_LIMIT_ASK)
+def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) -> AskResponse:
+    request_id = str(uuid.uuid4())
+    t0 = time.perf_counter()
+
+    safety = safety_screen(payload.question)
+    if not safety.allowed:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        db.execute(text("""
+          INSERT INTO queries (id, user_id, question, domain, mode, latency_ms, citations_count, refusal, refusal_reason)
+          VALUES (:id, :user_id, :q, :domain, :mode, :lat, 0, true, :reason);
+        """), {
+            "id": request_id,
+            "user_id": request.client.host if request.client else None,
+            "q": payload.question,
+            "domain": payload.domain,
+            "mode": payload.mode,
+            "lat": latency_ms,
+            "reason": safety.refusal_reason or "Request refused by safety policy.",
+        })
+        db.commit()
+        return AskResponse(answer="", citations=[], refusal=True, refusal_reason=safety.refusal_reason, request_id=request_id, latency_ms=latency_ms)
+
+    retrieved = retrieve_db(db=db, question=payload.question, domain=payload.domain, k=8)
+    citations = to_citations(retrieved)
+
+    if len(citations) < settings.MIN_CITATIONS_REQUIRED:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        db.execute(text("""
+          INSERT INTO queries (id, user_id, question, domain, mode, latency_ms, citations_count, refusal, refusal_reason)
+          VALUES (:id, :user_id, :q, :domain, :mode, :lat, 0, true, :reason);
+        """), {
+            "id": request_id,
+            "user_id": request.client.host if request.client else None,
+            "q": payload.question,
+            "domain": payload.domain,
+            "mode": payload.mode,
+            "lat": latency_ms,
+            "reason": "Insufficient evidence retrieved to answer with citations.",
+        })
+        db.commit()
+        return AskResponse(answer="", citations=[], refusal=True, refusal_reason="Insufficient evidence retrieved to answer with citations.", request_id=request_id, latency_ms=latency_ms)
+
+    answer = build_answer(payload.question, payload.mode, payload.domain, retrieved, safety.escalation_note)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    db.execute(text("""
+      INSERT INTO queries (id, user_id, question, domain, mode, latency_ms, citations_count, refusal, refusal_reason)
+      VALUES (:id, :user_id, :q, :domain, :mode, :lat, :cc, false, NULL);
+    """), {
+        "id": request_id,
+        "user_id": request.client.host if request.client else None,
+        "q": payload.question,
+        "domain": payload.domain,
+        "mode": payload.mode,
+        "lat": latency_ms,
+        "cc": len(citations),
+    })
+    db.execute(text("""
+      INSERT INTO answers (query_id, answer_text, citations_json)
+      VALUES (:qid, :ans, :cjson);
+    """), {
+        "qid": request_id,
+        "ans": answer,
+        "cjson": [c.model_dump() for c in citations],
+    })
+    db.commit()
+
+    return AskResponse(answer=answer, citations=citations, refusal=False, request_id=request_id, latency_ms=latency_ms)
+EOF
+
+echo "==> 9) Main: include routers + limiter handler + add /metrics-lite"
+cat > app/main.py <<'EOF'
+from fastapi import FastAPI
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+from sqlalchemy import text
+from app.core.config import settings
+from app.core.limiter import limiter
+from app.db.session import SessionLocal
+from app.api.ask import router as ask_router
+from app.api.admin import router as admin_router
+
+app = FastAPI(title=settings.APP_NAME)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.include_router(ask_router)
+app.include_router(admin_router)
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "app": settings.APP_NAME, "env": settings.ENV}
+
+@app.get("/metrics-lite")
+def metrics_lite():
+    # Lightweight counts for sanity checks (no auth)
+    with SessionLocal() as db:
+        q = db.execute(text("SELECT COUNT(*) FROM queries;")).scalar_one()
+        d = db.execute(text("SELECT COUNT(*) FROM documents;")).scalar_one()
+        c = db.execute(text("SELECT COUNT(*) FROM chunks;")).scalar_one()
+    return {"queries": q, "documents": d, "chunks": c}
+EOF
+
+echo "==> 10) Reminder: Reinstall deps, then restart server"
+cat <<'EOF'
+NEXT:
+1) Let Replit install updated deps (pdfplumber already installed).
+2) Restart:
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+QA:
+- GET /metrics-lite (should show counts)
+- Use /admin/documents (with X-API-Key) to verify your library
+- Ingest a real PDF and check chunk labels like p3-c0, p3-c1, etc.
+- Ask a question and verify citations include snippets + evidence level labels.
+EOF

@@ -1,0 +1,854 @@
+"""
+ONE-CODE PRIORITIES PATCH (Speed + DeepConsult reframing + Source-tier strategy)
+
+Drop this single file into your backend and wire 3 functions:
+  1) retrieve_chunks(query: str, k: int) -> list[dict]
+  2) llm_json(prompt: str) -> dict
+  3) llm_text(prompt: str) -> str
+
+What this patch implements (all priorities):
+✅ Priority #1 SPEED:
+   - Parallel multi-query retrieval (thread pool)
+   - Time-budgeted pipeline (FAST mode <= ~15s target)
+   - Aggressive caching (in-memory LRU + TTL)
+   - Early exits + chunk caps + evidence coverage gates
+   - Two-stage answer: FAST first, DEEPCONSULT optional
+
+✅ Priority #2 DeepConsult reframing:
+   - Dedicated DEEPCONSULT mode with medico-legal/safety emphasis
+   - Explicit "slow & advanced" label + PDF-ready structured output fields
+
+✅ Priority #3 Publisher partnerships (pragmatic):
+   - Source-tier weighting focused on aesthetic: guidelines/consensus/IFU/journals
+   - Full-text prestige journals NOT required; relevance & defensibility prioritized
+
+Chunk format expected (minimal):
+{
+  "id": "unique-id",
+  "title": "...",
+  "text": "...",
+  "url": "https://...",
+  "year": 2023,
+  "source_type": "guideline|consensus|ifu|review|rct|cohort|case_series|case_report|other",
+  "domain": "journal|society|manufacturer|preprint|other"   # optional but helps
+}
+
+USAGE (no FastAPI):
+  engine = AesthetiCiteEngine(retrieve_chunks, llm_json, llm_text)
+  out = engine.answer("question here", mode="fast")
+  out2 = engine.answer("question here", mode="deepconsult")
+
+OPTIONAL FastAPI at bottom (uncomment).
+"""
+
+from __future__ import annotations
+
+import re
+import time
+import json
+import math
+import hashlib
+import threading
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+# =========================
+# Plug these 3 functions in
+# =========================
+def retrieve_chunks(query: str, k: int = 20) -> List[Dict[str, Any]]:
+    raise NotImplementedError("Plug in retrieve_chunks(query, k)")
+
+def llm_json(prompt: str) -> Dict[str, Any]:
+    raise NotImplementedError("Plug in llm_json(prompt)")
+
+def llm_text(prompt: str) -> str:
+    raise NotImplementedError("Plug in llm_text(prompt)")
+
+
+# =========================
+# Config
+# =========================
+@dataclass
+class ModeConfig:
+    # TIME BUDGETS (core speed control)
+    wall_time_budget_s: float
+    # Retrieval
+    max_queries: int
+    per_query_k: int
+    max_chunks_after_dedupe: int
+    rerank_top_k: int
+    min_directness: float
+    # Claim planning & grounding
+    max_claims: int
+    citations_per_claim: int
+    require_strong_for_actionable: bool
+    # Output
+    label: str
+
+FAST = ModeConfig(
+    wall_time_budget_s=15.0,
+    max_queries=5,
+    per_query_k=14,
+    max_chunks_after_dedupe=60,
+    rerank_top_k=12,
+    min_directness=0.16,
+    max_claims=10,
+    citations_per_claim=2,
+    require_strong_for_actionable=True,
+    label="FAST (clinical tool)"
+)
+
+DEEPCONSULT = ModeConfig(
+    wall_time_budget_s=80.0,   # your current typical window
+    max_queries=8,
+    per_query_k=28,
+    max_chunks_after_dedupe=160,
+    rerank_top_k=28,
+    min_directness=0.12,
+    max_claims=18,
+    citations_per_claim=3,
+    require_strong_for_actionable=True,
+    label="DEEPCONSULT (slow & advanced, safety-grade)"
+)
+
+# Strong evidence types for actionable claims
+STRONG_TYPES = {"guideline", "consensus", "review", "rct", "ifu"}  # IFU matters a lot in aesthetics
+
+
+# =========================
+# Very fast cache (TTL + LRU)
+# =========================
+class TTLCache:
+    def __init__(self, max_items: int = 2048, ttl_s: int = 3600):
+        self.max_items = max_items
+        self.ttl_s = ttl_s
+        self._lock = threading.Lock()
+        self._store: Dict[str, Tuple[float, Any]] = {}
+        self._order: List[str] = []
+
+    def get(self, key: str) -> Optional[Any]:
+        now = time.time()
+        with self._lock:
+            item = self._store.get(key)
+            if not item:
+                return None
+            ts, val = item
+            if now - ts > self.ttl_s:
+                self._store.pop(key, None)
+                if key in self._order:
+                    self._order.remove(key)
+                return None
+            # touch LRU
+            if key in self._order:
+                self._order.remove(key)
+            self._order.append(key)
+            return val
+
+    def set(self, key: str, val: Any) -> None:
+        now = time.time()
+        with self._lock:
+            if key in self._store:
+                self._store[key] = (now, val)
+                if key in self._order:
+                    self._order.remove(key)
+                self._order.append(key)
+                return
+            # evict if needed
+            while len(self._order) >= self.max_items:
+                old = self._order.pop(0)
+                self._store.pop(old, None)
+            self._store[key] = (now, val)
+            self._order.append(key)
+
+
+# =========================
+# Utility
+# =========================
+_WORD = re.compile(r"[A-Za-z0-9]+")
+_NUMBER = re.compile(r"(?<![A-Za-z])(\d+(\.\d+)?)(?![A-Za-z])")
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _tokens(s: str) -> set:
+    return set(_WORD.findall(_norm(s)))
+
+def _hash_chunk(c: Dict[str, Any]) -> str:
+    key = (_norm(c.get("title", "")) + "||" + _norm(c.get("text", ""))[:600]).encode("utf-8")
+    return hashlib.sha1(key).hexdigest()
+
+def _dedupe(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+    for c in chunks:
+        h = _hash_chunk(c)
+        if h in seen:
+            continue
+        seen.add(h)
+        out.append(c)
+    return out
+
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+def _is_actionable(text: str) -> bool:
+    t = _norm(text)
+    markers = (
+        "dose","dosing","mg","units","inject","interval","contraindication",
+        "should","must","recommend","avoid","do not","first-line","treat",
+        "screen","monitor","maximum","minimum","threshold","protocol"
+    )
+    return any(m in t for m in markers)
+
+def _has_numbers(text: str) -> bool:
+    return bool(_NUMBER.search(text or ""))
+
+def _evidence_coverage(question: str, chunks: List[Dict[str, Any]]) -> float:
+    q = _tokens(question)
+    if not q:
+        return 0.0
+    union = set()
+    for c in chunks:
+        union |= _tokens((c.get("title","") + " " + c.get("text",""))[:6000])
+    return len(q & union) / max(1, len(q))
+
+
+# =========================
+# Tier weighting (Priority #3)
+# =========================
+def _quality_weight(source_type: str, domain: str = "") -> float:
+    st = _norm(source_type)
+    dm = _norm(domain)
+
+    # Base by evidence type (defensibility > prestige)
+    if st in ("guideline", "consensus"):
+        base = 1.00
+    elif st == "ifu":          # manufacturer instructions for use: huge in aesthetics/device protocols
+        base = 0.92
+    elif st == "review":
+        base = 0.85
+    elif st == "rct":
+        base = 0.80
+    elif st in ("cohort", "case_control"):
+        base = 0.62
+    elif st == "case_series":
+        base = 0.40
+    elif st == "case_report":
+        base = 0.30
+    else:
+        base = 0.45
+
+    # Domain modifier: societies/manufacturers/journals in aesthetics tend to be “usable”
+    if dm in ("society", "manufacturer", "journal"):
+        base += 0.04
+    if dm == "preprint":
+        base -= 0.06
+
+    return max(0.05, min(1.0, base))
+
+
+def _directness_score(question: str, chunk_text: str) -> float:
+    q = _tokens(question)
+    c = _tokens(chunk_text)
+    if not q or not c:
+        return 0.0
+    overlap = len(q & c) / max(1, len(q))
+
+    # small boosts for “answer-bearing” patterns
+    text_l = _norm(chunk_text)
+    boosts = 0.0
+    for p in ("randomized","guideline","consensus","instructions for use","ifu",
+              "contraindication","adverse","complication","management","dose","units","protocol"):
+        if p in text_l:
+            boosts += 0.01
+    return min(1.0, overlap + boosts)
+
+
+def _rerank(question: str, chunks: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+    scored = []
+    for c in chunks:
+        text = (c.get("title","") + " " + c.get("text",""))[:8000]
+        d = _directness_score(question, text)
+        q = _quality_weight(c.get("source_type","other"), c.get("domain",""))
+        score = 0.80 * d + 0.20 * q
+        scored.append((score, d, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, __, c in scored[:top_k]]
+
+
+# =========================
+# The engine
+# =========================
+class AesthetiCiteEngine:
+    def __init__(
+        self,
+        retrieve_fn: Callable[[str, int], List[Dict[str, Any]]],
+        llm_json_fn: Callable[[str], Dict[str, Any]],
+        llm_text_fn: Callable[[str], str],
+        cache: Optional[TTLCache] = None,
+        max_workers: int = 8,
+    ):
+        self.retrieve_fn = retrieve_fn
+        self.llm_json_fn = llm_json_fn
+        self.llm_text_fn = llm_text_fn
+        self.cache = cache or TTLCache(max_items=4096, ttl_s=3600)
+        self.pool = ThreadPoolExecutor(max_workers=max_workers)
+
+    def answer(self, question: str, mode: str = "fast", user_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        user_ctx = user_ctx or {}
+        mc = FAST if mode.lower() in ("fast","standard") else DEEPCONSULT
+        start = time.time()
+
+        # 0) Cache whole answer (big speed win for repeats)
+        cache_key = f"ans::{mode}::{hashlib.sha1((_norm(question)+json.dumps(user_ctx, sort_keys=True)).encode()).hexdigest()}"
+        cached = self.cache.get(cache_key)
+        if cached:
+            cached = dict(cached)
+            cached["meta"] = dict(cached.get("meta", {}))
+            cached["meta"]["cache_hit"] = True
+            return cached
+
+        # 1) Understand (quick)
+        intent_pack = self._understand(question, user_ctx, deadline=start + mc.wall_time_budget_s)
+
+        # 2) Build multi-queries (anchored to aesthetics)
+        subqueries = self._build_subqueries(question, intent_pack, mc)[: mc.max_queries]
+
+        # 3) Parallel retrieval + per-query caching
+        chunks = self._retrieve_parallel(subqueries, mc, deadline=start + mc.wall_time_budget_s)
+
+        # 4) Dedupe, cap, rerank, directness filter
+        chunks = _dedupe(chunks)[: mc.max_chunks_after_dedupe]
+        ranked = _rerank(question, chunks, top_k=min(mc.rerank_top_k, len(chunks)))
+        ranked = [c for c in ranked if _directness_score(question, (c.get("title","")+" "+c.get("text",""))[:8000]) >= mc.min_directness]
+
+        coverage = _evidence_coverage(question, ranked)
+
+        # SPEED GUARANTEE BEHAVIOR:
+        # In FAST mode, if we are close to deadline, we return a safe “best-effort” answer with strict grounding.
+        time_left = (start + mc.wall_time_budget_s) - time.time()
+        if (mode.lower() in ("fast","standard")) and time_left < 3.0:
+            out = self._best_effort(question, intent_pack, ranked, coverage, mc, start)
+            self.cache.set(cache_key, out)
+            return out
+
+        # 5) Plan claims (bounded)
+        claim_plan = self._plan_claims(question, intent_pack, ranked, mc, deadline=start + mc.wall_time_budget_s)
+
+        # 6) Ground claims (strict “no cite → no claim” + numeric guards)
+        claims = self._ground_claims(question, claim_plan, ranked, mc, deadline=start + mc.wall_time_budget_s)
+
+        supported = [c for c in claims if c["status"] == "SUPPORTED"]
+        supported_ratio = (len(supported) / max(1, len(claims)))
+
+        # If insufficient, return safe fallback + better query suggestions
+        if coverage < 0.22 or supported_ratio < 0.45:
+            out = self._insufficient(question, intent_pack, ranked, coverage, supported_ratio, mc, start)
+            self.cache.set(cache_key, out)
+            return out
+
+        # 7) Conflicts + compose
+        conflicts = self._detect_conflicts(supported)
+        out = self._compose(question, intent_pack, supported, claims, conflicts, ranked, mc, start)
+
+        # 8) Cache and return
+        self.cache.set(cache_key, out)
+        return out
+
+    # ----------------
+    # Understand
+    # ----------------
+    def _understand(self, question: str, user_ctx: Dict[str, Any], deadline: float) -> Dict[str, Any]:
+        if time.time() > deadline - 0.5:
+            return {"intent": "other", "entities": [], "patient_factors": [], "outcome_focus": []}
+
+        prompt = f"""
+You are AesthetiCite, an evidence assistant specialized in aesthetic medicine.
+Extract intent + key entities.
+
+Return JSON:
+- intent: one of ["treatment","procedure","device","safety","contraindication","dosing","guideline","complication","other"]
+- entities: key terms (products, procedures, devices, conditions, complications)
+- patient_factors: if present (pregnancy, anticoagulants, autoimmune, skin type, etc)
+- outcome_focus: (efficacy, duration, adverse events, complication management, etc)
+
+Question: {question}
+User context: {user_ctx}
+"""
+        try:
+            out = self.llm_json_fn(prompt)
+        except Exception:
+            out = {}
+        return {
+            "intent": out.get("intent", "other") or "other",
+            "entities": out.get("entities", []) or [],
+            "patient_factors": out.get("patient_factors", []) or [],
+            "outcome_focus": out.get("outcome_focus", []) or [],
+        }
+
+    # ----------------
+    # Subqueries
+    # ----------------
+    def _build_subqueries(self, question: str, intent_pack: Dict[str, Any], mc: ModeConfig) -> List[str]:
+        intent = intent_pack.get("intent","other")
+        entities = intent_pack.get("entities", [])
+        pf = intent_pack.get("patient_factors", [])
+        of = intent_pack.get("outcome_focus", [])
+
+        base = [question.strip()]
+
+        # Always anchor to aesthetic/cosmetic domain (prevents general-medicine drift)
+        base.append(f"{question} cosmetic aesthetic dermatology plastic surgery")
+
+        if intent in ("complication","safety","contraindication"):
+            base.append(f"{question} complication management adverse events")
+            base.append(f"{question} guideline consensus statement")
+        elif intent in ("device","procedure","treatment"):
+            base.append(f"{question} protocol technique settings")
+            base.append(f"{question} adverse events contraindications")
+            base.append(f"{question} guideline consensus statement")
+        elif intent == "dosing":
+            base.append(f"{question} dose units interval")
+            base.append(f"{question} guideline dosing")
+        else:
+            base.append(f"{question} review systematic review")
+            base.append(f"{question} guideline consensus")
+
+        if entities:
+            base.append(f"{' '.join(entities)} {intent} cosmetic")
+        if pf:
+            base.append(f"{question} {' '.join(pf)} safety")
+        if of:
+            base.append(f"{question} {' '.join(of)}")
+
+        # Deduplicate (keep order)
+        seen = set()
+        out = []
+        for q in base:
+            nq = _norm(q)
+            if nq in seen:
+                continue
+            seen.add(nq)
+            out.append(q)
+        return out
+
+    # ----------------
+    # Retrieval (parallel + cache)
+    # ----------------
+    def _retrieve_parallel(self, queries: List[str], mc: ModeConfig, deadline: float) -> List[Dict[str, Any]]:
+        futures = []
+        out: List[Dict[str, Any]] = []
+
+        for q in queries:
+            # per-query cache (big speed win)
+            qkey = f"ret::{hashlib.sha1(_norm(q).encode()).hexdigest()}::{mc.per_query_k}"
+            cached = self.cache.get(qkey)
+            if cached is not None:
+                out.extend(cached)
+                continue
+
+            futures.append(self.pool.submit(self._safe_retrieve, q, mc.per_query_k, qkey))
+
+        # Collect with time awareness
+        for fut in as_completed(futures, timeout=max(0.1, deadline - time.time())):
+            try:
+                res = fut.result()
+                if res:
+                    out.extend(res)
+            except Exception:
+                continue
+            if time.time() > deadline - 1.0:
+                break
+
+        return out
+
+    def _safe_retrieve(self, q: str, k: int, cache_key: str) -> List[Dict[str, Any]]:
+        try:
+            res = self.retrieve_fn(q, k)
+            if isinstance(res, list):
+                self.cache.set(cache_key, res)
+                return res
+        except Exception:
+            return []
+        return []
+
+    # ----------------
+    # Plan claims
+    # ----------------
+    def _plan_claims(self, question: str, intent_pack: Dict[str, Any], ranked: List[Dict[str, Any]], mc: ModeConfig, deadline: float) -> Dict[str, Any]:
+        if time.time() > deadline - 1.0:
+            # minimal plan if time is tight
+            return {"claims": [question]}
+
+        source_summaries = [{
+            "id": c.get("id"),
+            "title": _clip(c.get("title",""), 140),
+            "year": c.get("year"),
+            "source_type": c.get("source_type","other"),
+            "domain": c.get("domain",""),
+            "snippet": _clip(c.get("text",""), 240),
+        } for c in ranked[: mc.rerank_top_k]]
+
+        # DeepConsult: explicitly safety-grade / medico-legal synthesis
+        deep_bias = ""
+        if mc is DEEPCONSULT:
+            deep_bias = """
+DEEPCONSULT GOAL:
+- prioritize complication management, contraindications, risk mitigation, and defensible guidance
+- if evidence is weak, say so and show what is missing
+"""
+
+        prompt = f"""
+You are building an evidence-grounded plan for aesthetic medicine answers.
+
+RULES:
+- Atomic, checkable claims only.
+- No invented numbers.
+- Prefer safety/complications where relevant.
+- Max {mc.max_claims} claims.
+
+{deep_bias}
+
+Return JSON: {{ "claims": ["..."] }}
+
+Question: {question}
+Intent pack: {intent_pack}
+
+Evidence snippets:
+{source_summaries}
+"""
+        try:
+            out = self.llm_json_fn(prompt)
+        except Exception:
+            out = {}
+        claims = out.get("claims", []) if isinstance(out, dict) else []
+        claims = [c.strip() for c in claims if isinstance(c, str) and c.strip()]
+        return {"claims": claims[: mc.max_claims]}
+
+    # ----------------
+    # Ground claims (strict)
+    # ----------------
+    def _select_support(self, claim: str, ranked: List[Dict[str, Any]], mc: ModeConfig) -> List[Dict[str, Any]]:
+        ct = _tokens(claim)
+        scored = []
+        for c in ranked:
+            text = (c.get("title","") + " " + c.get("text",""))[:8000]
+            tt = _tokens(text)
+            if not ct or not tt:
+                continue
+            overlap = len(ct & tt) / max(1, len(ct))
+            score = 0.68 * overlap + 0.32 * _quality_weight(c.get("source_type","other"), c.get("domain",""))
+            scored.append((score, c))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [c for s, c in scored if s > 0.10][: mc.citations_per_claim]
+
+    def _ground_claims(self, question: str, claim_plan: Dict[str, Any], ranked: List[Dict[str, Any]], mc: ModeConfig, deadline: float) -> List[Dict[str, Any]]:
+        out = []
+        for claim in claim_plan.get("claims", []):
+            if time.time() > deadline - 1.0 and mc is FAST:
+                # If FAST mode time is tight, stop adding claims (speed guarantee)
+                break
+
+            support = self._select_support(claim, ranked, mc)
+            if not support:
+                out.append({"text": claim, "status": "UNSUPPORTED", "citations": [], "notes": "No supporting sources retrieved."})
+                continue
+
+            # Actionable claims require strong support (or >=2 sources) for safety
+            if mc.require_strong_for_actionable and _is_actionable(claim):
+                has_strong = any(_norm(s.get("source_type","")) in STRONG_TYPES for s in support)
+                if (not has_strong) and len(support) < 2:
+                    out.append({
+                        "text": claim,
+                        "status": "WEAK_SUPPORT",
+                        "citations": [s.get("id") for s in support if s.get("id")],
+                        "notes": "Actionable claim but evidence strength insufficient."
+                    })
+                    continue
+
+            support_pack = [{
+                "id": s.get("id"),
+                "title": _clip(s.get("title",""), 160),
+                "year": s.get("year"),
+                "source_type": s.get("source_type","other"),
+                "domain": s.get("domain",""),
+                "excerpt": _clip(s.get("text",""), 950),
+                "url": s.get("url"),
+            } for s in support]
+
+            # DeepConsult: enforce defensibility framing
+            deep_bias = ""
+            if mc is DEEPCONSULT:
+                deep_bias = """
+DEEPCONSULT RULE:
+- If the excerpt is low-quality or indirect, downgrade the claim to "Evidence is limited" wording.
+- Emphasize complication management / risk mitigation when relevant.
+"""
+
+            prompt = f"""
+You are an evidence-grounded medical writer for aesthetic medicine.
+
+TASK:
+Rewrite the claim so it is faithful ONLY to the supporting excerpts.
+
+HARD RULES:
+- Do NOT add facts not present in excerpts.
+- If excerpts do NOT justify the claim, output: UNSUPPORTED
+- If you include numbers, they MUST appear in excerpts.
+- Keep it concise (1 sentence).
+
+{deep_bias}
+
+Original claim: {claim}
+
+Supporting excerpts:
+{support_pack}
+
+Output: single line, no JSON.
+"""
+            rewritten = self.llm_text_fn(prompt).strip()
+
+            if rewritten.upper().startswith("UNSUPPORTED"):
+                out.append({"text": claim, "status": "UNSUPPORTED", "citations": [], "notes": "Not justified by excerpts."})
+                continue
+
+            # Numeric guard: if rewritten has numbers, ensure they are present in excerpt text
+            if _has_numbers(rewritten):
+                nums = {m[0] for m in _NUMBER.findall(rewritten)}
+                sup_text = " ".join([s.get("text","") for s in support]).lower()
+                if not all(n in sup_text for n in nums):
+                    out.append({"text": claim, "status": "UNSUPPORTED", "citations": [], "notes": "Rejected: unsourced numeric content."})
+                    continue
+
+            out.append({
+                "text": rewritten,
+                "status": "SUPPORTED",
+                "citations": [s.get("id") for s in support if s.get("id")],
+                "notes": ""
+            })
+
+        return out
+
+    # ----------------
+    # Conflicts
+    # ----------------
+    def _detect_conflicts(self, supported: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        conflicts = []
+        for i in range(len(supported)):
+            for j in range(i + 1, len(supported)):
+                a = _norm(supported[i]["text"])
+                b = _norm(supported[j]["text"])
+                shared = _tokens(a) & _tokens(b)
+                if len(shared) < 3:
+                    continue
+                na = (" not " in f" {a} " or " no " in f" {a} " or "avoid" in a)
+                nb = (" not " in f" {b} " or " no " in f" {b} " or "avoid" in b)
+                if na != nb:
+                    conflicts.append({
+                        "a": supported[i]["text"],
+                        "b": supported[j]["text"],
+                        "shared_terms": sorted(list(shared))[:8],
+                        "note": "Potential polarity conflict."
+                    })
+        return conflicts[:6]
+
+    # ----------------
+    # Compose (OpenEvidence-like)
+    # ----------------
+    def _compose(
+        self,
+        question: str,
+        intent_pack: Dict[str, Any],
+        supported: List[Dict[str, Any]],
+        all_claims: List[Dict[str, Any]],
+        conflicts: List[Dict[str, Any]],
+        ranked: List[Dict[str, Any]],
+        mc: ModeConfig,
+        start: float
+    ) -> Dict[str, Any]:
+        # Build reference map
+        ref_map = {}
+        for c in ranked:
+            cid = c.get("id")
+            if not cid:
+                continue
+            if cid in ref_map:
+                continue
+            ref_map[cid] = {
+                "id": cid,
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "domain": c.get("domain",""),
+                "url": c.get("url"),
+            }
+
+        # Evidence strength (simple but honest)
+        used_ids = set()
+        for c in supported:
+            used_ids |= set(c.get("citations", []))
+        used_sources = [r for r in ranked if r.get("id") in used_ids]
+        best_q = max((_quality_weight(s.get("source_type","other"), s.get("domain","")) for s in used_sources), default=0.0)
+        grade = "Low"
+        why = "Limited supported claims and/or lower-quality evidence."
+        if best_q >= 0.90 and len(supported) >= 5:
+            grade, why = "High", "Multiple supported claims anchored in guideline/consensus/IFU/review-level sources."
+        elif best_q >= 0.62 and len(supported) >= 3:
+            grade, why = "Moderate", "Several supported claims with at least moderate-quality evidence."
+
+        # DeepConsult: produce PDF-ready structured sections
+        deep_instructions = ""
+        if mc is DEEPCONSULT:
+            deep_instructions = """
+DEEPCONSULT OUTPUT:
+- Include a “Safety-grade synthesis” tone.
+- Include a small “Medicolegal notes” section ONLY if supported claims mention risks/contraindications/complications.
+- Include a “What would change the recommendation” section (e.g., missing data, patient factors).
+"""
+
+        prompt = f"""
+You are AesthetiCite, a specialist evidence assistant for aesthetic medicine.
+
+Write the answer using ONLY the supported claims below.
+
+FORMAT:
+1) Clinical Summary (3–6 sentences)
+2) What the evidence says (bullets; each bullet ends with citations like [id1, id2])
+3) Evidence strength (High/Moderate/Low + 1–2 sentences)
+4) Safety / Contraindications (ONLY if supported claims mention safety)
+5) If conflicts exist: add 1 short bullet under “What the evidence says” mentioning the disagreement.
+
+{deep_instructions}
+
+Question: {question}
+Intent pack: {intent_pack}
+
+Supported claims:
+{[{"text": c["text"], "citations": c["citations"]} for c in supported]}
+
+Conflicts:
+{conflicts}
+"""
+        answer_text = self.llm_text_fn(prompt).strip()
+
+        return {
+            "mode": mc.label,
+            "question": question,
+            "intent": intent_pack.get("intent","other"),
+            "clinical_answer": answer_text,
+            "evidence_strength": {"grade": grade, "why": why},
+            "supported_claims": supported,
+            "excluded_claims": [c for c in all_claims if c["status"] != "SUPPORTED"],
+            "conflicts": conflicts,
+            "references": list(ref_map.values()),
+            "meta": {
+                "latency_s": round(time.time() - start, 2),
+                "cache_hit": False,
+                "coverage": round(_evidence_coverage(question, ranked), 2),
+                "ranked_sources": len(ranked),
+            },
+            # Convenience: the UI can expose a “Run DeepConsult” button when FAST mode is returned
+            "actions": [
+                {"type": "suggested_mode", "label": "Run DeepConsult (slow & advanced)", "mode": "deepconsult"}
+            ] if mc is FAST else []
+        }
+
+    # ----------------
+    # Fast best-effort fallback (time tight)
+    # ----------------
+    def _best_effort(self, question: str, intent_pack: Dict[str, Any], ranked: List[Dict[str, Any]], coverage: float, mc: ModeConfig, start: float) -> Dict[str, Any]:
+        refs = []
+        for c in ranked[:10]:
+            refs.append({
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "domain": c.get("domain",""),
+                "url": c.get("url"),
+            })
+        return {
+            "mode": mc.label,
+            "question": question,
+            "intent": intent_pack.get("intent","other"),
+            "clinical_answer": (
+                "Best-effort FAST answer: I’m short on time budget to fully ground multiple claims. "
+                "Here are the most relevant sources retrieved; re-run in DeepConsult for a safety-grade synthesis."
+            ),
+            "evidence_strength": {"grade": "Insufficient", "why": f"Time-budget cutoff. Coverage={coverage:.2f}"},
+            "supported_claims": [],
+            "excluded_claims": [],
+            "conflicts": [],
+            "references": refs,
+            "meta": {"latency_s": round(time.time()-start, 2), "cache_hit": False, "coverage": round(coverage,2), "ranked_sources": len(ranked)},
+            "actions": [{"type": "suggested_mode", "label": "Run DeepConsult (slow & advanced)", "mode": "deepconsult"}],
+        }
+
+    # ----------------
+    # Insufficient evidence
+    # ----------------
+    def _insufficient(self, question: str, intent_pack: Dict[str, Any], ranked: List[Dict[str, Any]], coverage: float, supported_ratio: float, mc: ModeConfig, start: float) -> Dict[str, Any]:
+        entities = intent_pack.get("entities", [])
+        intent = intent_pack.get("intent", "other")
+
+        next_terms = [
+            f"{' '.join(entities)} {intent} guideline consensus" if entities else f"{question} guideline consensus",
+            f"{' '.join(entities)} IFU instructions for use" if entities else f"{question} instructions for use IFU",
+            f"{' '.join(entities)} complications management" if entities else f"{question} complications management",
+            f"{question} cosmetic aesthetic dermatology plastic surgery",
+        ]
+
+        refs = []
+        for c in ranked[:10]:
+            refs.append({
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "year": c.get("year"),
+                "source_type": c.get("source_type","other"),
+                "domain": c.get("domain",""),
+                "url": c.get("url"),
+            })
+
+        return {
+            "mode": mc.label,
+            "question": question,
+            "intent": intent,
+            "clinical_answer": (
+                "I couldn’t find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\n"
+                f"Signals: coverage={coverage:.2f}, supported_claims_ratio={supported_ratio:.2f}\n\n"
+                "Try refining the query (examples):\n- " + "\n- ".join(next_terms)
+            ),
+            "evidence_strength": {"grade": "Insufficient", "why": f"coverage={coverage:.2f}, supported_ratio={supported_ratio:.2f}"},
+            "supported_claims": [],
+            "excluded_claims": [],
+            "conflicts": [],
+            "references": refs,
+            "next_search_terms": next_terms,
+            "meta": {"latency_s": round(time.time()-start, 2), "cache_hit": False, "coverage": round(coverage,2), "ranked_sources": len(ranked)},
+            "actions": [{"type": "suggested_mode", "label": "Run DeepConsult (slow & advanced)", "mode": "deepconsult"}] if mc is FAST else [],
+        }
+
+
+# ==========================================================
+# OPTIONAL: FastAPI wrapper (uncomment to use)
+# ==========================================================
+"""
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI(title="AesthetiCite Engine (FAST + DEEPCONSULT)")
+
+engine = AesthetiCiteEngine(retrieve_chunks, llm_json, llm_text)
+
+class Query(BaseModel):
+    question: str
+    mode: str = "fast"
+    user_ctx: dict = {}
+
+@app.post("/deepconsult/answer")
+def deepconsult_answer(q: Query):
+    return engine.answer(q.question, mode=q.mode, user_ctx=q.user_ctx)
+"""

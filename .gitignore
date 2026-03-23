@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.pythonlibs/
+.local/
+.upm/
+logs/
+*.db
+.env
+.config/
+.agents/

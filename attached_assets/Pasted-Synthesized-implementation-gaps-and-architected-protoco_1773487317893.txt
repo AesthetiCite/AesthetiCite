@@ -1,0 +1,43 @@
+Synthesized implementation gaps and architected protocol-bridging solutionSynthesized implementation gaps and architected protocol-bridging solutionGood. Before writing any code, the honest audit first.
+
+What you already have vs what's described
+DescribedAlready in codebaseGapDense vector search✅ pgvector cosine, retrieve_dbHNSW index missingBM25 / keyword retrieval✅ fts_score in hybrid_rerank_sources, quality fusionAlready blendedMetadata filtering✅ guideline_first, complications_mode flags in rewrite_query_rulesGoodReranking✅ hybrid_rerank_sources blends vector + FTS + evidence type boosts + recencyGoodEvidence verification before generation✅ VeriDoc claim planning → grounding → conflict detectionAlready existsInsufficiency detection✅ CITATION_REFUSAL_ANSWER, validate_citations(), evidence gap reporting in ACIAlready existsProtocol assembly⚠️ Exists in complication_protocol_engine.py but not wired to the main ask streamReal gapStructured medical entities❌ Stored as chunks, not normalized entity objectsReal gapConfidence scoring✅ ACI score, evidence strength, evidence_warningAlready exists
+The architecture described is 80% already built. The two genuine gaps are: the protocol assembler is not wired into the main search path, and entities are not structured. Everything else exists.
+The one code worth writing is the protocol bridge — a module that intercepts the main ask stream, detects protocol-triggering queries, and appends a structured protocol card to the answer rather than just the inline complication layer that exists today. That is the missing connection.Identified missing protocol engine integration within existing retrieval pipelineIdentified missing protocol engine integration within existing retrieval pipelineNow I have the complete picture. Here's the precise gap and the code that closes it.
+The main stream already does hybrid retrieval, quality fusion, claim grounding, conflict detection, and ACI scoring. The complication_protocol_engine.py already builds full structured protocols with dose guidance, escalation, red flags, and evidence. The gap is that they don't talk to each other. A user asking about vascular occlusion in the main chat gets a text answer. They don't get the structured protocol card. The bridge doesn't exist.
+One Python module closes it:Created 3 files, ran a command, read a fileCreated 3 files, ran a command, read a fileThree files. Here's what each does and the exact integration steps:
+
+protocol_bridge.py → app/api/protocol_bridge.py
+Drop in as a new file. No changes to existing modules. It detects protocol-triggering queries using keyword matching across all six complication keys, calls build_protocol_response from the existing complication engine, and returns a serialised card. Uses a singleton so the engine is only instantiated once.
+
+ask_v2_stream_patch.py → read and apply to app/api/ask_v2.py
+Two surgical inserts documented inside the file:
+
+One import line at the top
+A ~15 line block inserted after yield _sse("evidence_badge", badge_payload) — runs the bridge, emits protocol_card event if triggered
+
+Also one change to routes.ts — add a protocol_card case to the stream interceptor that passes the event through without sanitizing (it uses structured evidence objects, not inline citation markers).
+
+protocol-card.tsx → client/src/components/protocol-card.tsx
+New component. Integration instructions are at the top of the file — three things to add to ask.tsx:
+
+protocolCard?: ProtocolCardData | null on the ChatMessage interface
+A case "protocol_card": handler in the SSE event switch
+{msg.protocolCard && !msg.isStreaming && <ProtocolCard data={msg.protocolCard} />} in the message render, after <StructuredAnswer>
+
+
+What this actually achieves
+A clinician types "patient has blanching after nasolabial fold filler" into the main chat. Currently they get an evidence answer. After this:
+Evidence answer streams normally
+         ↓
+Protocol card appears below it:
+  CRITICAL · IMMEDIATE
+  Vascular Occlusion Protocol
+  ─────────────────────────
+  Immediate Actions  [numbered, primary/secondary]
+  Dose Guidance      [hyaluronidase, aspirin]
+  Escalation         [visual symptoms → emergency]
+  Monitoring         [capillary refill intervals]
+  Evidence           [3 sources, collapsible]
+  PDF export button
+That is the protocol-first RAG architecture completing itself — not a new system, but the existing protocol engine surfaced through the existing search path for the first time.

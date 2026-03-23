@@ -1,0 +1,241 @@
+"""
+ONE single drop-in code (FastAPI + asyncpg) that:
+- Ensures STORED tsvector + normalized text columns exist
+- Ensures GIN(FTS) + GIN(trigram) indexes exist
+- Uses ONE retrieval SQL that does 2-stage candidate → merge → rerank
+- Uses asyncpg connection pooling
+- Sets hnsw.ef_search per query
+
+How to use:
+1) pip install fastapi uvicorn asyncpg
+2) Set env DATABASE_URL (postgres DSN)
+3) Run: uvicorn app:app --host 0.0.0.0 --port 8000
+
+Assumes your table is named `chunks` with at least:
+- id (PK)
+- embedding vector(384)
+- text, title, doi, url, year (optional but used)
+"""
+
+import os
+import asyncio
+from typing import Any, Dict, List, Optional
+
+import asyncpg
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("Missing env DATABASE_URL (Postgres DSN)")
+
+app = FastAPI(title="AesthetiCite Retrieval Accelerator (pgvector)", version="1.0")
+
+POOL: Optional[asyncpg.Pool] = None
+
+# -----------------------------
+# 1) One best-practice retrieval query (candidate -> merge -> rerank)
+# -----------------------------
+RETRIEVE_SQL = r"""
+WITH
+params AS (
+  SELECT
+    $1::text AS q,
+    $2::vector(384) AS qvec,
+    $3::int AS k
+),
+v AS (
+  SELECT c.id,
+         (c.embedding <=> (SELECT qvec FROM params)) AS vdist
+  FROM chunks c
+  ORDER BY c.embedding <=> (SELECT qvec FROM params)
+  LIMIT 120
+),
+f AS (
+  SELECT c.id,
+         ts_rank_cd(c.tsv, websearch_to_tsquery('english', (SELECT q FROM params))) AS fts
+  FROM chunks c
+  WHERE c.tsv @@ websearch_to_tsquery('english', (SELECT q FROM params))
+  ORDER BY fts DESC
+  LIMIT 120
+),
+t AS (
+  SELECT c.id,
+         similarity(c.text_norm, (SELECT q FROM params)) AS tri
+  FROM chunks c
+  WHERE (SELECT length(q) FROM params) <= 32
+    AND c.text_norm % (SELECT q FROM params)
+  ORDER BY tri DESC
+  LIMIT 60
+),
+u AS (
+  SELECT id,
+         min(vdist) AS vdist,
+         max(fts)   AS fts,
+         max(tri)   AS tri
+  FROM (
+    SELECT id, vdist, NULL::float AS fts, NULL::float AS tri FROM v
+    UNION ALL
+    SELECT id, NULL::float, fts, NULL::float FROM f
+    UNION ALL
+    SELECT id, NULL::float, NULL::float, tri FROM t
+  ) s
+  GROUP BY id
+),
+ranked AS (
+  SELECT *
+  FROM u
+  ORDER BY
+    COALESCE(vdist, 1e9) ASC,
+    COALESCE(fts, 0) DESC,
+    COALESCE(tri, 0) DESC
+  LIMIT (SELECT k FROM params)
+)
+SELECT
+  c.id,
+  c.title,
+  c.year,
+  c.doi,
+  c.url,
+  c.text,
+  r.vdist,
+  r.fts,
+  r.tri
+FROM ranked r
+JOIN chunks c ON c.id = r.id
+ORDER BY
+  COALESCE(r.vdist, 1e9) ASC,
+  COALESCE(r.fts, 0) DESC,
+  COALESCE(r.tri, 0) DESC;
+"""
+
+# -----------------------------
+# 2) One-time DB hardening: STORED columns + indexes
+# -----------------------------
+DB_SETUP_SQL = r"""
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- NOTE: pgvector extension should already exist in your DB if you're using vector(384)
+-- CREATE EXTENSION IF NOT EXISTS vector;
+
+-- STORED tsvector to avoid query-time to_tsvector costs
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name='chunks' AND column_name='tsv'
+  ) THEN
+    ALTER TABLE chunks
+      ADD COLUMN tsv tsvector
+      GENERATED ALWAYS AS (
+        to_tsvector('english', coalesce(title,'') || ' ' || coalesce(text,''))
+      ) STORED;
+  END IF;
+END $$;
+
+-- STORED normalized text for trigram index (keep it simple + stable)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name='chunks' AND column_name='text_norm'
+  ) THEN
+    ALTER TABLE chunks
+      ADD COLUMN text_norm text
+      GENERATED ALWAYS AS (
+        lower(regexp_replace(coalesce(title,'') || ' ' || coalesce(text,''), '\s+', ' ', 'g'))
+      ) STORED;
+  END IF;
+END $$;
+
+-- FTS index
+CREATE INDEX IF NOT EXISTS chunks_tsv_gin
+  ON chunks USING GIN (tsv);
+
+-- Trigram index (used only for short/noisy queries via the SQL)
+CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm
+  ON chunks USING GIN (text_norm gin_trgm_ops);
+
+-- (Optional) Analyze to improve first-call planning on fresh deployments
+ANALYZE chunks;
+"""
+
+# -----------------------------
+# 3) API models
+# -----------------------------
+class RetrieveBody(BaseModel):
+    q: str
+    qvec: List[float]  # 384 floats
+    k: int = 12
+    ef_search: int = 80  # tune: 40 / 80 / 120
+
+# -----------------------------
+# 4) App lifecycle
+# -----------------------------
+@app.on_event("startup")
+async def startup():
+    global POOL
+    POOL = await asyncpg.create_pool(
+        dsn=DATABASE_URL,
+        min_size=2,
+        max_size=20,
+        max_inactive_connection_lifetime=60,
+        command_timeout=30,
+    )
+    # Setup once (safe with IF NOT EXISTS)
+    async with POOL.acquire() as con:
+        await con.execute(DB_SETUP_SQL)
+
+@app.on_event("shutdown")
+async def shutdown():
+    global POOL
+    if POOL:
+        await POOL.close()
+        POOL = None
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+# -----------------------------
+# 5) The fast retrieval endpoint
+# -----------------------------
+@app.post("/retrieve")
+async def retrieve(body: RetrieveBody) -> Dict[str, Any]:
+    if not body.q.strip():
+        raise HTTPException(status_code=400, detail="Empty query")
+    if len(body.qvec) != 384:
+        raise HTTPException(status_code=400, detail="qvec must be 384-dim")
+    if body.k <= 0 or body.k > 50:
+        raise HTTPException(status_code=400, detail="k must be 1..50")
+    if body.ef_search < 10 or body.ef_search > 400:
+        raise HTTPException(status_code=400, detail="ef_search must be 10..400")
+
+    assert POOL is not None
+
+    async with POOL.acquire() as con:
+        # Per-query HNSW runtime knob (kept LOCAL inside this transaction)
+        await con.execute(f"SET LOCAL hnsw.ef_search = {int(body.ef_search)};")
+        rows = await con.fetch(RETRIEVE_SQL, body.q, body.qvec, body.k)
+
+    # Return compact chunk objects (trim text if you want)
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "title": r.get("title"),
+            "year": r.get("year"),
+            "doi": r.get("doi"),
+            "url": r.get("url"),
+            "text": r.get("text"),
+            "scores": {
+                "vdist": float(r["vdist"]) if r["vdist"] is not None else None,
+                "fts": float(r["fts"]) if r["fts"] is not None else None,
+                "tri": float(r["tri"]) if r["tri"] is not None else None,
+            }
+        })
+
+    return {"ok": True, "k": body.k, "ef_search": body.ef_search, "results": out}

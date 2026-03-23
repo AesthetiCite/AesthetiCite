@@ -1,0 +1,26 @@
+[
+  {
+    "record_id": "99af898b-2a17-4a48-bc98-38bde54cc825",
+    "doi": "10.1056/NEJMoa2035389",
+    "title": "Efficacy and Safety of the mRNA-1273 SARS-CoV-2 Vaccine",
+    "journal": "New England Journal of Medicine",
+    "year": 2021,
+    "publisher_url": "https://doi.org/10.1056/nejmoa2035389",
+    "has_pdf": false,
+    "meta_file": "data/meta/99af898b-2a17-4a48-bc98-38bde54cc825.json",
+    "pdf_file": null
+  },
+  {
+    "record_id": "fb9015b3-e97d-4c7b-ac67-723c2fc049f1",
+    "doi": "10.1371/journal.pone.0237077",
+    "title": "Detection of meat from horse, donkey and their hybrids (mule/hinny) by duplex real-time fluorescent PCR",
+    "journal": "PLOS ONE",
+    "year": 2020,
+    "publisher_url": "https://doi.org/10.1371/journal.pone.0237077",
+    "has_pdf": true,
+    "meta_file": "data/meta/fb9015b3-e97d-4c7b-ac67-723c2fc049f1.json",
+    "pdf_file": "data/pdfs/fb9015b3-e97d-4c7b-ac67-723c2fc049f1.pdf",
+    "processed": true,
+    "chunks_count": 17
+  }
+]

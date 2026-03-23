@@ -1,0 +1,657 @@
+// src/pages/AskOEStyle.tsx
+// AesthetiCite — "OpenEvidence-like" no-cost UX bundle (ONE FILE)
+// Implements (no infra cost, no extra LLM calls):
+// ✅ Product-first landing (query box + result)
+// ✅ Keyboard workflow: Enter submit, Shift+Enter newline, Ctrl/Cmd+K focus, Esc stop
+// ✅ SSE streaming via fetch() + robust parsing
+// ✅ Sectioned rendering into cards (Evidence Summary, Key Points, Safety, Limitations, Follow-ups)
+// ✅ Sticky Evidence Summary panel (desktop) for instant authority perception
+// ✅ Source ribbon with hover metadata + copy citation + open link
+// ✅ Clickable follow-up chips -> auto-fill + ask
+// ✅ "Copy as clinical note" (with citations) + "Copy without citations"
+// ✅ Auto-scroll while streaming, stops when user scrolls up
+//
+// Assumes backend SSE events like your main.py:
+// - event:sources {sources:[...]}
+// - event:token {t:"...", channel:"final"}
+// - event:replace clears final
+// - event:status {message:"..."}
+// - event:done
+//
+// Assumes JWT token in localStorage "token".
+// Assumes /conversations/new endpoint exists.
+// Assumes /ask/stream accepts {q, conversation_id, k, lang?} (lang optional; auto-detect server-side is OK).
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+type Lang = "auto" | "en" | "fr" | "es" | "ar";
+const LANG_LABEL: Record<Lang, string> = {
+  auto: "Auto",
+  en: "English",
+  fr: "Français",
+  es: "Español",
+  ar: "العربية",
+};
+const isRTL = (l: Lang) => l === "ar";
+
+type Source = {
+  sid?: string;
+  source_id?: string;
+  title?: string;
+  year?: number;
+  doi?: string;
+  doi_url?: string;
+  pmid?: string;
+  pubmed_url?: string;
+  url?: string;
+  evidence_type?: string;
+  organization_or_journal?: string;
+  journal?: string;
+};
+
+type Sections = {
+  evidenceSummary?: string;
+  clinicalSummary?: string;
+  keyPoints?: string[];
+  safety?: string;
+  limitations?: string;
+  followups?: string[];
+};
+
+function getToken() {
+  return localStorage.getItem("token") || "";
+}
+
+async function ensureConversationId(): Promise<string> {
+  const token = getToken();
+  const r = await fetch("/conversations/new", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const j = await r.json();
+  if (!j?.conversation_id) throw new Error("Failed to create conversation");
+  return j.conversation_id as string;
+}
+
+function stripCitations(text: string) {
+  return text.replace(/\s*\[S\d+\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function parseSections(raw: string): Sections {
+  // Very tolerant parsing: relies on your enforced structure headings.
+  const s: Sections = {};
+  const t = raw || "";
+
+  const grabBlock = (start: RegExp, end: RegExp) => {
+    const m = t.match(new RegExp(`${start.source}([\\s\\S]*?)${end.source}`, "i"));
+    return m ? m[1].trim() : "";
+  };
+
+  // Evidence Strength Summary block
+  const ev = grabBlock(/Evidence Strength Summary\s*/i, /(Clinical Summary|Counseling Summary|Key Evidence-Based Points)\s*/i);
+  if (ev) s.evidenceSummary = ev;
+
+  // Clinical Summary
+  const cs = grabBlock(/Clinical Summary\s*/i, /(Key Evidence-Based Points|Safety Considerations|Limitations \/ Uncertainty|Suggested Follow-up Questions)\s*/i);
+  if (cs) s.clinicalSummary = cs;
+
+  // Key points bullets
+  const kpBlock = grabBlock(/Key Evidence-Based Points\s*/i, /(Safety Considerations|Limitations \/ Uncertainty|Suggested Follow-up Questions)\s*/i);
+  if (kpBlock) {
+    const bullets = kpBlock
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("-"))
+      .map((l) => l.replace(/^-+\s*/, "").trim())
+      .filter(Boolean);
+    if (bullets.length) s.keyPoints = bullets;
+  }
+
+  // Safety
+  const sf = grabBlock(/Safety Considerations\s*/i, /(Limitations \/ Uncertainty|Suggested Follow-up Questions)\s*/i);
+  if (sf) s.safety = sf;
+
+  // Limitations
+  const lim = grabBlock(/Limitations \/ Uncertainty\s*/i, /(Suggested Follow-up Questions)\s*/i);
+  if (lim) s.limitations = lim;
+
+  // Follow-ups
+  const fuBlock = grabBlock(/Suggested Follow-up Questions\s*/i, /$/i);
+  if (fuBlock) {
+    const lines = fuBlock
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("-"))
+      .map((l) => l.replace(/^-+\s*/, "").trim())
+      .filter(Boolean);
+    if (lines.length) s.followups = lines;
+  }
+
+  return s;
+}
+
+function citationDensityFromText(raw: string): number {
+  const cites = (raw.match(/\[S\d+\]/g) || []).length;
+  const bullets = (raw.match(/^\s*-\s+/gm) || []).length;
+  if (!bullets) return 0;
+  return Math.round((cites / bullets) * 100) / 100;
+}
+
+function buildCitationLine(src: Source): string {
+  const parts: string[] = [];
+  if (src.title) parts.push(src.title);
+  if (src.journal || src.organization_or_journal) parts.push((src.journal || src.organization_or_journal) as string);
+  if (src.year) parts.push(String(src.year));
+  if (src.doi) parts.push(`DOI:${src.doi}`);
+  if (src.pmid) parts.push(`PMID:${src.pmid}`);
+  return parts.join(" — ");
+}
+
+function SourcePill({ s }: { s: Source }) {
+  const href = s.url || s.doi_url || s.pubmed_url || "#";
+  const label = `${s.sid || "S?"}`;
+  const title = s.title || "Untitled";
+  const year = s.year ? ` (${s.year})` : "";
+  const et = s.evidence_type ? ` • ${s.evidence_type}` : "";
+  const journal = s.journal || s.organization_or_journal ? ` • ${(s.journal || s.organization_or_journal)}` : "";
+  const meta = `${title}${year}${et}${journal}`;
+
+  const onCopy = async () => {
+    const txt = buildCitationLine(s);
+    await navigator.clipboard.writeText(txt);
+  };
+
+  return (
+    <div className="relative group">
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+        title={meta}
+      >
+        <span className="font-mono">{label}</span>
+        <span className="truncate max-w-[240px]">{title}</span>
+      </a>
+
+      {/* Hover card */}
+      <div className="pointer-events-none absolute left-0 top-8 z-20 hidden w-[360px] rounded-2xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg group-hover:block">
+        <div className="font-semibold">{title}</div>
+        <div className="mt-1 text-slate-500">
+          {s.year ? `${s.year}` : "Year N/A"}
+          {s.evidence_type ? ` • ${s.evidence_type}` : ""}
+        </div>
+        <div className="mt-1 text-slate-500">{s.journal || s.organization_or_journal || ""}</div>
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onCopy();
+            }}
+            className="pointer-events-auto rounded-lg border border-slate-200 px-2 py-1 text-xs hover:bg-slate-50"
+          >
+            Copy citation
+          </button>
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="pointer-events-auto rounded-lg border border-slate-200 px-2 py-1 text-xs hover:bg-slate-50"
+          >
+            Open
+          </a>
+        </div>
+        <div className="mt-2 text-[11px] text-slate-500">
+          {s.doi ? `DOI: ${s.doi}` : ""}
+          {s.pmid ? `${s.doi ? " • " : ""}PMID: ${s.pmid}` : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Card({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div className="text-sm font-semibold text-slate-900">{title}</div>
+        {right}
+      </div>
+      <div className="mt-3 text-sm leading-6 text-slate-700">{children}</div>
+    </div>
+  );
+}
+
+export default function AskOEStyle() {
+  const [lang, setLang] = useState<Lang>("auto");
+  const dir = useMemo(() => (isRTL(lang) ? "rtl" : "ltr"), [lang]);
+
+  const [conversationId, setConversationId] = useState<string>("");
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [streaming, setStreaming] = useState(false);
+
+  const [raw, setRaw] = useState("");
+  const [sources, setSources] = useState<Source[]>([]);
+  const [sections, setSections] = useState<Sections>({});
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+
+  const cd = useMemo(() => citationDensityFromText(raw), [raw]);
+  const citedClaimsPct = useMemo(() => {
+    // approximate: % of bullets that contain a citation marker
+    const bullets = (raw.match(/^\s*-\s+.*$/gm) || []).map((b) => b.trim());
+    if (!bullets.length) return 0;
+    const cited = bullets.filter((b) => /\[S\d+\]/.test(b)).length;
+    return Math.round((cited / bullets.length) * 100);
+  }, [raw]);
+
+  // Create conversation on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const cid = await ensureConversationId();
+        setConversationId(cid);
+      } catch {
+        // ignore (user may not be logged in yet)
+      }
+    })();
+  }, []);
+
+  // Parse sections whenever raw changes
+  useEffect(() => {
+    setSections(parseSections(raw));
+  }, [raw]);
+
+  // Auto-scroll behavior: if user scrolls up, disable autoscroll until they scroll back to bottom
+  useEffect(() => {
+    const el = scrollBoxRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      setAutoScroll(nearBottom);
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!autoScroll) return;
+    const el = scrollBoxRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [raw, autoScroll]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStreaming(false);
+    setStatus("Stopped.");
+  }, []);
+
+  const ask = useCallback(
+    async (question: string) => {
+      const qq = (question || q).trim();
+      if (!qq || !conversationId) return;
+
+      // reset
+      setStreaming(true);
+      setStatus("Searching evidence…");
+      setRaw("");
+      setSources([]);
+      setAutoScroll(true);
+
+      // cancel previous
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
+      const token = getToken();
+      const body: any = { q: qq, conversation_id: conversationId, k: 40 };
+      if (lang !== "auto") body.lang = lang;
+
+      const resp = await fetch("/ask/stream", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+
+      if (!resp.ok || !resp.body) {
+        setStreaming(false);
+        const j = await resp.json().catch(() => null);
+        setRaw(j?.detail || "Failed to start stream.");
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+
+      const append = (t: string) => setRaw((prev) => prev + t);
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) !== -1) {
+            const rawEvent = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+
+            let eventName = "message";
+            let dataStr = "";
+            for (const line of rawEvent.split("\n")) {
+              if (line.startsWith("event:")) eventName = line.slice(6).trim();
+              if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+            }
+            if (!dataStr) continue;
+
+            const payload = JSON.parse(dataStr);
+
+            if (eventName === "status") setStatus(payload?.message || "");
+            if (eventName === "sources") setSources(payload?.sources || []);
+            if (eventName === "replace") {
+              if (payload?.channel === "final") setRaw("");
+            }
+            if (eventName === "token") {
+              if (payload?.channel === "final" && payload?.t) append(payload.t);
+            }
+            if (eventName === "error") {
+              setStatus(payload?.message || "Error");
+              setStreaming(false);
+              abortRef.current = null;
+              return;
+            }
+            if (eventName === "done") {
+              setStreaming(false);
+              setStatus("Done.");
+              abortRef.current = null;
+              return;
+            }
+          }
+        }
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;
+        setStreaming(false);
+        setStatus(e?.message || "Stream error");
+      }
+    },
+    [conversationId, lang, q]
+  );
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl+K focuses input
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+      // Esc stops streaming
+      if (e.key === "Escape") stop();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stop]);
+
+  const onTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter submits, Shift+Enter newline
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      ask(q);
+    }
+  };
+
+  const copyNote = async (withCitations: boolean) => {
+    const text = withCitations ? raw : stripCitations(raw);
+    await navigator.clipboard.writeText(text || "");
+    setStatus(withCitations ? "Copied (with citations)." : "Copied (without citations).");
+  };
+
+  const followups = sections.followups || [];
+
+  return (
+    <div className="min-h-screen bg-white text-slate-900" dir={dir} lang={lang === "auto" ? undefined : lang}>
+      {/* Minimal header */}
+      <header className="border-b border-slate-200">
+        <div className="mx-auto max-w-6xl px-4 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="text-lg font-semibold">AesthetiCite</div>
+            <div className="text-sm text-slate-500 hidden sm:block">Clinical Evidence Governance</div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:block text-xs text-slate-500">Language</div>
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+            >
+              {Object.entries(LANG_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            {streaming ? (
+              <button
+                onClick={stop}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Stop (Esc)
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-8">
+        {/* Query input */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-sm font-semibold">Ask a clinical question</div>
+              <div className="mt-1 text-xs text-slate-500">
+                Enter to submit • Shift+Enter newline • Ctrl/Cmd+K focus • Esc stop
+              </div>
+            </div>
+            <div className="text-xs text-slate-500">{conversationId ? "Session ready" : "Not logged in"}</div>
+          </div>
+
+          <div className="mt-4">
+            <textarea
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={onTextareaKeyDown}
+              rows={3}
+              placeholder="e.g., Hyaluronic acid vascular occlusion management in facial fillers"
+              className="w-full resize-y rounded-xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+          </div>
+
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-xs text-slate-500">{status || "Structured output with inline citations. No cite → no claim."}</div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => ask(q)}
+                disabled={streaming || !q.trim() || !conversationId}
+                className="rounded-xl bg-slate-900 px-5 py-2 text-sm text-white disabled:opacity-50 hover:bg-slate-800"
+              >
+                Ask
+              </button>
+              <button
+                onClick={() => {
+                  setQ("");
+                  setRaw("");
+                  setSources([]);
+                  setStatus("");
+                }}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Sources ribbon */}
+        {sources.length > 0 && (
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-xs font-semibold text-slate-700">Sources</div>
+              <div className="text-xs text-slate-500">Hover for details • Copy citation</div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {sources.slice(0, 12).map((s) => (
+                <SourcePill key={(s.sid || "") + (s.source_id || "")} s={s} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Output layout: main + sticky summary */}
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1.4fr_0.6fr]">
+          {/* Main answer column */}
+          <div className="space-y-5">
+            <div ref={scrollBoxRef as any} className="space-y-5">
+              {sections.clinicalSummary && (
+                <Card title="Clinical Summary">
+                  <div className="whitespace-pre-wrap">{sections.clinicalSummary}</div>
+                </Card>
+              )}
+
+              {sections.keyPoints?.length ? (
+                <Card
+                  title="Key Evidence-Based Points"
+                  right={
+                    <div className="text-xs text-slate-500">
+                      Cited bullets: <span className="font-semibold text-slate-700">{citedClaimsPct}%</span>
+                    </div>
+                  }
+                >
+                  <ul className="space-y-2">
+                    {sections.keyPoints.map((p, i) => (
+                      <li key={i} className="leading-6">
+                        • {p}
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+              ) : null}
+
+              {sections.safety && (
+                <Card title="Safety Considerations">
+                  <div className="whitespace-pre-wrap">{sections.safety}</div>
+                </Card>
+              )}
+
+              {sections.limitations && (
+                <Card title="Limitations / Uncertainty">
+                  <div className="whitespace-pre-wrap">{sections.limitations}</div>
+                </Card>
+              )}
+
+              {/* Follow-up chips */}
+              {followups.length > 0 && (
+                <Card title="Suggested Follow-up Questions">
+                  <div className="flex flex-wrap gap-2">
+                    {followups.slice(0, 6).map((f, i) => (
+                      <button
+                        key={i}
+                        onClick={() => {
+                          setQ(f);
+                          ask(f);
+                        }}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* Fallback raw text if parsing fails */}
+              {raw && (!sections.clinicalSummary && !sections.keyPoints && !sections.safety && !sections.limitations) && (
+                <Card title="Answer">
+                  <div className="whitespace-pre-wrap">{raw}</div>
+                </Card>
+              )}
+            </div>
+
+            {/* Utilities */}
+            {raw && (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-xs text-slate-500">
+                  Citation density: <span className="font-semibold text-slate-700">{cd}</span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => copyNote(true)}
+                    className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    Copy as note (with citations)
+                  </button>
+                  <button
+                    onClick={() => copyNote(false)}
+                    className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    Copy without citations
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Sticky evidence summary column */}
+          <div className="lg:sticky lg:top-24 h-fit space-y-4">
+            <Card
+              title="Evidence Strength Summary"
+              right={
+                raw ? (
+                  <span className="text-xs text-slate-500">
+                    Density: <span className="font-semibold text-slate-700">{cd}</span>
+                  </span>
+                ) : null
+              }
+            >
+              {sections.evidenceSummary ? (
+                <div className="whitespace-pre-wrap text-slate-700">{sections.evidenceSummary}</div>
+              ) : (
+                <div className="text-sm text-slate-600">
+                  Ask a question to see confidence score, highest evidence level, evidence mix, and gaps.
+                </div>
+              )}
+            </Card>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="text-xs font-semibold text-slate-700">Governance cues</div>
+              <ul className="mt-2 space-y-1 text-xs text-slate-600">
+                <li>• No cite → no claim</li>
+                <li>• Explicit limitations</li>
+                <li>• Evidence gaps shown</li>
+                <li>• Conservative language</li>
+              </ul>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              Educational decision support. Not a substitute for clinical judgment.
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}

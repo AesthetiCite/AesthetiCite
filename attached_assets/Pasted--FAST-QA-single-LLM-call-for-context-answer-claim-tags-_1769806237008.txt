@@ -1,0 +1,132 @@
+# --- FAST QA: single LLM call for context + answer + claim tags ---
+
+def fast_qa_one_call(query: str, filters: Optional[dict], compact: bool = True) -> dict:
+    """
+    Replaces:
+      ctx = parse_context(query)          (LLM)
+      answer = build_answer(...)          (LLM)
+      claims = claim_level_tagging(...)   (LLM)
+
+    With ONE LLM call returning JSON:
+      { context, answer_sections, claim_tags }
+    """
+
+    cache_key = _h("fastqa", {"q": query, "f": filters or {}, "compact": compact})
+    cached = answer_cache.get(cache_key)
+    if cached is not None:
+        return {**cached, "meta": {**cached.get("meta", {}), "cached": True}}
+
+    # 1) Retrieval stays as-is (fast already)
+    chunks = retrieve_chunks(query, filters=filters or {"domain": "aesthetics"})
+    citations = extract_citations(chunks, max_items=8)
+    evidence = evidence_freshness_score(chunks)
+
+    # 2) Kill-switch stays deterministic (no extra call)
+    # We'll still let the model produce a conservative answer, but we gate high-stakes speculation.
+    # If kill-switch triggers, we return a deterministic refusal (fast).
+    # We need "intent/urgency/high_stakes" though — we can infer *roughly* without an LLM:
+    ql = query.lower()
+    inferred_high_stakes = any(k in ql for k in ["dose", "dosing", "units", "occlusion", "blind", "necrosis", "anaphyl", "emergency"])
+    inferred_intent = "dosing" if "dose" in ql or "units" in ql else ("comparison" if "vs" in ql else "general")
+    ctx_stub = {"intent": inferred_intent, "urgency": "emergency" if "emergency" in ql else "routine", "high_stakes": inferred_high_stakes}
+
+    if should_kill_switch(ctx_stub, evidence):
+        payload = {
+            "answer": (
+                "Clinical Summary:\n"
+                "Insufficient high-quality evidence was retrieved to provide specific dosing/protocol-level guidance for this high-stakes request.\n\n"
+                "Practical Steps:\n"
+                "• Use the product prescribing information and your institutional protocol for the exact indication.\n"
+                "• If this is an acute complication or patient harm risk, escalate and follow emergency pathways.\n\n"
+                "Complications & Red Flags:\n"
+                "If severe pain, skin color change, neurologic symptoms, or visual symptoms occur, treat as urgent and follow emergency management protocols.\n\n"
+                "What can go wrong next?\n"
+                "• Delayed recognition of evolving complication\n"
+                "• Inadequate escalation / referral timing\n"
+                "• Incomplete documentation\n\n"
+                "Evidence Notes:\n"
+                "Low evidence / insufficient retrievable primary sources for safe specificity."
+            ),
+            "context": ctx_stub,
+            "evidence": evidence,
+            "claim_tags": [],
+            "citations": citations,
+            "meta": {"cached": False, "mode": "killswitch"}
+        }
+        answer_cache[cache_key] = payload
+        return payload
+
+    # 3) One prompt, one response
+    # Keep prompt tight: fewer tokens = lower latency.
+    cite_lines = "\n".join(
+        [f"- {c.get('title','')} ({c.get('year','')}) [{c.get('source_type','')}] {c.get('doi') or c.get('url') or ''}".strip()
+         for c in citations]
+    )
+
+    system = (
+        "You are AesthetiCite, clinician-facing decision support for aesthetic medicine.\n"
+        "Return STRICT JSON only. No markdown.\n\n"
+        "You MUST output this exact schema:\n"
+        "{\n"
+        "  \"context\": {\n"
+        "    \"procedure\": string|null,\n"
+        "    \"area\": string|null,\n"
+        "    \"product\": string|null,\n"
+        "    \"intent\": \"dosing\"|\"protocol\"|\"comparison\"|\"complication\"|\"consent\"|\"general\",\n"
+        "    \"patient_constraints\": string[],\n"
+        "    \"urgency\": \"routine\"|\"urgent\"|\"emergency\",\n"
+        "    \"high_stakes\": boolean\n"
+        "  },\n"
+        "  \"answer_sections\": {\n"
+        "    \"Clinical Summary\": string,\n"
+        "    \"Practical Steps\": string,\n"
+        "    \"Complications & Red Flags\": string,\n"
+        "    \"What can go wrong next?\": string,\n"
+        "    \"Evidence Notes\": string\n"
+        "  },\n"
+        "  \"claim_tags\": [\n"
+        "    {\"claim\": string, \"evidence_strength\": \"High\"|\"Moderate\"|\"Low\"|\"Consensus\", \"why\": string}\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Be conservative. Prefer PI/guidelines.\n"
+        "- If unsure, say 'insufficient evidence' (do NOT guess).\n"
+        "- Keep claim_tags to 5–6 items unless truly necessary.\n"
+    )
+
+    user = (
+        f"Query: {query}\n\n"
+        f"Evidence badge: {evidence.get('badge')} (score={evidence.get('score')}, freshness={evidence.get('freshness')})\n\n"
+        f"Sources:\n{cite_lines}\n"
+    )
+
+    data = llm_json(system, user, temperature=0.2)
+
+    # 4) Build final text (still calm UX)
+    sections = data.get("answer_sections") or {}
+    answer_text = (
+        "Clinical Summary:\n" + (sections.get("Clinical Summary") or "").strip() + "\n\n"
+        "Practical Steps:\n" + (sections.get("Practical Steps") or "").strip() + "\n\n"
+        "Complications & Red Flags:\n" + (sections.get("Complications & Red Flags") or "").strip() + "\n\n"
+        "What can go wrong next?\n" + (sections.get("What can go wrong next?") or "").strip() + "\n\n"
+        "Evidence Notes:\n" + (sections.get("Evidence Notes") or "").strip()
+    ).strip()
+
+    if compact:
+        answer_text = compact_text(answer_text, 1900)
+
+    payload = {
+        "answer": answer_text,
+        "sections": sections,
+        "context": data.get("context") or {},
+        "evidence": evidence,
+        "claim_tags": (data.get("claim_tags") or [])[:8],
+        "citations": citations,
+        "meta": {"cached": False, "mode": "single_call", "model": OPENAI_MODEL}
+    }
+    answer_cache[cache_key] = payload
+    return payload
+
+
+# Then in /qa endpoint, use:
+# return fast_qa_one_call(req.query, req.filters, compact=req.compact)

@@ -1,0 +1,65 @@
+# Insert the quote "The evidence-first AI for aesthetic medicine" into the website header + pages
+# Paste into the FRONTEND Replit (veridoc-frontend)
+
+set -e
+cd veridoc-frontend
+
+# 1) Update Layout subtitle (shown on every page)
+python - <<'PY'
+from pathlib import Path
+p = Path("components/Layout.js")
+txt = p.read_text()
+
+# Replace the existing subtitle line (safe if it already exists)
+txt = txt.replace(
+  "Evidence-backed answers for clinicians • citations required",
+  "The evidence-first AI for aesthetic medicine"
+)
+
+# If the subtitle isn't present (edge case), insert it under brandTitle
+if "The evidence-first AI for aesthetic medicine" not in txt:
+    txt = txt.replace(
+        '<div className="brandTitle">\n              <span className="veri">Veri</span><span className="doc">Doc</span>\n            </div>',
+        '<div className="brandTitle">\n              <span className="veri">Veri</span><span className="doc">Doc</span>\n            </div>\n            <div className="brandSubtitle">The evidence-first AI for aesthetic medicine</div>'
+    )
+
+p.write_text(txt)
+print("✅ Updated components/Layout.js")
+PY
+
+# 2) Add the same quote to the Login page hero text (optional but recommended)
+python - <<'PY'
+from pathlib import Path
+p = Path("pages/login.js")
+txt = p.read_text()
+
+if "The evidence-first AI for aesthetic medicine" not in txt:
+    # Insert a small line under the main heading
+    txt = txt.replace(
+        '<div className="h1">Welcome back</div>',
+        '<div className="h1">Welcome back</div>\n      <div className="badge" style={{ marginTop: 10 }}>The evidence-first AI for aesthetic medicine</div>'
+    )
+
+p.write_text(txt)
+print("✅ Updated pages/login.js")
+PY
+
+# 3) Add the quote to the Ask page intro paragraph (optional but recommended)
+python - <<'PY'
+from pathlib import Path
+p = Path("pages/ask.js")
+txt = p.read_text()
+
+needle = "Ask a clinical question. VeriDoc will answer only when it can retrieve citable evidence."
+if needle in txt and "evidence-first AI for aesthetic medicine" not in txt:
+    txt = txt.replace(
+        needle,
+        "Ask a clinical question. VeriDoc will answer only when it can retrieve citable evidence.\n        \n        <br />\n        <span className='badge' style={{ marginTop: 10, display: 'inline-flex' }}>The evidence-first AI for aesthetic medicine</span>"
+    )
+
+p.write_text(txt)
+print("✅ Updated pages/ask.js")
+PY
+
+echo "==> Done. Restart frontend:"
+echo "npm run dev"

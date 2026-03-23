@@ -1,0 +1,103 @@
+// src/pages/AppShell.tsx
+// OpenEvidence-style minimal product UI for AesthetiCite
+// Focus: Practical usage. No marketing homepage.
+// Route "/" directly to this.
+
+import React, { useState } from "react";
+
+export default function AppShell() {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [answer, setAnswer] = useState<string | null>(null);
+
+  async function handleAsk() {
+    if (!query.trim()) return;
+    setLoading(true);
+    setAnswer(null);
+
+    // Replace with your real API call
+    setTimeout(() => {
+      setAnswer(`Evidence Strength Summary
+- Confidence: 8.4/10
+- Highest level: Guideline
+- Sources: 9
+
+Clinical Summary
+Structured output appears here.
+
+Key Evidence-Based Points
+- Conservative technique recommended [S1][S3]
+- Explicit uncertainty stated when limited data [S2]
+
+Safety Considerations
+Vascular risk requires protocol readiness.
+
+Limitations / Uncertainty
+Limited high-quality RCTs for specific subgroups.
+
+Suggested Follow-Up Questions
+- Narrow to specific product?
+- Restrict to guideline-level evidence?
+- Focus on complication management only?`);
+      setLoading(false);
+    }, 1200);
+  }
+
+  return (
+    <div className="min-h-screen bg-white text-slate-900">
+      
+      {/* Top minimal header */}
+      <header className="border-b border-slate-200">
+        <div className="mx-auto max-w-4xl px-4 py-4 flex justify-between items-center">
+          <div className="text-lg font-semibold">
+            AesthetiCite
+          </div>
+          <div className="text-sm text-slate-500">
+            Clinical Evidence Governance
+          </div>
+        </div>
+      </header>
+
+      {/* Main content */}
+      <main className="mx-auto max-w-4xl px-4 py-10">
+
+        {/* Search Input */}
+        <div className="mb-8">
+          <div className="flex gap-3">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Enter a clinical question (e.g., hyaluronic acid vascular occlusion management)"
+              className="flex-1 rounded-xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+            <button
+              onClick={handleAsk}
+              className="rounded-xl bg-slate-900 px-6 py-3 text-sm text-white hover:bg-slate-800"
+            >
+              Ask
+            </button>
+          </div>
+        </div>
+
+        {/* Loading */}
+        {loading && (
+          <div className="text-sm text-slate-500">
+            Retrieving evidence and generating structured response…
+          </div>
+        )}
+
+        {/* Answer Panel */}
+        {answer && (
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm whitespace-pre-wrap text-sm leading-6">
+            {answer}
+          </div>
+        )}
+
+        {/* Footer minimal */}
+        <div className="mt-12 text-xs text-slate-500 border-t pt-6">
+          Educational decision support. Not a substitute for clinical judgment.
+        </div>
+      </main>
+    </div>
+  );
+}

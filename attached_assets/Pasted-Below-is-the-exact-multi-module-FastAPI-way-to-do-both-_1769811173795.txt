@@ -1,0 +1,254 @@
+Below is the exact, multi-module FastAPI way to do both:
+
+Automatically log aestheticite_opened and emergency_mode_opened whenever /qa or /emergency runs
+
+Auto-fill rubric defaults from the generated note (so clinicians only verify)
+
+I’ll give you drop-in modules + the minimal edits needed in your existing routers.
+
+1) Automatic event logging on /qa and /emergency
+A. Create a small “pilot events” client module
+app/pilot/client.py
+import os
+import json
+import time
+import requests
+from typing import Optional, Dict, Any
+
+PILOT_BASE_URL = os.getenv("PILOT_BASE_URL", "http://localhost:8000").rstrip("/")
+PILOT_ENABLED = os.getenv("PILOT_ENABLED", "1") == "1"
+PILOT_TIMEOUT = float(os.getenv("PILOT_TIMEOUT", "1.5"))
+
+def _post(path: str, payload: Dict[str, Any]) -> None:
+    if not PILOT_ENABLED:
+        return
+    url = f"{PILOT_BASE_URL}{path}"
+    try:
+        requests.post(url, json=payload, timeout=PILOT_TIMEOUT)
+    except Exception:
+        # Never break clinical flows because logging failed.
+        return
+
+def log_event(case_id: str, event_type: str, payload: Optional[Dict[str, Any]] = None, event_ts: Optional[int] = None) -> None:
+    _post("/events", {
+        "case_id": case_id,
+        "event_type": event_type,
+        "event_ts": event_ts or int(time.time()),
+        "payload": payload or {}
+    })
+
+
+This assumes you’re running the pilot-proof service (from the earlier code) somewhere reachable and exposing /events.
+
+B. Add a dependency that extracts case_id safely
+app/pilot/deps.py
+from typing import Optional
+from fastapi import Request
+
+CASE_ID_HEADER = "x-case-id"   # your frontend should send this once a clinician opens a case
+
+def get_case_id(request: Request) -> Optional[str]:
+    # Prefer header; fallback to JSON body if you want
+    case_id = request.headers.get(CASE_ID_HEADER)
+    return case_id.strip() if case_id else None
+
+C. In your /qa router, log in a background task
+app/routers/qa.py
+from fastapi import APIRouter, BackgroundTasks, Request
+from app.pilot.client import log_event
+from app.pilot.deps import get_case_id
+
+router = APIRouter()
+
+@router.post("/qa")
+async def qa_endpoint(request: Request, background: BackgroundTasks, req_body: dict):
+    # your existing logic...
+    # result = await run_qa(req_body)
+
+    case_id = get_case_id(request)
+    if case_id:
+        background.add_task(
+            log_event,
+            case_id=case_id,
+            event_type="aestheticite_opened",
+            payload={
+                "endpoint": "/qa",
+                "query": (req_body.get("query") or "")[:280],
+                "mode": "qa"
+            }
+        )
+
+    return {"ok": True}  # replace with your real result
+
+app/routers/emergency.py
+from fastapi import APIRouter, BackgroundTasks, Request
+from app.pilot.client import log_event
+from app.pilot.deps import get_case_id
+
+router = APIRouter()
+
+@router.post("/emergency")
+async def emergency_endpoint(request: Request, background: BackgroundTasks, req_body: dict):
+    # your existing logic...
+    # result = await run_emergency(req_body)
+
+    case_id = get_case_id(request)
+    if case_id:
+        background.add_task(
+            log_event,
+            case_id=case_id,
+            event_type="emergency_mode_opened",
+            payload={
+                "endpoint": "/emergency",
+                "query": (req_body.get("query") or "")[:280],
+                "mode": "emergency"
+            }
+        )
+
+    return {"ok": True}  # replace with your real result
+
+Frontend requirement (one line)
+
+When a clinician is working on a case, send a header:
+
+X-Case-Id: case_abc123...
+
+That’s it. You now have auditable proof of tool usage and emergency usage.
+
+2) Auto-fill rubric defaults from the generated note
+
+The cleanest way is: when you generate a note, also return a machine rubric (defaults) so the clinician just confirms.
+
+A. Add a rubric auto-fill function
+app/pilot/rubric_autofill.py
+import re
+from typing import Dict
+
+RUBRIC_KEYS = [
+    "consent_documented",
+    "risks_discussed",
+    "product_documented",
+    "dose_or_volume_documented",
+    "technique_documented",
+    "aftercare_documented",
+    "follow_up_plan",
+    "complication_assessed",
+    "red_flags_documented",
+    "escalation_rationale",
+]
+
+def autofill_rubric_from_note(note_text: str) -> Dict[str, bool]:
+    """
+    Conservative defaults: set True only if we see strong signals in the note.
+    Clinician can still edit.
+    """
+    t = (note_text or "").lower()
+
+    def has_any(*patterns: str) -> bool:
+        return any(re.search(p, t) for p in patterns)
+
+    rubric = {k: False for k in RUBRIC_KEYS}
+
+    rubric["consent_documented"] = has_any(r"\bconsent\b", r"\binformed consent\b")
+    rubric["risks_discussed"] = has_any(r"\brisks?\b", r"\brare serious\b", r"\bvascular\b", r"\bptosis\b", r"\binfection\b")
+    rubric["product_documented"] = has_any(r"\bproduct:\b")
+    rubric["dose_or_volume_documented"] = has_any(r"\bdose/volume:\b", r"\bunits\b", r"\bml\b")
+    rubric["technique_documented"] = has_any(r"\btechnique:\b", r"\bplane\b", r"\bcannula\b", r"\bneedle\b")
+    rubric["aftercare_documented"] = has_any(r"\baftercare:\b", r"\bpost-procedure\b")
+    rubric["follow_up_plan"] = has_any(r"\bfollow-up\b", r"\bfollow up\b", r"\b48h\b", r"\b24h\b", r"\bweek\b")
+    rubric["complication_assessed"] = has_any(r"\bcomplication\b", r"\bassessment\b", r"\bsuspected complication\b")
+    rubric["red_flags_documented"] = has_any(r"\bred flags?\b", r"\bsevere pain\b", r"\bblanch\w*\b", r"\bvision\b", r"\bneurolog\w*\b")
+    rubric["escalation_rationale"] = has_any(r"\bescalation\b", r"\breferral\b", r"\bconsult\b", r"\bemergency\b")
+
+    return rubric
+
+B. Modify your note-generation endpoint to return rubric defaults
+
+If your note generation lives in your main app, do it there. If it lives in the pilot service, do it there. Either way, the pattern is the same:
+
+app/routers/documentation.py
+from fastapi import APIRouter
+from pydantic import BaseModel
+from app.pilot.rubric_autofill import autofill_rubric_from_note
+
+router = APIRouter()
+
+class GenerateNoteResponse(BaseModel):
+    generated_note: str
+    rubric_defaults: dict
+
+@router.post("/documentation/generate-note", response_model=GenerateNoteResponse)
+async def generate_note(req: dict):
+    # 1) generate your note (LLM or template)
+    note = req.get("note") or "..."  # replace with your actual note generator output
+
+    # 2) auto-fill rubric from note text
+    defaults = autofill_rubric_from_note(note)
+
+    # 3) return both
+    return {"generated_note": note, "rubric_defaults": defaults}
+
+
+Now your frontend can:
+
+display the note
+
+show a rubric checklist already pre-ticked
+
+clinician just verifies and submits
+
+C. (Optional but strong) Auto-create a documentation draft in pilot DB
+
+When /documentation/generate-note returns, you can also POST to the pilot service /documentation with those defaults, so the clinician only “confirms”:
+
+from app.pilot.client import _post  # or create a dedicated submit function
+
+def draft_documentation(case_id: str, note: str, rubric_defaults: dict) -> None:
+    _post("/documentation", {
+        "case_id": case_id,
+        "mode": "aestheticite",
+        "rubric": rubric_defaults,
+        "product": None,
+        "dose_or_volume": None,
+        "technique": None,
+        "aftercare": None,
+        "follow_up": None,
+        "complications": None,
+        "escalation": None
+    })
+
+What you’ll have after this (and why it’s proof)
+
+With these two integrations, your pilot dataset becomes incredibly convincing:
+
+Every case has an auditable event timeline:
+
+symptom_onset → aestheticite_opened → recognition → escalation
+
+Every case can have standardized documentation:
+
+auto-generated note + rubric completeness score
+
+You can produce investor-grade statements like:
+
+“Emergency mode opened in 78% of suspected occlusion cases”
+
+“Median time-to-escalation decreased by X%”
+
+“Documentation completeness ≥85% increased from Y% to Z%”
+
+Minimal checklist for your Replit Agent
+
+Tell it to implement these exact files and wire them:
+
+app/pilot/client.py
+
+app/pilot/deps.py
+
+app/pilot/rubric_autofill.py
+
+Add background logging to /qa and /emergency
+
+Update note generation endpoint to return rubric_defaults
+
+If you paste your existing router filenames (qa.py, emergency.py, and where notes are generated), I’ll adapt the imports and signatures exactly to your structure.

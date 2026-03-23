@@ -1,0 +1,156 @@
+================================================================================
+PATCH 1 — client/src/App.tsx
+================================================================================
+
+ADD this import near the top of the imports block:
+
+    import NetworkSafetyWorkspacePage from "@/pages/network-safety-workspace";
+    import { ClinicProvider } from "@/hooks/use-clinic-context";
+
+ADD this route inside the <Switch> block (before the NotFound fallback):
+
+    <Route path="/network-safety-workspace">
+      {() => <ProtectedRoute component={NetworkSafetyWorkspacePage} />}
+    </Route>
+
+WRAP the <Router /> inside App() with <ClinicProvider>:
+
+    function App() {
+      return (
+        <ThemeProvider>
+          <LocaleProvider>
+            <QueryClientProvider client={queryClient}>
+              <TooltipProvider>
+                <ClinicProvider>          {/* <-- ADD */}
+                  <Toaster />
+                  <Router />
+                </ClinicProvider>          {/* <-- ADD */}
+              </TooltipProvider>
+            </QueryClientProvider>
+          </LocaleProvider>
+        </ThemeProvider>
+      );
+    }
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD these proxy routes to registerRoutes() — place them with the other
+/api/* proxy blocks:
+
+    // ── Clinic Network Safety Workspace ──────────────────────────────────
+    app.get("/api/workspace/orgs/me",        (req, res) => proxyToFastAPI(req, res, "/api/workspace/orgs/me"));
+    app.get("/api/workspace/clinics/me",     (req, res) => proxyToFastAPI(req, res, "/api/workspace/clinics/me"));
+    app.post("/api/workspace/clinics/select",(req, res) => proxyToFastAPI(req, res, "/api/workspace/clinics/select"));
+
+    app.post("/api/workspace/network-guidance/query",
+        (req, res) => proxyToFastAPI(req, res, "/api/workspace/network-guidance/query"));
+
+    app.post("/api/workspace/case-logs",     (req, res) => proxyToFastAPI(req, res, "/api/workspace/case-logs"));
+    app.get("/api/workspace/case-logs",      (req, res) => proxyToFastAPI(req, res, "/api/workspace/case-logs"));
+    app.get("/api/workspace/case-logs/export/csv",
+        (req, res) => proxyToFastAPI(req, res, "/api/workspace/case-logs/export/csv"));
+    app.get("/api/workspace/case-logs/:id",  (req, res) => proxyToFastAPI(req, res, `/api/workspace/case-logs/${req.params.id}`));
+    app.patch("/api/workspace/case-logs/:id",(req, res) => proxyToFastAPI(req, res, `/api/workspace/case-logs/${req.params.id}`));
+
+    app.post("/api/workspace/protocols",     (req, res) => proxyToFastAPI(req, res, "/api/workspace/protocols"));
+    app.get("/api/workspace/protocols",      (req, res) => proxyToFastAPI(req, res, "/api/workspace/protocols"));
+    app.patch("/api/workspace/protocols/:id",(req, res) => proxyToFastAPI(req, res, `/api/workspace/protocols/${req.params.id}`));
+
+    app.post("/api/workspace/reports/from-case/:id",
+        (req, res) => proxyToFastAPI(req, res, `/api/workspace/reports/from-case/${req.params.id}`));
+    app.post("/api/workspace/reports/from-guidance",
+        (req, res) => proxyToFastAPI(req, res, "/api/workspace/reports/from-guidance"));
+    app.get("/api/workspace/reports/:id",    (req, res) => proxyToFastAPI(req, res, `/api/workspace/reports/${req.params.id}`));
+
+    app.get("/api/workspace/admin/analytics/overview",
+        (req, res) => proxyToFastAPI(req, res, "/api/workspace/admin/analytics/overview"));
+    app.get("/api/workspace/admin/analytics/trends",
+        (req, res) => proxyToFastAPI(req, res, "/api/workspace/admin/analytics/trends"));
+
+
+================================================================================
+PATCH 3 — app/main.py
+================================================================================
+
+ADD these two imports near the top of main.py alongside the other router imports:
+
+    from app.api.network_workspace import router as network_workspace_router
+    from app.db.network_migrations import run_migrations as run_network_migrations, run_seed as run_network_seed
+
+ADD the router registration alongside the other app.include_router() calls:
+
+    app.include_router(network_workspace_router)
+
+ADD migration + seed call inside the @app.on_event("startup") handler,
+after the existing migration block:
+
+    @app.on_event("startup")
+    async def _startup():
+        with SessionLocal() as db:
+            # ... existing migration code ...
+            pass
+        
+        # Network workspace schema
+        run_network_migrations()
+        # Uncomment line below for dev/demo only — remove in production:
+        # run_network_seed()
+        
+        await init_retrieval_pool()
+
+
+================================================================================
+SETUP INSTRUCTIONS
+================================================================================
+
+1. Apply the three patches above.
+
+2. Install no new Python packages — all imports (fastapi, sqlalchemy, uuid,
+   json, csv, io) are already in the existing stack.
+
+3. The React page uses only existing shadcn/ui components already in the
+   project. No new npm packages required.
+
+4. To run seed data for demo:
+       python -m app.db.network_migrations
+   Or uncomment run_network_seed() in startup (dev only).
+
+5. To create real users as clinic members, insert rows into `memberships`
+   with the user's existing UUID from the `users` table, e.g.:
+       INSERT INTO memberships (user_id, org_id, clinic_id, role)
+       VALUES ('<your-user-uuid>', '<org-id>', '<clinic-id>', 'clinician');
+
+6. Navigate to /network-safety-workspace once logged in.
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+NEW FILES:
+  app/db/network_migrations.py          — PostgreSQL DDL + seed data
+  app/api/network_workspace.py          — FastAPI router (all 17 endpoints)
+  client/src/hooks/use-clinic-context.tsx  — Clinic switcher context + hook
+  client/src/components/clinic-switcher.tsx — Header dropdown component
+  client/src/pages/network-safety-workspace.tsx — 5-tab workspace UI
+
+PATCH (3 files, additions only — no destructive changes):
+  client/src/App.tsx                    — add route + ClinicProvider wrapper
+  server/routes.ts                      — add 18 proxy routes
+  app/main.py                           — register router + run migrations
+
+
+================================================================================
+SUCCESS CRITERIA CHECKLIST
+================================================================================
+
+✓ Log in as clinic user          → JWT auth unchanged, membership checked per route
+✓ Switch clinic context          → ClinicSwitcher dropdown, stored in localStorage
+✓ Run live complication query    → LiveGuidanceTab → POST /network-guidance/query
+✓ Save the protocol              → "Save Protocol" button → POST /protocols
+✓ Create a case log              → CaseLogTab form → POST /case-logs
+✓ Generate a safety report       → POST /reports/from-case/:id
+✓ View admin analytics           → AdminDashboardTab (clinic_admin+ only)
+✓ Evidence ranked guidelines first → structured_workflow + rerank_note in response

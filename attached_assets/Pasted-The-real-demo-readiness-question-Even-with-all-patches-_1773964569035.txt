@@ -1,0 +1,22 @@
+The real demo-readiness question
+Even with all patches applied, there are three things that determine whether Dr. Mehta walks away impressed or skeptical:
+1. The vascular occlusion scenario must be flawless
+This is the one scenario she will test. Type "vascular occlusion" → the complication protocol fires → the workflow runner shows the steps in order → hyaluronidase dose is correct → escalation criteria are clear. If any part of that chain breaks, errors, or returns wrong clinical information, the demo fails regardless of how good everything else looks.
+2. The evidence must be current and correct
+If the answer to "vascular occlusion management" cites a 2019 paper while the 2023 BAFPS/RAFT consensus exists in the knowledge base, a senior clinician notices. If the hyaluronidase dose returned is 150 IU when current consensus is 1500 IU minimum for occlusion, the product is clinically dangerous and she will say so.
+3. Speed
+Dr. Mehta will not wait 8 seconds for a response. The hot-cache patches from Feature 5 need to be applied so the vascular occlusion query returns in under 2 seconds. That specific query should be in the HOT_QUERIES registry and pre-warmed at startup.
+
+Honest verdict
+Not demo-ready today. Demo-ready within 1–2 focused days of work.
+The specific checklist before sending Dr. Mehta access:
+
+ Apply all PATCHES.txt files in Replit — workflow_engine, safety_layer, cases, report_generator, speed_optimizer
+ Add /decide and /workflow routes to App.tsx
+ Run the vascular occlusion scenario yourself end-to-end: search → protocol → workflow → report PDF
+ Verify the hyaluronidase dose in the protocol output matches 2023 consensus (1500 IU minimum)
+ Test on mobile — Dr. Mehta will likely look at it on her phone first
+ Remove or hide any broken routes, empty pages, or admin-facing tools from the main nav
+ Make sure there's a clean login / access flow so she doesn't hit a blank screen
+
+Once those are done, send her a login and a single sentence: "Start with the vascular occlusion scenario — type it into the search bar or use the quick-select on the decision page." Don't give her a tour. Let the product speak.

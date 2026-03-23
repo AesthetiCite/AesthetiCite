@@ -1,0 +1,98 @@
+import asyncio, json, time
+from typing import Any, AsyncGenerator, Dict, List
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+app = FastAPI()
+
+def sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# --- plug your existing functions here ---
+async def retrieve(q: str, k: int) -> Dict[str, Any]:
+    # return {"chunks":[...], "sources":[{"sid":"S1","title":...,"year":...,"doi":...,"url":...}, ...]}
+    raise NotImplementedError
+
+async def plan_json(q: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    # your slow plan/ground JSON call
+    raise NotImplementedError
+
+async def compose_stream(prompt: str) -> AsyncGenerator[str, None]:
+    # your streaming LLM call
+    raise NotImplementedError
+
+def skeleton_from_sources(q: str, sources: List[Dict[str, Any]]) -> str:
+    # A fast, deterministic skeleton (no LLM). This is the trick.
+    # User sees "something" instantly while LLM plan runs.
+    top = sources[:5]
+    cites = " ".join([f"[{s['sid']}]" for s in top if s.get("sid")])
+    return (
+        "Clinical summary (loading grounded answer…)\n"
+        "- Risk context: glabella injections require high caution due to vascular anatomy.\n"
+        "- Immediate actions: review technique, aspiration/slow injection, know occlusion protocol.\n"
+        "- I will now generate a fully grounded answer with citations.\n"
+        f"Top sources: {cites}\n\n"
+    )
+
+def compose_prompt_from_plan(q: str, plan: Dict[str, Any]) -> str:
+    return f"""Write final answer. Use ONLY plan JSON. Cite as [S#].
+Question: {q}
+Plan JSON: {json.dumps(plan, ensure_ascii=False)}"""
+
+class Ask(BaseModel):
+    q: str
+    k: int = 12
+
+@app.post("/ask/stream")
+async def ask_stream(body: Ask, request: Request):
+    q = body.q.strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]), media_type="text/event-stream")
+
+    async def gen() -> AsyncGenerator[str, None]:
+        t0 = time.perf_counter()
+
+        # 1) Retrieval (you’re already fast here)
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+        r = await retrieve(q, body.k)
+        chunks = r["chunks"]
+        sources = r["sources"]
+
+        # 2) Stream sources immediately (<300ms typical)
+        yield sse("sources", {"sources": sources, "ms": int((time.perf_counter()-t0)*1000)})
+
+        if await request.is_disconnected():
+            return
+
+        # 3) Stream an instant deterministic skeleton (no LLM)
+        yield sse("replace", {"channel": "final", "message": "Draft answer (grounding in progress)…"})
+        yield sse("token", {"t": skeleton_from_sources(q, sources), "channel": "final"})
+
+        # 4) Start slow plan in parallel
+        plan_task = asyncio.create_task(plan_json(q, chunks))
+
+        # 5) While plan runs, keep UI alive (heartbeat)
+        #    (prevents “stalled” feel and keeps SSE connection warm)
+        while not plan_task.done():
+            yield sse("status", {"phase": "grounding", "message": "Grounding claims…"})
+            await asyncio.sleep(0.8)
+            if await request.is_disconnected():
+                return
+
+        plan = await plan_task
+
+        if await request.is_disconnected():
+            return
+
+        # 6) Now stream the real final grounded answer (compose stream)
+        yield sse("replace", {"channel": "final", "message": "Grounded answer:"})
+        async for tok in compose_stream(compose_prompt_from_plan(q, plan)):
+            yield sse("token", {"t": tok, "channel": "final"})
+            if await request.is_disconnected():
+                return
+
+        yield sse("meta", {"total_ms": int((time.perf_counter()-t0)*1000)})
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

@@ -1,0 +1,316 @@
+"""
+ONE code file that implements ALL the improvements you confirmed work:
+
+✅ Streaming SSE with:
+  - immediate "sources" event (<300ms after retrieval)
+  - immediate deterministic skeleton (0ms LLM)
+  - heartbeat while plan runs (keeps UI alive)
+  - final grounded answer streamed after plan completes
+
+✅ Plan phase improvements:
+  - compact/minified JSON schema
+  - evidence via OFFSETS (sid + a,b) instead of quotes
+  - max_tokens capped (default 600)
+  - temperature lowered (default 0.1)
+  - minified JSON-only system prompt
+  - model split via env PLAN_MODEL / COMPOSE_MODEL
+
+✅ Compose phase improvements:
+  - streaming output
+  - smaller compose prompt
+  - max_tokens cap (default 1100)
+  - temperature configurable
+
+✅ Timing breakdown returned in SSE "meta" event.
+
+How to run:
+  pip install fastapi uvicorn httpx
+  export AI_PROXY_URL="http://localhost:1106/modelfarm/openai/chat/completions"
+  export PLAN_MODEL="gpt-4o-mini"        # or gpt-4.1-mini (if you want)
+  export COMPOSE_MODEL="gpt-4o-mini"
+  uvicorn app:app --host 0.0.0.0 --port 8000
+
+IMPORTANT: You must plug in TWO functions (marked below):
+  1) embed_query(q)->list[float] (384 dims)
+  2) retrieve_chunks_unified(q, qvec, k)-> dict with keys:
+        {"chunks":[chunk...], "sources":[source...]}
+     where chunk includes at least: text,title,year,doi,url
+"""
+
+import os, json, time, re, asyncio
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+# -----------------------------
+# Env knobs
+# -----------------------------
+AI_PROXY_URL   = os.getenv("AI_PROXY_URL", "http://localhost:1106/modelfarm/openai/chat/completions")
+PLAN_MODEL     = os.getenv("PLAN_MODEL", "gpt-4o-mini")          # you can set gpt-4.1-mini too
+COMPOSE_MODEL  = os.getenv("COMPOSE_MODEL", "gpt-4o-mini")
+
+# Plan prompt compression defaults (recommended)
+CHUNK_CHAR_CAP        = int(os.getenv("CHUNK_CHAR_CAP", "420"))
+MAX_SOURCES_IN_PLAN   = int(os.getenv("MAX_SOURCES_IN_PLAN", "6"))
+MAX_CLAIMS            = int(os.getenv("MAX_CLAIMS", "4"))
+MAX_EVID_PER_CLAIM    = int(os.getenv("MAX_EVID_PER_CLAIM", "2"))
+
+# LLM generation caps (your big win)
+PLAN_MAX_TOKENS       = int(os.getenv("PLAN_MAX_TOKENS", "600"))
+PLAN_TEMPERATURE      = float(os.getenv("PLAN_TEMPERATURE", "0.1"))
+
+COMPOSE_MAX_TOKENS    = int(os.getenv("COMPOSE_MAX_TOKENS", "1100"))
+COMPOSE_TEMPERATURE   = float(os.getenv("COMPOSE_TEMPERATURE", "0.2"))
+
+# Heartbeat frequency while plan is running
+HEARTBEAT_SECONDS     = float(os.getenv("HEARTBEAT_SECONDS", "0.8"))
+
+app = FastAPI(title="AesthetiCite Ask (Fast + Grounded)", version="1.0")
+
+# -----------------------------
+# SSE helper
+# -----------------------------
+def sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# -----------------------------
+# YOU MUST PLUG THESE TWO
+# -----------------------------
+async def embed_query(q: str) -> List[float]:
+    """
+    Return 384-dim embedding (fastembed all-MiniLM-L6-v2).
+    Plug your existing embedder here.
+    """
+    raise NotImplementedError
+
+async def retrieve_chunks_unified(q: str, qvec: List[float], k: int) -> Dict[str, Any]:
+    """
+    Plug your existing retrieval here (your SQL_UNIFIED_ALL).
+    Must return:
+      {
+        "chunks": [ { "text":..., "title":..., "year":..., "doi":..., "url":... }, ... ],
+        "sources":[ { "sid":"S1", "title":..., "year":..., "doi":..., "url":... }, ... ]
+      }
+    IMPORTANT: Provide sources with stable S1..Sk mapping aligned to returned chunks order.
+    """
+    raise NotImplementedError
+
+# -----------------------------
+# Prompt builders (minified + offsets)
+# -----------------------------
+SYSTEM_PLAN = "You output ONLY minified JSON. No prose. No markdown. No extra keys."
+SYSTEM_COMPOSE = "You are AesthetiCite. Be concise. Do not invent facts."
+
+def _build_plan_prompt(question: str, chunks: list) -> str:
+    compact = []
+    for i, c in enumerate(chunks[:MAX_SOURCES_IN_PLAN]):
+        txt = (c.get("text") or "")[:CHUNK_CHAR_CAP]
+        compact.append({
+            "sid": f"S{i+1}",
+            "t": (c.get("title") or "")[:120],
+            "y": c.get("year"),
+            "doi": c.get("doi") or c.get("url"),
+            "x": txt,
+        })
+
+    # offsets-based evidence to avoid quote generation cost
+    return (
+f"""STRICT JSON only.
+
+Schema:
+{{"s":"<1-2 cautious sentences>","k":["<kp>"],"c":[{{"t":"<claim>","e":[{{"sid":"S1","a":0,"b":80}}]}}],"l":["<lim>"],"n":["<next>"]}}
+
+Rules:
+- MAX {MAX_CLAIMS} claims in c.
+- Each claim MUST have 1-{MAX_EVID_PER_CLAIM} evidence items.
+- Evidence item is (sid,a,b): character offsets into that source's x snippet.
+- 0 <= a < b <= len(x); span <= 120 chars.
+- If evidence is insufficient: reduce claims and state in l.
+- No cite => no claim. Do not invent facts.
+
+Q: {question}
+SRC:{json.dumps(compact, ensure_ascii=False)}"""
+    ).strip()
+
+def _build_compose_prompt(question: str, plan: Dict[str, Any]) -> str:
+    # Keep it short; prose quality comes from model, not verbose instructions.
+    return (
+f"""Answer using ONLY this plan JSON. No new facts.
+Cite inline like [S1] based on plan.c[*].e[*].sid.
+Format:
+Clinical summary (2-3 lines)
+Key points (bullets)
+Limitations (bullets)
+Follow-ups (bullets)
+
+Q: {question}
+PLAN:{json.dumps(plan, ensure_ascii=False, separators=(",",":"))}"""
+    ).strip()
+
+# -----------------------------
+# Deterministic instant skeleton (0ms LLM)
+# -----------------------------
+def _skeleton(question: str, sources: List[Dict[str, Any]]) -> str:
+    # simple, safe, not-claimy; creates instant perceived speed
+    top = sources[:5]
+    cites = " ".join([f"[{s.get('sid','S?')}]" for s in top])
+    return (
+        "Clinical summary (grounding in progress…)\n"
+        "- I’m retrieving and validating evidence-linked claims now.\n"
+        "- You will receive a fully grounded answer with inline citations.\n\n"
+        "What I’ll cover:\n"
+        "- Key clinical risks and safe technique considerations\n"
+        "- Evidence-linked guidance and limitations\n"
+        "- Practical follow-ups\n\n"
+        f"Top sources: {cites}\n\n"
+    )
+
+# -----------------------------
+# Proxy LLM calls
+# -----------------------------
+async def llm_plan_json(prompt: str) -> Dict[str, Any]:
+    payload = {
+        "model": PLAN_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PLAN},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": PLAN_TEMPERATURE,
+        "max_tokens": PLAN_MAX_TOKENS,
+        "response_format": {"type": "json_object"},
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(AI_PROXY_URL, json=payload)
+        r.raise_for_status()
+        data = r.json()
+        content = data["choices"][0]["message"]["content"]
+        try:
+            return json.loads(content)
+        except Exception:
+            # fail closed
+            return {"s":"Insufficient grounded output.","k":[],"c":[],"l":["Plan JSON parse failed."],"n":[]}
+
+async def llm_compose_stream(prompt: str) -> AsyncGenerator[str, None]:
+    payload = {
+        "model": COMPOSE_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_COMPOSE},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": COMPOSE_TEMPERATURE,
+        "max_tokens": COMPOSE_MAX_TOKENS,
+        "stream": True,
+    }
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", AI_PROXY_URL, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                chunk = line[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                    delta = obj["choices"][0].get("delta", {})
+                    tok = delta.get("content")
+                    if tok:
+                        yield tok
+                except Exception:
+                    continue
+
+# -----------------------------
+# API
+# -----------------------------
+class AskBody(BaseModel):
+    q: str
+    k: int = 40  # you use 40
+    # optional: allow clients to tune ef_search etc if you want later
+
+@app.post("/ask_v3/stream")
+async def ask_v3_stream(body: AskBody, request: Request):
+    q = body.q.strip()
+    if not q:
+        return StreamingResponse(iter([sse("error", {"message": "Empty query"})]), media_type="text/event-stream")
+
+    async def gen() -> AsyncGenerator[str, None]:
+        t0 = time.perf_counter()
+        yield sse("status", {"phase": "start", "message": "Starting..."})
+
+        # --- Retrieval (embed + DB fetch) ---
+        t_r0 = time.perf_counter()
+        yield sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
+        qvec = await embed_query(q)
+        r = await retrieve_chunks_unified(q, qvec, body.k)
+        chunks = r["chunks"]
+        sources = r["sources"]
+        t_r1 = time.perf_counter()
+
+        # --- Immediate UI output: sources + skeleton (OpenEvidence feel) ---
+        yield sse("sources", {"sources": sources, "ms": int((t_r1 - t0) * 1000)})
+        yield sse("replace", {"channel": "final", "message": "Draft answer (grounding in progress)…"})
+        yield sse("token", {"t": _skeleton(q, sources), "channel": "final"})
+
+        if await request.is_disconnected():
+            return
+
+        # --- Plan runs in background (no dead time) ---
+        t_p0 = time.perf_counter()
+        plan_task = asyncio.create_task(llm_plan_json(_build_plan_prompt(q, chunks)))
+
+        # Heartbeat while plan runs (keeps UI lively and connection warm)
+        while not plan_task.done():
+            yield sse("status", {"phase": "grounding", "message": "Grounding claims…"})
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            if await request.is_disconnected():
+                return
+
+        plan = await plan_task
+        t_p1 = time.perf_counter()
+
+        if await request.is_disconnected():
+            return
+
+        # --- Compose stream (final grounded answer) ---
+        yield sse("replace", {"channel": "final", "message": "Grounded answer:"})
+        t_c0 = time.perf_counter()
+        first_tok_ms: Optional[int] = None
+
+        async for tok in llm_compose_stream(_build_compose_prompt(q, plan)):
+            if first_tok_ms is None:
+                first_tok_ms = int((time.perf_counter() - t_c0) * 1000)
+            yield sse("token", {"t": tok, "channel": "final"})
+            if await request.is_disconnected():
+                return
+
+        t1 = time.perf_counter()
+
+        # --- Timing meta (matches your breakdown style) ---
+        meta = {
+            "retrieval_ms": int((t_r1 - t_r0) * 1000),
+            "plan_llm_ms": int((t_p1 - t_p0) * 1000),
+            "compose_first_token_ms": first_tok_ms,
+            "compose_total_ms": int((t1 - t_c0) * 1000),
+            "total_ms": int((t1 - t0) * 1000),
+            "models": {"plan": PLAN_MODEL, "compose": COMPOSE_MODEL},
+            "caps": {
+                "plan_max_tokens": PLAN_MAX_TOKENS,
+                "compose_max_tokens": COMPOSE_MAX_TOKENS,
+                "plan_temp": PLAN_TEMPERATURE,
+                "compose_temp": COMPOSE_TEMPERATURE,
+                "chunk_char_cap": CHUNK_CHAR_CAP,
+                "max_sources_in_plan": MAX_SOURCES_IN_PLAN,
+                "max_claims": MAX_CLAIMS,
+                "max_evid_per_claim": MAX_EVID_PER_CLAIM
+            }
+        }
+        yield sse("meta", meta)
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

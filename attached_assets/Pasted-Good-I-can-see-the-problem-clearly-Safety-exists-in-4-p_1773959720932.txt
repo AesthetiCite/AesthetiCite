@@ -1,0 +1,15 @@
+Good. I can see the problem clearly. Safety exists in 4 places — complication_protocol_layer(), ESCALATION_RULES, escalation_note, and scattered red_flags lists — but none are unified and none inject into every response. The build plan requires safety in every answer. Building the canonical safety engine + UI block now.Created 3 files, read a fileCreated 3 files, read a file3 files. Here's what matters most about this implementation.
+
+The problem the existing code had
+Safety existed in 4 disconnected places — complication_protocol_layer() in veridoc.py only fired for complication queries; escalation_note was a plain string passed to the prompt; the frontend had no dedicated safety section, just whatever the LLM happened to write. None of this was structured or consistent.
+What safety_layer.py does differently
+It classifies every query into one of 7 types and applies the right ruleset:
+Query typeRiskExamplecomplication_criticalCritical"anaphylaxis", "necrosis", "airway"complication_vascularHigh"vascular occlusion", "blanching", "livedo"complicationHigh"nodule", "infection", "bruising"high_risk_anatomyModerate"glabella", "temple", "tear trough"techniqueLow"dose", "volume", "injection plane"regulatoryModerate"off-label", "consent", "pregnancy"generalLowEverything else
+Every type returns the exact build plan structure — actions, escalation, risk_warning — plus when_to_stop, when_to_refer, escalation_criteria, monitoring, and medico_legal. The last one is the critical addition: a structured documentation checklist that fires every time, not just for complications.
+Zero latency — the classification is pure string matching with frozenset lookups. It runs in under 1ms regardless of query complexity.
+Two injection points ensure safety reaches both the LLM and the clinician:
+
+safety_block_for_prompt() injects structured rules directly into the LLM prompt, so the model's generated text already includes escalation criteria — not as an afterthought but as part of the answer structure
+enrich_meta_payload() adds the full SafetyAssessment dict to the SSE meta event, so the frontend has machine-readable structured data to render independently of the answer text
+
+The UI component auto-expands for critical and high risk (the clinician sees it immediately), and collapses to a compact state for low risk. The medico-legal checklist is always there but hidden under a collapsible — it appears when the clinician needs to document, not as visual noise on every query.

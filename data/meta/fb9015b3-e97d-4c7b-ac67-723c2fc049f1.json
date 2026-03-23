@@ -1,0 +1,789 @@
+{
+  "record_id": "fb9015b3-e97d-4c7b-ac67-723c2fc049f1",
+  "doi": "10.1371/journal.pone.0237077",
+  "title": "Detection of meat from horse, donkey and their hybrids (mule/hinny) by duplex real-time fluorescent PCR",
+  "journal": "PLOS ONE",
+  "year": 2020,
+  "publisher_url": "https://doi.org/10.1371/journal.pone.0237077",
+  "pmid": "33373374",
+  "abstract": "Meat adulteration is currently a common practice worldwide. In China, adulteration of donkey meat products with the similar species (horse and mule/hinny) meat and mislabeling are becoming widespread concerns. In this study, a sensitive and species-specific duplex real-time PCR assay based on the simultaneous amplification of fragments of the creatine kinase muscle gene family, was developed and optimized for the identification of horse, donkey and mule /hinny species in raw and heat-processed meat products. Duplex real-time PCR results showed different fluorescence amplification curves for horse and donkey. Both kinds of fluorescence amplification curves appeared simultaneously for mule/hinny. The limit of detection (LOD) of the method was up to 0.01 ng /&#x3bc;L. The method and strategy developed in this study could be applied to detect the presence of adulterants from horse and mule /hinny meat in raw donkey meat and meat products.",
+  "crossref": {
+    "indexed": {
+      "date-parts": [
+        [
+          2025,
+          12,
+          6
+        ]
+      ],
+      "date-time": "2025-12-06T05:02:22Z",
+      "timestamp": 1764997342621,
+      "version": "3.37.3"
+    },
+    "reference-count": 33,
+    "publisher": "Public Library of Science (PLoS)",
+    "issue": "12",
+    "license": [
+      {
+        "start": {
+          "date-parts": [
+            [
+              2020,
+              12,
+              29
+            ]
+          ],
+          "date-time": "2020-12-29T00:00:00Z",
+          "timestamp": 1609200000000
+        },
+        "content-version": "vor",
+        "delay-in-days": 0,
+        "URL": "http://creativecommons.org/licenses/by/4.0/"
+      }
+    ],
+    "funder": [
+      {
+        "DOI": "10.13039/501100002855",
+        "name": "Ministry of Science and Technology of the People's Republic of China",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "2019YFC1605001"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "2019YFC1605001"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/501100002855",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      }
+    ],
+    "content-domain": {
+      "domain": [
+        "www.plosone.org"
+      ],
+      "crossmark-restriction": false
+    },
+    "short-container-title": [
+      "PLoS ONE"
+    ],
+    "abstract": "<jats:p>Meat adulteration is currently a common practice worldwide. In China, adulteration of donkey meat products with the similar species (horse and mule/hinny) meat and mislabeling are becoming widespread concerns. In this study, a sensitive and species-specific duplex real-time PCR assay based on the simultaneous amplification of fragments of the creatine kinase muscle gene family, was developed and optimized for the identification of horse, donkey and mule /hinny species in raw and heat-processed meat products. Duplex real-time PCR results showed different fluorescence amplification curves for horse and donkey. Both kinds of fluorescence amplification curves appeared simultaneously for mule/hinny. The limit of detection (LOD) of the method was up to 0.01 ng /μL. The method and strategy developed in this study could be applied to detect the presence of adulterants from horse and mule /hinny meat in raw donkey meat and meat products.</jats:p>",
+    "DOI": "10.1371/journal.pone.0237077",
+    "type": "journal-article",
+    "created": {
+      "date-parts": [
+        [
+          2020,
+          12,
+          29
+        ]
+      ],
+      "date-time": "2020-12-29T18:59:51Z",
+      "timestamp": 1609268391000
+    },
+    "page": "e0237077",
+    "update-policy": "https://doi.org/10.1371/journal.pone.corrections_policy",
+    "source": "Crossref",
+    "is-referenced-by-count": 7,
+    "title": [
+      "Detection of meat from horse, donkey and their hybrids (mule/hinny) by duplex real-time fluorescent PCR"
+    ],
+    "prefix": "10.1371",
+    "volume": "15",
+    "author": [
+      {
+        "given": "Dan",
+        "family": "Wang",
+        "sequence": "first",
+        "affiliation": []
+      },
+      {
+        "given": "Liping",
+        "family": "Wang",
+        "sequence": "additional",
+        "affiliation": []
+      },
+      {
+        "given": "Chenyu",
+        "family": "Xue",
+        "sequence": "additional",
+        "affiliation": []
+      },
+      {
+        "given": "Yuebei",
+        "family": "Han",
+        "sequence": "additional",
+        "affiliation": []
+      },
+      {
+        "given": "Hejing",
+        "family": "Li",
+        "sequence": "additional",
+        "affiliation": []
+      },
+      {
+        "given": "Jianqiang",
+        "family": "Geng",
+        "sequence": "additional",
+        "affiliation": []
+      },
+      {
+        "given": "Jiang",
+        "family": "Jie",
+        "sequence": "additional",
+        "affiliation": []
+      }
+    ],
+    "member": "340",
+    "published-online": {
+      "date-parts": [
+        [
+          2020,
+          12,
+          29
+        ]
+      ]
+    },
+    "reference": [
+      {
+        "issue": "3",
+        "key": "pone.0237077.ref001",
+        "doi-asserted-by": "crossref",
+        "first-page": "834",
+        "DOI": "10.1111/ijfs.12720",
+        "article-title": "Duplex PCR approach for the detection and quantification of donkey, horse and mule in raw and heat-processed meat products",
+        "volume": "50",
+        "author": "AL Chen",
+        "year": "2017",
+        "journal-title": "International Journal of Food Science & Technology"
+      },
+      {
+        "issue": "22",
+        "key": "pone.0237077.ref002",
+        "first-page": "5518",
+        "article-title": "Real-time Fluorescent PCR for Identifying Ingredients of Horse and Donkey in Halal Food",
+        "volume": "53",
+        "author": "Y Yuan",
+        "year": "2014",
+        "journal-title": "Hubei Agricultural Sciences"
+      },
+      {
+        "issue": "2",
+        "key": "pone.0237077.ref003",
+        "doi-asserted-by": "crossref",
+        "first-page": "143",
+        "DOI": "10.1016/S0309-1740(98)00112-0",
+        "article-title": "A quick and simple method for the identification of meat species and meat products by PCR assay",
+        "volume": "51",
+        "author": "T Matsunaga",
+        "year": "1999",
+        "journal-title": "Meat Science"
+      },
+      {
+        "issue": "2",
+        "key": "pone.0237077.ref004",
+        "doi-asserted-by": "crossref",
+        "first-page": "258",
+        "DOI": "10.1111/1750-3841.14001",
+        "article-title": "A Fast and Reliable Real-Time PCR Method for Detection of Ten Animal Species in Meat Products",
+        "volume": "83",
+        "author": "L Dalsecco",
+        "year": "2018",
+        "journal-title": "Journal of Food Science"
+      },
+      {
+        "key": "pone.0237077.ref005",
+        "doi-asserted-by": "crossref",
+        "first-page": "6061",
+        "DOI": "10.21521/mw.6061",
+        "article-title": "Application of real-time PCR for DNA identification of ruminants in raw animal products",
+        "volume": "74",
+        "author": "W Anna",
+        "year": "2018",
+        "journal-title": "Medycyna Weterynaryjna"
+      },
+      {
+        "issue": "3",
+        "key": "pone.0237077.ref006",
+        "first-page": "1",
+        "article-title": "A digital PCR method for identifying and quantifying adulteration of meat species in raw and processed food",
+        "volume": "12",
+        "author": "J Ren",
+        "year": "2017",
+        "journal-title": "Plos One"
+      },
+      {
+        "issue": "10",
+        "key": "pone.0237077.ref007",
+        "doi-asserted-by": "crossref",
+        "first-page": "4705",
+        "DOI": "10.1007/s13197-019-03914-3",
+        "article-title": "Molecular identification of biwa trout (Oncorhynchus masou rhodurus) using PCR–RFLP method",
+        "volume": "56",
+        "author": "C Matsumoto",
+        "year": "2019",
+        "journal-title": "Journal of Food Science and Technology"
+      },
+      {
+        "issue": "3",
+        "key": "pone.0237077.ref008",
+        "doi-asserted-by": "crossref",
+        "first-page": "221",
+        "DOI": "10.1016/0309-1740(91)90068-2",
+        "article-title": "Species differentiation of heated meat products by DNA hybridization",
+        "volume": "30",
+        "author": "K F EbbehoJ",
+        "year": "1991",
+        "journal-title": "Meat Science"
+      },
+      {
+        "key": "pone.0237077.ref009",
+        "first-page": "386",
+        "article-title": "DNA barcoding reveals mislabeling of game meat species on the U.S. commercial market",
+        "volume": "59",
+        "author": "C A Quinto",
+        "journal-title": "Food Control. 2016"
+      },
+      {
+        "key": "pone.0237077.ref010",
+        "doi-asserted-by": "crossref",
+        "first-page": "346",
+        "DOI": "10.1016/j.foodcont.2016.07.017",
+        "article-title": "Comparison of real-time PCR and ELISA-based methods for the detection of beef and pork in processed meat products",
+        "volume": "71",
+        "author": "A T Perestam",
+        "year": "2017",
+        "journal-title": "Food Control"
+      },
+      {
+        "key": "pone.0237077.ref011",
+        "doi-asserted-by": "crossref",
+        "first-page": "305",
+        "DOI": "10.1016/j.foodchem.2014.07.139",
+        "article-title": "A multiplex real-time PCR method for the quantification of beef and pork fractions in minced meat",
+        "volume": "169",
+        "author": "A Iwobi",
+        "year": "2015",
+        "journal-title": "Food Chemistry"
+      },
+      {
+        "issue": "1",
+        "key": "pone.0237077.ref012",
+        "doi-asserted-by": "crossref",
+        "first-page": "125",
+        "DOI": "10.1007/s00217-009-1154-5",
+        "article-title": "Heptaplex real-time PCR for the identification and quantification of DNA from beef, pork, chicken, turkey, horse meat, sheep (mutton) and goat",
+        "volume": "230",
+        "author": "R Koppel",
+        "year": "2009",
+        "journal-title": "European Food Research & Technology"
+      },
+      {
+        "issue": "4",
+        "key": "pone.0237077.ref013",
+        "doi-asserted-by": "crossref",
+        "first-page": "1199",
+        "DOI": "10.1007/s00217-008-0837-7",
+        "article-title": "A BreitenmoserMultiplex real-time PCR for the detection and quantification of DNA from beef, pork, chicken and turkey",
+        "volume": "227",
+        "author": "R Koppel",
+        "year": "2008",
+        "journal-title": "European Food Research & Technology"
+      },
+      {
+        "key": "pone.0237077.ref014",
+        "doi-asserted-by": "crossref",
+        "first-page": "408",
+        "DOI": "10.1016/j.lwt.2016.08.061",
+        "article-title": "EvaGreen real-time PCR to determine horse meat adulteration in processed foods",
+        "volume": "75",
+        "author": "L Meira",
+        "year": "2016",
+        "journal-title": "LWT- Food Science and Technology"
+      },
+      {
+        "issue": "29",
+        "key": "pone.0237077.ref015",
+        "doi-asserted-by": "crossref",
+        "first-page": "8268",
+        "DOI": "10.1021/acs.jafc.9b02518",
+        "article-title": "Heptaplex Polymerase Chain Reaction Assay for the Simultaneous Detection of Beef, Buffalo, Chicken, Cat, Dog, Pork, and Fish in Raw and Heat-Treated Food Products",
+        "volume": "67",
+        "author": "MAM Hossain",
+        "year": "2019",
+        "journal-title": "Journal of Agricultural and Food Chemistry"
+      },
+      {
+        "issue": "6",
+        "key": "pone.0237077.ref016",
+        "doi-asserted-by": "crossref",
+        "first-page": "671",
+        "DOI": "10.1007/s00284-017-1237-7",
+        "article-title": "Real-Time PCR Identification of SixMalasseziaSpecies",
+        "volume": "74",
+        "author": "A Ilahi",
+        "year": "2017",
+        "journal-title": "Current Microbiology"
+      },
+      {
+        "issue": "8",
+        "key": "pone.0237077.ref017",
+        "first-page": "85",
+        "article-title": "A Real-Time PCR to Detect Horse and Donkey Ingredients in Donkey Hide Glue",
+        "volume": "35",
+        "author": "YJ W B Wu",
+        "year": "2014",
+        "journal-title": "Food Science"
+      },
+      {
+        "issue": "1",
+        "key": "pone.0237077.ref018",
+        "doi-asserted-by": "crossref",
+        "first-page": "133",
+        "DOI": "10.1007/s10068-014-0018-3",
+        "article-title": "Species-specific multiplex real-time PCR assay for identification of deer and common domestic animals",
+        "volume": "23",
+        "author": "J You",
+        "year": "2014",
+        "journal-title": "Food Science and Biotechnology"
+      },
+      {
+        "issue": "8",
+        "key": "pone.0237077.ref019",
+        "doi-asserted-by": "crossref",
+        "first-page": "1767",
+        "DOI": "10.1093/nar/27.8.1767",
+        "article-title": "Animal mitochondrial genomes",
+        "volume": "27",
+        "author": "J L Boore",
+        "year": "1999",
+        "journal-title": "Nucleic Acids Research"
+      },
+      {
+        "key": "pone.0237077.ref020",
+        "doi-asserted-by": "crossref",
+        "first-page": "37",
+        "DOI": "10.1016/j.jevs.2017.02.014",
+        "article-title": "Genetic Profiling of Equid Hybrids Using PCR-RFLP and Partial Sequence Analysis of Cytochrome b Gene: Forensic Implication",
+        "volume": "54",
+        "author": "G G Moustafa",
+        "year": "2017",
+        "journal-title": "Journal of Equine Veterinary Science"
+      },
+      {
+        "issue": "2–3",
+        "key": "pone.0237077.ref021",
+        "doi-asserted-by": "crossref",
+        "first-page": "141",
+        "DOI": "10.1016/j.forsciint.2003.10.008",
+        "article-title": "Real-time PCR designs to estimate nuclear and mitochondrial DNA copy number in forensic and ancient DNA studies",
+        "volume": "139",
+        "author": "A Alonso",
+        "year": "2004",
+        "journal-title": "Forensic Science International"
+      },
+      {
+        "issue": "5–6",
+        "key": "pone.0237077.ref022",
+        "doi-asserted-by": "crossref",
+        "first-page": "143",
+        "DOI": "10.1016/S1050-3862(98)00019-9",
+        "article-title": "Allelic discrimination using fluorogenic probes and the 5' nuclease assay",
+        "volume": "14",
+        "author": "J Livak K",
+        "year": "1999",
+        "journal-title": "Genetic Analysis Biomolecular Engineering"
+      },
+      {
+        "issue": "8",
+        "key": "pone.0237077.ref023",
+        "doi-asserted-by": "crossref",
+        "first-page": "1",
+        "DOI": "10.3109/00016489.2012.664781",
+        "article-title": "Rapid screening for the mitochondrial DNA C1494T mutation in a deaf population in China using real-time quantitative PCR",
+        "volume": "132",
+        "author": "Q Li",
+        "year": "2012",
+        "journal-title": "Acta Oto-laryngologica"
+      },
+      {
+        "issue": "4",
+        "key": "pone.0237077.ref024",
+        "doi-asserted-by": "crossref",
+        "first-page": "538",
+        "DOI": "10.1007/s13592-019-00666-z",
+        "article-title": "Mitochondrial SNP markers to monitor evolutionary lineage ancestry in Apis melliferamellifera conservation programs",
+        "volume": "50",
+        "author": "D Henriques",
+        "year": "2019",
+        "journal-title": "Apidologie"
+      },
+      {
+        "issue": "6",
+        "key": "pone.0237077.ref025",
+        "doi-asserted-by": "crossref",
+        "first-page": "247",
+        "DOI": "10.1016/0169-5347(96)10031-8",
+        "article-title": "Nuclear integrations: challenges for mitochondrial DNA markers",
+        "volume": "11",
+        "author": "D X Zhang",
+        "year": "1996",
+        "journal-title": "Trends in ecology & evolution"
+      },
+      {
+        "issue": "7",
+        "key": "pone.0237077.ref026",
+        "doi-asserted-by": "crossref",
+        "first-page": "1969",
+        "DOI": "10.1073/pnas.80.7.1969",
+        "article-title": "Critical experimental test of the possibility of \\\"paternal leakage\\\" of mitochondrial DNA1983",
+        "volume": "80",
+        "author": "R A Lansman",
+        "journal-title": "Proceedings of the National Academy of Sciences of the United States of America"
+      },
+      {
+        "issue": "6",
+        "key": "pone.0237077.ref027",
+        "doi-asserted-by": "crossref",
+        "first-page": "330",
+        "DOI": "10.1046/j.1600-0684.2003.00038.x",
+        "article-title": "Genetic analysis of the Saimiri breeding colony of the Pasteur Institute (French Guiana): development of a molecular typing method using a combination of nuclear and mitochondrial DNA markers&nbsp",
+        "volume": "32",
+        "author": "A Lavergne",
+        "year": "2003",
+        "journal-title": "Journal of Medical Primatology"
+      },
+      {
+        "issue": "2",
+        "key": "pone.0237077.ref028",
+        "doi-asserted-by": "crossref",
+        "first-page": "395",
+        "DOI": "10.1016/j.ympev.2006.05.033",
+        "article-title": "Hybrid origin of the Pliocene ancestor of wild goats",
+        "volume": "41",
+        "author": "A Ropiquet",
+        "year": "2006",
+        "journal-title": "Molecular Phylogenetics & Evolution"
+      },
+      {
+        "issue": "6",
+        "key": "pone.0237077.ref029",
+        "doi-asserted-by": "crossref",
+        "first-page": "979",
+        "DOI": "10.1007/s00217-013-1961-6",
+        "article-title": "Differentiation of fish species by PCR-based DNA analysis of nuclear genes",
+        "volume": "236",
+        "author": "H Rehbein",
+        "year": "2013",
+        "journal-title": "European Food Research and Technology"
+      },
+      {
+        "issue": "1",
+        "key": "pone.0237077.ref030",
+        "doi-asserted-by": "crossref",
+        "first-page": "1",
+        "DOI": "10.1007/s12010-017-2621-2",
+        "article-title": "Species Identification of Fox-, Mink-, Dog-, and Rabbit-Derived Ingredients by Multiplex PCR and Real-Time PCR Assay",
+        "volume": "185",
+        "author": "Q Q Wu",
+        "year": "2018",
+        "journal-title": "Applied Biochemistry and Biotechnology"
+      },
+      {
+        "issue": "12",
+        "key": "pone.0237077.ref031",
+        "doi-asserted-by": "crossref",
+        "first-page": "4060",
+        "DOI": "10.1007/s13197-012-0893-7",
+        "article-title": "A nuclear DNA-based species determination and DNA quantification assay for common poultry species",
+        "volume": "51",
+        "author": "J Ng",
+        "year": "2014",
+        "journal-title": "Journal of Food Science and Technology"
+      },
+      {
+        "issue": "5",
+        "key": "pone.0237077.ref032",
+        "doi-asserted-by": "crossref",
+        "first-page": "438",
+        "DOI": "10.1007/BF02337515",
+        "article-title": "The Complete Mitochondrial DNA (mtDNA) of the Donkey and mtDNA Comparisons Among Four Closely Related Mammalian Species-Pairs",
+        "volume": "43",
+        "author": "Xu X",
+        "year": "1996",
+        "journal-title": "Journal of Molecular Evolution"
+      },
+      {
+        "issue": "1",
+        "key": "pone.0237077.ref033",
+        "first-page": "34",
+        "article-title": "Analysis of the Expression of MSTN Gene and CKM Gene before and after High Load Exercise Training in Mongolian Horses",
+        "volume": "54",
+        "author": "Dencuo Kang",
+        "year": "2018",
+        "journal-title": "Chinese Journal of Animal Science"
+      }
+    ],
+    "container-title": [
+      "PLOS ONE"
+    ],
+    "original-title": [],
+    "language": "en",
+    "link": [
+      {
+        "URL": "https://dx.plos.org/10.1371/journal.pone.0237077",
+        "content-type": "unspecified",
+        "content-version": "vor",
+        "intended-application": "similarity-checking"
+      }
+    ],
+    "deposited": {
+      "date-parts": [
+        [
+          2020,
+          12,
+          29
+        ]
+      ],
+      "date-time": "2020-12-29T19:00:49Z",
+      "timestamp": 1609268449000
+    },
+    "score": 1,
+    "resource": {
+      "primary": {
+        "URL": "https://dx.plos.org/10.1371/journal.pone.0237077"
+      }
+    },
+    "subtitle": [],
+    "editor": [
+      {
+        "given": "Ruslan",
+        "family": "Kalendar",
+        "sequence": "first",
+        "affiliation": []
+      }
+    ],
+    "short-title": [],
+    "issued": {
+      "date-parts": [
+        [
+          2020,
+          12,
+          29
+        ]
+      ]
+    },
+    "references-count": 33,
+    "journal-issue": {
+      "issue": "12",
+      "published-online": {
+        "date-parts": [
+          [
+            2020,
+            12,
+            29
+          ]
+        ]
+      }
+    },
+    "URL": "https://doi.org/10.1371/journal.pone.0237077",
+    "relation": {},
+    "ISSN": [
+      "1932-6203"
+    ],
+    "issn-type": [
+      {
+        "type": "electronic",
+        "value": "1932-6203"
+      }
+    ],
+    "subject": [],
+    "published": {
+      "date-parts": [
+        [
+          2020,
+          12,
+          29
+        ]
+      ]
+    }
+  },
+  "unpaywall": {
+    "best_oa_location": {
+      "endpoint_id": null,
+      "evidence": "deprecated",
+      "host_type": "publisher",
+      "is_best": true,
+      "license": "cc-by",
+      "oa_date": "2020-12-29",
+      "pmh_id": null,
+      "repository_institution": null,
+      "updated": "deprecated",
+      "url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0237077&type=printable",
+      "url_for_landing_page": "https://doi.org/10.1371/journal.pone.0237077",
+      "url_for_pdf": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0237077&type=printable",
+      "version": "publishedVersion"
+    },
+    "data_standard": 2,
+    "doi": "10.1371/journal.pone.0237077",
+    "doi_url": "https://doi.org/10.1371/journal.pone.0237077",
+    "first_oa_location": {
+      "endpoint_id": null,
+      "evidence": "deprecated",
+      "host_type": "publisher",
+      "is_best": true,
+      "license": "cc-by",
+      "oa_date": "2020-12-29",
+      "pmh_id": null,
+      "repository_institution": null,
+      "updated": "deprecated",
+      "url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0237077&type=printable",
+      "url_for_landing_page": "https://doi.org/10.1371/journal.pone.0237077",
+      "url_for_pdf": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0237077&type=printable",
+      "version": "publishedVersion"
+    },
+    "genre": "journal-article",
+    "has_repository_copy": true,
+    "is_oa": true,
+    "is_paratext": false,
+    "journal_is_in_doaj": true,
+    "journal_is_oa": true,
+    "journal_issn_l": "1932-6203",
+    "journal_issns": "1932-6203",
+    "journal_name": "PLoS ONE",
+    "oa_locations": [
+      {
+        "endpoint_id": null,
+        "evidence": "deprecated",
+        "host_type": "publisher",
+        "is_best": true,
+        "license": "cc-by",
+        "oa_date": "2020-12-29",
+        "pmh_id": null,
+        "repository_institution": null,
+        "updated": "deprecated",
+        "url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0237077&type=printable",
+        "url_for_landing_page": "https://doi.org/10.1371/journal.pone.0237077",
+        "url_for_pdf": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0237077&type=printable",
+        "version": "publishedVersion"
+      },
+      {
+        "endpoint_id": "8e556f4518885d9a235",
+        "evidence": "deprecated",
+        "host_type": "repository",
+        "is_best": false,
+        "license": "cc-by-sa",
+        "oa_date": "2020-12-29",
+        "pmh_id": "oai:doaj.org/article:90b14d8620da4ae3914f87c437ab1766",
+        "repository_institution": null,
+        "updated": "deprecated",
+        "url": "https://doaj.org/article/90b14d8620da4ae3914f87c437ab1766",
+        "url_for_landing_page": "https://doaj.org/article/90b14d8620da4ae3914f87c437ab1766",
+        "url_for_pdf": null,
+        "version": "submittedVersion"
+      },
+      {
+        "endpoint_id": "b5e840539009389b1a6",
+        "evidence": "deprecated",
+        "host_type": "repository",
+        "is_best": false,
+        "license": "cc-by",
+        "oa_date": "2020-12-29",
+        "pmh_id": "oai:europepmc.org:6701858",
+        "repository_institution": "European Bioinformatics Institute",
+        "updated": "deprecated",
+        "url": "http://europepmc.org/pmc/articles/PMC7771862",
+        "url_for_landing_page": "http://europepmc.org/pmc/articles/PMC7771862",
+        "url_for_pdf": null,
+        "version": "submittedVersion"
+      },
+      {
+        "endpoint_id": "ac9de7698155b820de7",
+        "evidence": "deprecated",
+        "host_type": "repository",
+        "is_best": false,
+        "license": "cc-by",
+        "oa_date": "2020-12-29",
+        "pmh_id": "oai:pubmedcentral.nih.gov:7771862",
+        "repository_institution": "National Institutes of Health",
+        "updated": "deprecated",
+        "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/7771862",
+        "url_for_landing_page": "https://www.ncbi.nlm.nih.gov/pmc/articles/7771862",
+        "url_for_pdf": null,
+        "version": "submittedVersion"
+      }
+    ],
+    "oa_locations_embargoed": [],
+    "oa_status": "gold",
+    "published_date": "2020-12-29",
+    "publisher": "Public Library of Science (PLoS)",
+    "title": "Detection of meat from horse, donkey and their hybrids (mule/hinny) by duplex real-time fluorescent PCR",
+    "updated": "2026-02-10T21:43:31Z",
+    "year": 2020,
+    "z_authors": [
+      {
+        "author_position": "first",
+        "is_corresponding": false,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Dan Wang"
+      },
+      {
+        "author_position": "middle",
+        "is_corresponding": false,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Liping Wang"
+      },
+      {
+        "author_position": "middle",
+        "is_corresponding": false,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Chenyu Xue"
+      },
+      {
+        "author_position": "middle",
+        "is_corresponding": false,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Yuebei Han"
+      },
+      {
+        "author_position": "middle",
+        "is_corresponding": false,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Hejing Li"
+      },
+      {
+        "author_position": "middle",
+        "is_corresponding": false,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Jianqiang Geng"
+      },
+      {
+        "author_position": "last",
+        "is_corresponding": true,
+        "raw_affiliation_strings": [
+          "Biology Lab, Beijing Municipal Center for Food Safety Monitoring and Risk Assessment, Beijing, China"
+        ],
+        "raw_author_name": "Jiang Jie"
+      }
+    ]
+  }
+}

@@ -1,0 +1,534 @@
+"""
+veridoc_oe_upgrade.py
+ONE drop-in backend module that upgrades VeriDoc toward OpenEvidence-level behavior:
+
+✅ AI quality upgrades
+- Evidence scoring (tiering + recency + conflict signals)
+- Claim planning (JSON plan) before synthesis
+- Hard evidence gate ("no cite -> no claim")
+- Numeric consistency guard (basic)
+- Refusal that is structured + localized-ready
+
+✅ OpenEvidence-like features
+- "Clinical Summary" block at top
+- Inline calculator objects (deterministic tools) in the answer payload
+- Related follow-up questions
+- Evidence transparency metadata per citation (tier, year, type)
+
+How to integrate
+1) Include router: app.include_router(router)
+2) Wire your existing retrieval + synthesis LLM calls by implementing:
+   - retrieve_chunks(query, k, lang) -> list[Chunk]
+   - llm_json(system, user, schema_hint) -> dict
+   - llm_text(system, user) -> str
+3) Ensure your citation objects keep span/quote boundaries in your system.
+
+This is "single code" as requested. It is intentionally strict and production-oriented.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Literal, Tuple
+from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel, Field
+
+router = APIRouter(tags=["veridoc-oe-upgrade"])
+
+
+# -----------------------------------------------------------------------------
+# Data models (adapt to your existing schemas)
+# -----------------------------------------------------------------------------
+
+EvidenceTier = Literal["A", "B", "C", "UNKNOWN"]
+StudyType = Literal["guideline", "rct", "labeling", "review", "observational", "expert", "unknown"]
+
+class AskRequest(BaseModel):
+    query: str
+    lang: Optional[str] = None
+    user_id: Optional[str] = None
+    # Optional: feature flags
+    include_related_questions: bool = True
+    include_inline_tools: bool = True
+
+class Citation(BaseModel):
+    source_id: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    page: Optional[int] = None
+    section: Optional[str] = None
+    quote: Optional[str] = None  # short excerpt ≤ 25 words
+    # Transparency
+    year: Optional[int] = None
+    tier: EvidenceTier = "UNKNOWN"
+    study_type: StudyType = "unknown"
+    score: Optional[float] = None
+    source_language: Optional[str] = None
+
+class InlineToolObject(BaseModel):
+    name: str
+    args: Dict[str, Any]
+    output: Dict[str, Any]
+    warnings: List[str] = Field(default_factory=list)
+    evidence: List[Dict[str, str]] = Field(default_factory=list)
+
+class AskResponse(BaseModel):
+    status: Literal["ok", "refuse", "error"]
+    answer: Optional[str] = None
+    clinical_summary: Optional[str] = None
+    refusal_reason: Optional[str] = None
+    refusal_code: Optional[str] = None
+    citations: List[Citation] = Field(default_factory=list)
+    inline_tools: List[InlineToolObject] = Field(default_factory=list)
+    related_questions: List[str] = Field(default_factory=list)
+    debug: Optional[Dict[str, Any]] = None
+
+
+# -----------------------------------------------------------------------------
+# Chunk + retrieval interface (implement your own)
+# -----------------------------------------------------------------------------
+
+@dataclass
+class Chunk:
+    source_id: str
+    title: str
+    text: str
+    url: Optional[str] = None
+    page: Optional[int] = None
+    section: Optional[str] = None
+    year: Optional[int] = None
+    source_language: Optional[str] = None
+
+
+async def retrieve_chunks(query: str, k: int, lang: str) -> List[Chunk]:
+    """
+    IMPLEMENT ME: call your hybrid retrieval.
+    Must return best chunks with metadata.
+    """
+    raise NotImplementedError("Wire retrieve_chunks() to your existing retrieval stack.")
+
+
+async def llm_json(system: str, user: str, schema_hint: str) -> Dict[str, Any]:
+    """
+    IMPLEMENT ME: call your LLM in JSON mode (or strict JSON parsing).
+    """
+    raise NotImplementedError("Wire llm_json() to your existing LLM client.")
+
+
+async def llm_text(system: str, user: str) -> str:
+    """
+    IMPLEMENT ME: call your LLM for final prose synthesis.
+    """
+    raise NotImplementedError("Wire llm_text() to your existing LLM client.")
+
+
+# -----------------------------------------------------------------------------
+# Evidence scoring (OpenEvidence-like behavior)
+# -----------------------------------------------------------------------------
+
+_TIER_KEYWORDS_A = ("fda", "ema", "smPC".lower(), "label", "prescribing information", "randomized", "rct", "guideline")
+_TIER_KEYWORDS_B = ("consensus", "position statement", "practice guideline", "society")
+_TIER_KEYWORDS_C = ("review", "narrative", "expert opinion", "case report")
+
+def infer_study_type(chunk: Chunk) -> StudyType:
+    t = (chunk.title + " " + (chunk.section or "") + " " + chunk.text[:300]).lower()
+    if "prescribing information" in t or "smPC".lower() in t or "label" in t:
+        return "labeling"
+    if "guideline" in t or "practice guideline" in t:
+        return "guideline"
+    if "randomized" in t or "rct" in t:
+        return "rct"
+    if "review" in t:
+        return "review"
+    if "cohort" in t or "case-control" in t or "observational" in t:
+        return "observational"
+    if "expert" in t or "opinion" in t:
+        return "expert"
+    return "unknown"
+
+def infer_tier(chunk: Chunk) -> EvidenceTier:
+    t = (chunk.title + " " + (chunk.section or "") + " " + chunk.text[:300]).lower()
+    if any(k in t for k in _TIER_KEYWORDS_A):
+        return "A"
+    if any(k in t for k in _TIER_KEYWORDS_B):
+        return "B"
+    if any(k in t for k in _TIER_KEYWORDS_C):
+        return "C"
+    return "UNKNOWN"
+
+def score_chunk(chunk: Chunk, query: str) -> float:
+    """
+    Deterministic scoring: tier + recency + keyword match.
+    Replace with your learned reranker if you have one.
+    """
+    tier = infer_tier(chunk)
+    tier_score = {"A": 1.0, "B": 0.7, "C": 0.4, "UNKNOWN": 0.5}[tier]
+
+    year_score = 0.0
+    if chunk.year:
+        age = max(0, time.gmtime().tm_year - chunk.year)
+        year_score = max(0.0, 1.0 - (age / 15.0))  # fades over ~15y
+
+    # quick lexical overlap
+    q_terms = {w for w in re.findall(r"[a-zA-Z]{3,}", query.lower())}
+    c_terms = set(re.findall(r"[a-zA-Z]{3,}", (chunk.title + " " + chunk.text[:800]).lower()))
+    overlap = len(q_terms & c_terms) / max(1, len(q_terms))
+    overlap_score = min(1.0, overlap)
+
+    return round(0.55 * tier_score + 0.25 * year_score + 0.20 * overlap_score, 4)
+
+def detect_conflict(chunks: List[Chunk]) -> bool:
+    """
+    Minimal conflict detector: looks for contradictory polarity cues across top sources.
+    In production, replace with NLI-based conflict check.
+    """
+    pos = 0
+    neg = 0
+    for ch in chunks[:12]:
+        t = ch.text.lower()
+        if any(x in t for x in ("recommended", "effective", "safe", "supports", "improves")):
+            pos += 1
+        if any(x in t for x in ("not recommended", "insufficient", "no evidence", "contraindicated", "avoid")):
+            neg += 1
+    return pos > 0 and neg > 0
+
+
+# -----------------------------------------------------------------------------
+# Claim planning + evidence gating
+# -----------------------------------------------------------------------------
+
+class ClaimPlan(BaseModel):
+    claims: List[Dict[str, Any]]  # claim_id, text, requires_tier, must_refuse_if_missing, category
+    required_tools: List[str] = Field(default_factory=list)
+    high_risk: bool = False
+    refusal_if: List[str] = Field(default_factory=list)
+
+CLAIM_PLAN_SCHEMA_HINT = """
+Return JSON with:
+{
+  "claims": [
+    {
+      "claim_id": "C1",
+      "text": "...",
+      "required_evidence_tier": "A|B|C",
+      "must_refuse_if_missing": true|false,
+      "category": "dosing|contraindication|workflow|efficacy|safety|other"
+    }
+  ],
+  "required_tools": ["interaction_check", "local_anesthetic_max_dose", ...],
+  "high_risk": true|false,
+  "refusal_if": ["NO_TIER_A_FOR_DOSING", "CONFLICTING_EVIDENCE", ...]
+}
+Rules:
+- Do NOT invent facts.
+- If user asks for dosing/contraindications, require tier A.
+- If evidence likely insufficient, set must_refuse_if_missing=true.
+"""
+
+def tier_ok(found: EvidenceTier, required: EvidenceTier) -> bool:
+    order = {"A": 3, "B": 2, "C": 1, "UNKNOWN": 0}
+    return order.get(found, 0) >= order.get(required, 0)
+
+def best_tier_available(chunks: List[Chunk]) -> EvidenceTier:
+    tiers = [infer_tier(c) for c in chunks]
+    if "A" in tiers: return "A"
+    if "B" in tiers: return "B"
+    if "C" in tiers: return "C"
+    return "UNKNOWN"
+
+
+# -----------------------------------------------------------------------------
+# Numeric guard (basic but effective)
+# -----------------------------------------------------------------------------
+
+_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mg|mcg|g|ml|mL|IU|units|%)", re.IGNORECASE)
+
+def extract_numbers(text: str) -> List[str]:
+    return [f"{m.group(1)}{m.group(2).lower()}" for m in _NUM_RE.finditer(text or "")]
+
+def numbers_supported_by_sources(answer_text: str, chunks: List[Chunk]) -> bool:
+    nums = extract_numbers(answer_text)
+    if not nums:
+        return True
+    corpus = " ".join(ch.text.lower() for ch in chunks[:10])
+    # strict: every numeric+unit string must appear in sources (case-insensitive)
+    for n in nums:
+        if n not in corpus:
+            return False
+    return True
+
+
+# -----------------------------------------------------------------------------
+# Inline tools hook (deterministic, call your existing tools module)
+# -----------------------------------------------------------------------------
+
+async def execute_tool(name: str, args: Dict[str, Any]) -> InlineToolObject:
+    """
+    IMPLEMENT ME: call your deterministic tool registry (e.g., /tools/execute).
+    For now, raise; you can wire it in 10 minutes.
+    """
+    raise NotImplementedError("Wire execute_tool() to your existing deterministic tools.")
+
+
+# -----------------------------------------------------------------------------
+# OpenEvidence-like formatting prompts (strict)
+# -----------------------------------------------------------------------------
+
+SYSTEM_PLANNER = (
+    "You are VeriDoc Planner (evidence-first, safety-first).\n"
+    "You MUST produce a claim plan that can be fully supported by the provided evidence.\n"
+    "If dosing or contraindications are requested, require tier A sources.\n"
+    "If evidence is insufficient or conflicting for a safety-critical point, request refusal.\n"
+    "Return STRICT JSON only."
+)
+
+SYSTEM_SYNTHESIZER = (
+    "You are VeriDoc Synthesizer.\n"
+    "Rules:\n"
+    "- Do NOT add facts not supported by the Evidence Pack.\n"
+    "- Every paragraph MUST reference at least one citation marker like [S1], [S2].\n"
+    "- If evidence is insufficient for a requested claim, do NOT guess: write 'INSUFFICIENT_EVIDENCE' and stop.\n"
+    "- Keep tone professional and concise.\n"
+    "- Output sections in this order:\n"
+    "  1) Clinical Summary (3–5 bullets)\n"
+    "  2) Answer (short paragraphs)\n"
+    "  3) Safety & Contraindications (only if relevant)\n"
+    "  4) Evidence Strength (High/Moderate/Limited) with brief justification\n"
+)
+
+SYSTEM_RELATED = (
+    "You generate safe follow-up questions for clinicians.\n"
+    "Rules:\n"
+    "- Questions must be evidence-based and not encourage unsafe actions.\n"
+    "- Keep them short.\n"
+    "- Return JSON: {\"questions\": [..]} only."
+)
+
+
+# -----------------------------------------------------------------------------
+# Build evidence pack with IDs [S1]..[Sk]
+# -----------------------------------------------------------------------------
+
+def make_evidence_pack(scored: List[Tuple[Chunk, float]]) -> Tuple[str, List[Citation]]:
+    citations: List[Citation] = []
+    blocks: List[str] = []
+    for i, (ch, sc) in enumerate(scored, start=1):
+        sid = f"S{i}"
+        tier = infer_tier(ch)
+        stype = infer_study_type(ch)
+        # short quote (first ~25 words)
+        words = ch.text.strip().split()
+        quote = " ".join(words[:25]) if words else None
+
+        citations.append(Citation(
+            source_id=ch.source_id,
+            title=ch.title,
+            url=ch.url,
+            page=ch.page,
+            section=ch.section,
+            quote=quote,
+            year=ch.year,
+            tier=tier,
+            study_type=stype,
+            score=sc,
+            source_language=ch.source_language,
+        ))
+        blocks.append(
+            f"[{sid}] (tier={tier}, type={stype}, year={ch.year})\n"
+            f"TITLE: {ch.title}\n"
+            f"TEXT: {ch.text}\n"
+        )
+    return "\n\n".join(blocks), citations
+
+
+# -----------------------------------------------------------------------------
+# Main upgraded endpoint (single /ask_oe endpoint)
+# -----------------------------------------------------------------------------
+
+@router.post("/ask_oe", response_model=AskResponse)
+async def ask_oe(request: Request, body: AskRequest) -> AskResponse:
+    t0 = time.time()
+
+    query = body.query.strip()
+    if not query:
+        return AskResponse(status="refuse", refusal_code="EMPTY_QUERY", refusal_reason="Empty query.")
+
+    lang = (body.lang or "en").lower().split("-")[0]
+
+    # 1) Retrieve
+    chunks = await retrieve_chunks(query=query, k=14, lang=lang)
+
+    if not chunks:
+        return AskResponse(
+            status="refuse",
+            refusal_code="NO_EVIDENCE",
+            refusal_reason="Insufficient evidence retrieved to answer reliably.",
+            citations=[],
+        )
+
+    # 2) Score + rank evidence (OpenEvidence-like)
+    scored = [(ch, score_chunk(ch, query)) for ch in chunks]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[:10]
+
+    conflict = detect_conflict([c for c, _ in top])
+    best_tier = best_tier_available([c for c, _ in top])
+
+    evidence_pack, citations = make_evidence_pack(top)
+
+    # 3) Claim planning (JSON) before writing
+    planner_user = (
+        f"USER QUESTION:\n{query}\n\n"
+        f"EVIDENCE PACK:\n{evidence_pack}\n\n"
+        f"Return a claim plan."
+    )
+
+    try:
+        plan_raw = await llm_json(SYSTEM_PLANNER, planner_user, CLAIM_PLAN_SCHEMA_HINT)
+        plan = ClaimPlan(**plan_raw)
+    except Exception as e:
+        # Fail safely: refuse rather than hallucinate
+        return AskResponse(status="refuse", refusal_code="PLANNER_FAILED",
+                           refusal_reason="Unable to construct a safe evidence-grounded plan.",
+                           citations=citations, debug={"planner_error": repr(e)})
+
+    # 4) Hard refusal triggers (conflict + tier gating)
+    if conflict and ("CONFLICTING_EVIDENCE" in plan.refusal_if or plan.high_risk):
+        return AskResponse(
+            status="refuse",
+            refusal_code="CONFLICTING_EVIDENCE",
+            refusal_reason="Available medical evidence is conflicting or inconsistent for a safety-relevant conclusion.",
+            citations=citations,
+        )
+
+    # If any claim requires tier A but no tier A exists, refuse
+    for c in plan.claims:
+        req = c.get("required_evidence_tier", "UNKNOWN")
+        must = bool(c.get("must_refuse_if_missing", False))
+        category = (c.get("category") or "").lower()
+        if category in ("dosing", "contraindication", "safety") and req == "A":
+            if best_tier != "A" and must:
+                return AskResponse(
+                    status="refuse",
+                    refusal_code="NO_TIER_A_EVIDENCE",
+                    refusal_reason="High-quality primary evidence is required for dosing/contraindication guidance, but was not found in the retrieved evidence set.",
+                    citations=citations,
+                )
+
+    # 5) Inline tools (deterministic) — OpenEvidence-like “calculators”
+    inline_tools: List[InlineToolObject] = []
+    if body.include_inline_tools and plan.required_tools:
+        for tool_name in plan.required_tools[:4]:  # cap to avoid latency spikes
+            # Minimal, safe default args: you should map from query/context in your orchestrator.
+            # Keep deterministic; if args missing, skip tool.
+            tool_args = {}
+            try:
+                tool_obj = await execute_tool(tool_name, tool_args)
+                inline_tools.append(tool_obj)
+            except NotImplementedError:
+                # tool wiring not provided; skip silently
+                pass
+            except Exception:
+                # tool errors should not break answer; omit tool
+                pass
+
+    # 6) Final synthesis (strict citations markers)
+    synth_user = (
+        f"USER QUESTION:\n{query}\n\n"
+        f"EVIDENCE PACK (use citation markers like [S1], [S2]):\n{evidence_pack}\n\n"
+        f"CLAIM PLAN JSON:\n{json.dumps(plan_raw, ensure_ascii=False)}\n\n"
+        "Write the response now."
+    )
+
+    answer_text = await llm_text(SYSTEM_SYNTHESIZER, synth_user)
+
+    # 7) Hard gate: if model signals insufficient evidence, refuse
+    if "INSUFFICIENT_EVIDENCE" in answer_text:
+        return AskResponse(
+            status="refuse",
+            refusal_code="INSUFFICIENT_EVIDENCE",
+            refusal_reason="Insufficient evidence to answer this question reliably from the retrieved sources.",
+            citations=citations,
+        )
+
+    # 8) Numeric guard (basic): all numbers+units must appear in evidence
+    if not numbers_supported_by_sources(answer_text, [c for c, _ in top]):
+        return AskResponse(
+            status="refuse",
+            refusal_code="NUMERIC_UNSUPPORTED",
+            refusal_reason="A numeric statement in the draft answer could not be verified against the retrieved evidence.",
+            citations=citations,
+        )
+
+    # 9) Enforce "no paragraph without citation marker"
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_text.strip()) if p.strip()]
+    for p in paragraphs:
+        if not re.search(r"\[S\d+\]", p):
+            return AskResponse(
+                status="refuse",
+                refusal_code="MISSING_CITATIONS",
+                refusal_reason="Draft answer contains statements without required evidence citation markers.",
+                citations=citations,
+            )
+
+    # 10) Extract Clinical Summary (first section) for UI parity
+    clinical_summary = None
+    m = re.search(r"Clinical Summary\s*:?\s*(.*?)(?:\n\s*\n|$)", answer_text, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        clinical_summary = m.group(1).strip()
+
+    # 11) Related questions (OpenEvidence-like)
+    related_questions: List[str] = []
+    if body.include_related_questions:
+        related_user = (
+            f"USER QUESTION:\n{query}\n\n"
+            f"TOPIC CONTEXT:\nAesthetic medicine decision support.\n"
+            "Return 4–6 safe follow-up questions."
+        )
+        try:
+            rj = await llm_json(SYSTEM_RELATED, related_user, '{"questions":[...]}')
+            qs = rj.get("questions", [])
+            if isinstance(qs, list):
+                related_questions = [str(x)[:160] for x in qs][:6]
+        except Exception:
+            related_questions = []
+
+    # 12) Evidence strength label
+    # (simple: based on best tier + conflict)
+    if conflict:
+        strength = "Limited"
+    else:
+        strength = {"A": "High", "B": "Moderate", "C": "Limited", "UNKNOWN": "Limited"}[best_tier]
+
+    # Append evidence strength in response if not already present
+    if "Evidence Strength" not in answer_text:
+        answer_text = (
+            answer_text.strip()
+            + f"\n\nEvidence Strength: {strength}."
+        )
+
+    # Minimal debug (optional)
+    dt_ms = int((time.time() - t0) * 1000)
+    debug = {"latency_ms": dt_ms, "best_tier": best_tier, "conflict": conflict}
+
+    return AskResponse(
+        status="ok",
+        answer=answer_text,
+        clinical_summary=clinical_summary,
+        citations=citations,
+        inline_tools=inline_tools,
+        related_questions=related_questions,
+        debug=debug,
+    )
+
+
+# -----------------------------------------------------------------------------
+# OPTIONAL: health check (so you can verify routing quickly)
+# -----------------------------------------------------------------------------
+
+@router.get("/ask_oe/health")
+def health() -> Dict[str, str]:
+    return {"status": "ok", "module": "veridoc_oe_upgrade"}

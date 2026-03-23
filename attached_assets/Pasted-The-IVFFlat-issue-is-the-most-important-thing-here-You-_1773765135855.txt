@@ -1,0 +1,25 @@
+The IVFFlat issue is the most important thing here
+You're right that cluster quality degrades as new documents are added without re-clustering. At 760K → 790K that's roughly a 4% increase — marginal degradation, but worth fixing given the HNSW migration is already planned.
+The correct action after M4 closes is replace IVFFlat with HNSW entirely, not re-cluster IVFFlat. IVFFlat requires you to pick the number of clusters at build time and re-cluster when the corpus grows significantly. HNSW has no such requirement — new vectors are inserted directly into the graph structure. You never need to rebuild it when new documents are added.
+The hnsw_migration.py delivered earlier handles this. Run it after M4 closes and the dedup pass completes, not before — you want to build the HNSW index on the final corpus, not rebuild it twice.
+
+Recommended close sequence when M4 finishes
+bash# 1. Dedup pass first — remove near-duplicates before indexing
+# (your existing dedup script)
+
+# 2. Drop IVFFlat index if it exists
+DROP INDEX IF EXISTS idx_chunks_embedding_ivfflat;
+
+# 3. Build HNSW on final corpus
+python app/scripts/hnsw_migration.py
+
+# 4. Run document type cleanup and evidence level alignment
+python retrieval_hardening.py --migrate
+
+# 5. Verify
+python retrieval_hardening.py --test "vascular occlusion after filler" --k 12
+Step 4 is important — M4's clinical trials batch will include documents currently labeled journal_article that should be labeled rct or review. The cleanup SQL in retrieval_hardening.py will promote those correctly so they surface with the right evidence boost in retrieval.
+
+One thing to watch during M4
+The 2010–2014 clinical trials block is the highest-value batch in M4. These are older RCTs that predate the systematic reviews M2 caught — they'll add primary evidence that the review literature cites but that wasn't in the corpus directly. Watch the ACI scores on clinical queries after M4 closes. If they rise on RCT-heavy topics like botulinum toxin dosing and HA filler safety, M4 contributed meaningfully. If they're flat, the reviews already captured the signal.
+Keep the keepalive running. You're 46/138 — roughly a third through. At current pace that's another 60–70 hours to close.

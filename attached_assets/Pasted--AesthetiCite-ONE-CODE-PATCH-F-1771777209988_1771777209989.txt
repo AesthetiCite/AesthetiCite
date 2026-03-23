@@ -1,0 +1,425 @@
+// ============================================================
+// AesthetiCite — ONE CODE PATCH (Frontend)
+// Fixes:
+// ✅ Evidence Strength Summary sidebar uses ENGINE ACI from SSE (never LLM header)
+// ✅ Shows tiers A/B/C and evidence types
+// ✅ Shows only top 12 sources + “+N more used” expandable
+// ✅ Shows “Complication Mode” banner when intent=complication
+//
+// Apply: Replace your AskOEStyle.tsx with this file.
+// ============================================================
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+type Lang = "auto" | "en" | "fr" | "es" | "ar";
+const LANG_LABEL: Record<Lang, string> = { auto: "Auto", en: "English", fr: "Français", es: "Español", ar: "العربية" };
+const isRTL = (l: Lang) => l === "ar";
+
+type Source = {
+  sid?: string;
+  source_id?: string;
+  title?: string;
+  year?: number;
+  url?: string;
+  doi?: string;
+  doi_url?: string;
+  pmid?: string;
+  pubmed_url?: string;
+  evidence_type?: string;
+  evidence_rank?: number;
+  source_tier?: "A" | "B" | "C";
+  organization_or_journal?: string;
+  journal?: string;
+  publication_type?: string;
+};
+
+type ACI = {
+  overall_confidence_0_10: number;
+  highest_level: string;
+  supporting_count: number;
+  gaps: string[];
+  mix?: Record<string, number>;
+};
+
+type Sections = {
+  evidenceSummary?: string;
+  clinicalSummary?: string;
+  keyPoints?: string[];
+  safety?: string;
+  limitations?: string;
+  followups?: string[];
+};
+
+function getToken() {
+  return localStorage.getItem("token") || "";
+}
+async function ensureConversationId(): Promise<string> {
+  const token = getToken();
+  const r = await fetch("/conversations/new", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  const j = await r.json();
+  if (!j?.conversation_id) throw new Error("Failed to create conversation");
+  return j.conversation_id as string;
+}
+
+function parseSections(raw: string): Sections {
+  const s: Sections = {};
+  const t = raw || "";
+  const grab = (start: RegExp, end: RegExp) => {
+    const m = t.match(new RegExp(`${start.source}([\\s\\S]*?)${end.source}`, "i"));
+    return m ? m[1].trim() : "";
+  };
+
+  const cs = grab(/Clinical Summary\s*/i, /(Protocol-Oriented Guidance|Key Evidence-Based Points|Safety Considerations|Limitations \/ Uncertainty|Suggested Follow-up Questions)\s*/i);
+  if (cs) s.clinicalSummary = cs;
+
+  const kpBlock = grab(/Key Evidence-Based Points\s*/i, /(Safety Considerations|Limitations \/ Uncertainty|Suggested Follow-up Questions)\s*/i);
+  if (kpBlock) {
+    const bullets = kpBlock
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("-"))
+      .map((l) => l.replace(/^-+\s*/, "").trim())
+      .filter(Boolean);
+    if (bullets.length) s.keyPoints = bullets;
+  }
+
+  const sf = grab(/Safety Considerations\s*/i, /(Limitations \/ Uncertainty|Suggested Follow-up Questions)\s*/i);
+  if (sf) s.safety = sf;
+
+  const lim = grab(/Limitations \/ Uncertainty\s*/i, /(Suggested Follow-up Questions)\s*/i);
+  if (lim) s.limitations = lim;
+
+  const fu = grab(/Suggested Follow-up Questions\s*/i, /$/i);
+  if (fu) {
+    const lines = fu
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("-"))
+      .map((l) => l.replace(/^-+\s*/, "").trim())
+      .filter(Boolean);
+    if (lines.length) s.followups = lines;
+  }
+
+  return s;
+}
+
+function SourcePill({ s }: { s: Source }) {
+  const href = s.url || s.doi_url || s.pubmed_url || "#";
+  const title = s.title || "Untitled";
+  const tier = s.source_tier ? `Tier ${s.source_tier}` : "Tier ?";
+  const et = s.evidence_type || "Other";
+  const year = s.year ? ` (${s.year})` : "";
+  const journal = s.journal || s.organization_or_journal || "";
+
+  return (
+    <div className="relative group">
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+        title={`${title}${year} • ${tier} • ${et} • ${journal}`}
+      >
+        <span className="font-mono">{s.sid || "S?"}</span>
+        <span className="truncate max-w-[220px]">{title}</span>
+        <span className="ml-1 rounded-full border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600">
+          {s.source_tier || "?"}
+        </span>
+      </a>
+
+      <div className="pointer-events-none absolute left-0 top-8 z-20 hidden w-[380px] rounded-2xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg group-hover:block">
+        <div className="font-semibold">{title}</div>
+        <div className="mt-1 text-slate-500">
+          {s.year ? `${s.year}` : "Year N/A"} • {tier} • {et}
+        </div>
+        <div className="mt-1 text-slate-500">{journal}</div>
+        {s.publication_type ? <div className="mt-2 text-[11px] text-slate-500">Pub type: {s.publication_type}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="text-sm font-semibold text-slate-900">{title}</div>
+      <div className="mt-3 text-sm leading-6 text-slate-700">{children}</div>
+    </div>
+  );
+}
+
+export default function AskOEStyle() {
+  const [lang, setLang] = useState<Lang>("auto");
+  const dir = useMemo(() => (isRTL(lang) ? "rtl" : "ltr"), [lang]);
+
+  const [conversationId, setConversationId] = useState<string>("");
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [streaming, setStreaming] = useState(false);
+
+  const [raw, setRaw] = useState("");
+  const [sections, setSections] = useState<Sections>({});
+
+  const [sources, setSources] = useState<Source[]>([]);
+  const [sourcesUsedTotal, setSourcesUsedTotal] = useState(0);
+  const [sourcesHiddenCount, setSourcesHiddenCount] = useState(0);
+  const [showAllSources, setShowAllSources] = useState(false);
+
+  const [intent, setIntent] = useState("general");
+  const [aci, setAci] = useState<ACI | null>(null);
+
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const cid = await ensureConversationId();
+        setConversationId(cid);
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => setSections(parseSections(raw)), [raw]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStreaming(false);
+    setStatus("Stopped.");
+  }, []);
+
+  const ask = useCallback(async () => {
+    const qq = q.trim();
+    if (!qq || !conversationId) return;
+
+    setStreaming(true);
+    setStatus("Searching evidence…");
+    setRaw("");
+    setSources([]);
+    setSourcesUsedTotal(0);
+    setSourcesHiddenCount(0);
+    setShowAllSources(false);
+    setIntent("general");
+    setAci(null);
+
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    const token = getToken();
+    const body: any = { q: qq, conversation_id: conversationId, k: 40 };
+    if (lang !== "auto") body.lang = lang;
+
+    const resp = await fetch("/ask/stream", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+
+    if (!resp.ok || !resp.body) {
+      setStreaming(false);
+      const j = await resp.json().catch(() => null);
+      setRaw(j?.detail || "Failed to start stream.");
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    const append = (t: string) => setRaw((prev) => prev + t);
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let idx;
+        while ((idx = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+
+          let eventName = "message";
+          let dataStr = "";
+          for (const line of rawEvent.split("\n")) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+          }
+          if (!dataStr) continue;
+
+          const payload = JSON.parse(dataStr);
+
+          if (eventName === "status") setStatus(payload?.message || "");
+          if (eventName === "sources") {
+            setSources(payload?.sources || []);
+            setSourcesUsedTotal(payload?.sources_used_total || (payload?.sources?.length || 0));
+            setSourcesHiddenCount(payload?.sources_hidden_count || 0);
+            setIntent(payload?.intent || "general");
+            setAci(payload?.aci || null); // ENGINE ACI
+          }
+          if (eventName === "replace") {
+            if (payload?.channel === "final") setRaw("");
+          }
+          if (eventName === "token") {
+            if (payload?.channel === "final" && payload?.t) append(payload.t);
+          }
+          if (eventName === "done") {
+            setStreaming(false);
+            setStatus("Done.");
+            abortRef.current = null;
+            return;
+          }
+          if (eventName === "error") {
+            setStreaming(false);
+            setStatus(payload?.message || "Error");
+            abortRef.current = null;
+            return;
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e?.name === "AbortError") return;
+      setStreaming(false);
+      setStatus(e?.message || "Stream error");
+    }
+  }, [conversationId, lang, q]);
+
+  const shownSources = useMemo(() => (showAllSources ? sources : sources.slice(0, 12)), [sources, showAllSources]);
+
+  return (
+    <div className="min-h-screen bg-white text-slate-900" dir={dir} lang={lang === "auto" ? undefined : lang}>
+      <header className="border-b border-slate-200">
+        <div className="mx-auto max-w-6xl px-4 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="text-lg font-semibold">AesthetiCite</div>
+            <div className="text-sm text-slate-500 hidden sm:block">Clinical Evidence Governance</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+            >
+              {Object.entries(LANG_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            {streaming ? (
+              <button onClick={stop} className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                Stop
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-8">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="text-sm font-semibold">Ask a clinical question</div>
+          <div className="mt-3">
+            <textarea
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              rows={3}
+              className="w-full resize-y rounded-xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              placeholder="e.g., Recommended hyaluronidase dosing approach for suspected HA vascular occlusion"
+            />
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-4">
+            <div className="text-xs text-slate-500">{status || "Structured output with inline citations. No cite → no claim."}</div>
+            <button
+              onClick={ask}
+              disabled={streaming || !q.trim() || !conversationId}
+              className="rounded-xl bg-slate-900 px-5 py-2 text-sm text-white disabled:opacity-50 hover:bg-slate-800"
+            >
+              Ask
+            </button>
+          </div>
+
+          {intent === "complication" && (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <div className="font-semibold">Complication Mode</div>
+              <div className="mt-1 text-amber-800">Protocol-oriented, conservative output with explicit uncertainty and strict citations.</div>
+            </div>
+          )}
+        </div>
+
+        {sources.length > 0 && (
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-xs font-semibold text-slate-700">Sources</div>
+              <div className="text-xs text-slate-500">
+                Used: <span className="font-semibold text-slate-700">{sourcesUsedTotal || sources.length}</span>
+                {sourcesHiddenCount > 0 ? ` • Hidden: ${sourcesHiddenCount}` : ""}
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">{shownSources.map((s) => <SourcePill key={(s.sid || "") + (s.source_id || "")} s={s} />)}</div>
+            {sourcesHiddenCount > 0 && (
+              <div className="mt-3">
+                <button onClick={() => setShowAllSources((v) => !v)} className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                  {showAllSources ? "Show fewer sources" : `Show ${sourcesHiddenCount} more sources used`}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1.4fr_0.6fr]">
+          <div className="space-y-5">
+            {sections.clinicalSummary && <Card title="Clinical Summary"><div className="whitespace-pre-wrap">{sections.clinicalSummary}</div></Card>}
+            {sections.keyPoints?.length ? (
+              <Card title="Key Evidence-Based Points">
+                <ul className="space-y-2">{sections.keyPoints.map((p, i) => <li key={i}>• {p}</li>)}</ul>
+              </Card>
+            ) : null}
+            {sections.safety && <Card title="Safety Considerations"><div className="whitespace-pre-wrap">{sections.safety}</div></Card>}
+            {sections.limitations && <Card title="Limitations / Uncertainty"><div className="whitespace-pre-wrap">{sections.limitations}</div></Card>}
+            {sections.followups?.length ? (
+              <Card title="Suggested Follow-up Questions">
+                <div className="flex flex-wrap gap-2">{sections.followups.slice(0, 6).map((f, i) => <span key={i} className="rounded-full border border-slate-200 px-3 py-1 text-sm">{f}</span>)}</div>
+              </Card>
+            ) : null}
+            {!sections.clinicalSummary && raw && <Card title="Answer"><div className="whitespace-pre-wrap">{raw}</div></Card>}
+          </div>
+
+          <div className="lg:sticky lg:top-24 h-fit space-y-4">
+            <Card title="Evidence Strength Summary">
+              {aci ? (
+                <div className="space-y-2">
+                  <div className="text-sm">
+                    <span className="text-slate-500">Confidence:</span>{" "}
+                    <span className="font-semibold">{aci.overall_confidence_0_10}/10</span>
+                  </div>
+                  <div className="text-sm">
+                    <span className="text-slate-500">Highest evidence:</span>{" "}
+                    <span className="font-semibold">{aci.highest_level}</span>
+                  </div>
+                  <div className="text-sm">
+                    <span className="text-slate-500">Sources used:</span>{" "}
+                    <span className="font-semibold">{aci.supporting_count}</span>
+                  </div>
+                  {aci.gaps?.length ? (
+                    <div className="text-sm">
+                      <div className="text-slate-500">Evidence gaps:</div>
+                      <ul className="mt-1 list-disc pl-5">{aci.gaps.slice(0, 3).map((g, i) => <li key={i}>{g}</li>)}</ul>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="text-sm text-slate-600">Ask a question to see engine-computed confidence, evidence level, and gaps.</div>
+              )}
+            </Card>
+
+            <div className="text-xs text-slate-500">Educational decision support. Not a substitute for clinical judgment.</div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}

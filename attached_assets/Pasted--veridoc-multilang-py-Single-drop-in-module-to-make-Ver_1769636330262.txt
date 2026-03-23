@@ -1,0 +1,474 @@
+"""
+veridoc_multilang.py
+Single drop-in module to make VeriDoc multilingual (FastAPI + Next.js-ready contract).
+
+What it does (safely):
+- Detects requested language from (1) explicit `lang`, (2) Accept-Language, (3) lightweight detection.
+- Normalizes to supported languages.
+- Translates ONLY:
+    1) user query -> retrieval language(s)
+    2) final answer -> user language
+- Never translates citations/snippets; those remain in source language for defensibility.
+- Adds an "answer_language" field + per-citation "source_language".
+
+You must wire this into your existing RAG endpoint:
+- `prepare_multilang_query(...)` before retrieval
+- `finalize_multilang_answer(...)` after synthesis
+
+Translation provider:
+- Uses OpenAI-compatible endpoint OR Azure Translator OR your internal model.
+- Implemented as an interface; default is stubbed.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import json
+import time
+import hashlib
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Literal
+
+from fastapi import Request
+from pydantic import BaseModel, Field
+
+
+# -------------------------
+# Supported languages
+# -------------------------
+
+Lang = Literal[
+    "en",  # English
+    "fr",  # French
+    "es",  # Spanish
+    "de",  # German
+    "it",  # Italian
+    "pt",  # Portuguese
+    "ar",  # Arabic
+]
+
+SUPPORTED_LANGS: List[str] = ["en", "fr", "es", "de", "it", "pt", "ar"]
+DEFAULT_LANG: Lang = "en"
+
+# Which languages your evidence corpus mainly lives in (for best recall).
+# If you have multilingual docs + embeddings, set this to SUPPORTED_LANGS.
+RETRIEVAL_LANGS_PRIORITY: List[Lang] = ["en", "fr"]
+
+
+# -------------------------
+# Request/Response contracts
+# -------------------------
+
+class VeriDocQuery(BaseModel):
+    query: str
+    lang: Optional[str] = Field(None, description="Optional explicit language override (e.g., 'fr').")
+    # optional: keep your existing fields
+    context: Optional[Dict[str, Any]] = None
+
+
+class Citation(BaseModel):
+    source_id: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    snippet: Optional[str] = None
+    page: Optional[int] = None
+    section: Optional[str] = None
+    source_language: Optional[str] = None  # <-- added
+
+
+class VeriDocAnswer(BaseModel):
+    status: Literal["ok", "refuse", "error"]
+    answer: Optional[str] = None
+    refusal_reason: Optional[str] = None
+    citations: List[Citation] = Field(default_factory=list)
+    answer_language: Optional[str] = None  # <-- added
+    retrieval_language: Optional[str] = None  # <-- added
+    debug: Optional[Dict[str, Any]] = None
+
+
+# -------------------------
+# Language detection
+# -------------------------
+
+_ACCEPT_LANG_RE = re.compile(r"([a-zA-Z-]{2,8})(?:;q=([0-9.]+))?")
+
+def parse_accept_language(header_val: str) -> List[Tuple[str, float]]:
+    """
+    Parses Accept-Language into sorted list of (lang, q).
+    """
+    if not header_val:
+        return []
+    out = []
+    for part in header_val.split(","):
+        part = part.strip()
+        m = _ACCEPT_LANG_RE.match(part)
+        if not m:
+            continue
+        tag = m.group(1).lower()
+        q = float(m.group(2) or 1.0)
+        # normalize tag like fr-CA -> fr
+        base = tag.split("-")[0]
+        out.append((base, q))
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out
+
+def normalize_lang(lang: Optional[str]) -> Lang:
+    if not lang:
+        return DEFAULT_LANG
+    base = lang.lower().strip().split("-")[0]
+    if base in SUPPORTED_LANGS:
+        return base  # type: ignore
+    return DEFAULT_LANG
+
+def naive_detect_lang(text: str) -> Lang:
+    """
+    Lightweight heuristic detection (no external deps).
+    If you already have a detector (cld3/fasttext), replace this.
+    """
+    t = text.strip()
+    if not t:
+        return DEFAULT_LANG
+
+    # Arabic script
+    if re.search(r"[\u0600-\u06FF]", t):
+        return "ar"
+
+    # Simple French markers
+    fr_markers = [" le ", " la ", " les ", " des ", " est ", " avec ", " pour ", " grossesse ", " allaitement "]
+    if sum(1 for m in fr_markers if m in (" " + t.lower() + " ")) >= 2:
+        return "fr"
+
+    # Simple Spanish markers
+    es_markers = [" el ", " la ", " los ", " las ", " es ", " con ", " para ", " embarazo ", " lactancia "]
+    if sum(1 for m in es_markers if m in (" " + t.lower() + " ")) >= 2:
+        return "es"
+
+    return DEFAULT_LANG
+
+
+# -------------------------
+# Translation provider interface + caching
+# -------------------------
+
+class TranslationProvider:
+    def translate(self, *, text: str, source_lang: Lang, target_lang: Lang, purpose: str) -> str:
+        raise NotImplementedError
+
+
+class InMemoryTTLCache:
+    def __init__(self, ttl_s: int = 3600, max_items: int = 10_000):
+        self.ttl_s = ttl_s
+        self.max_items = max_items
+        self._store: Dict[str, Tuple[float, str]] = {}
+
+    def get(self, key: str) -> Optional[str]:
+        v = self._store.get(key)
+        if not v:
+            return None
+        ts, val = v
+        if time.time() - ts > self.ttl_s:
+            self._store.pop(key, None)
+            return None
+        return val
+
+    def set(self, key: str, val: str) -> None:
+        if len(self._store) >= self.max_items:
+            # cheap eviction: drop ~10%
+            for k in list(self._store.keys())[: max(1, self.max_items // 10)]:
+                self._store.pop(k, None)
+        self._store[key] = (time.time(), val)
+
+
+def _cache_key(text: str, source: str, target: str, purpose: str) -> str:
+    h = hashlib.sha256()
+    h.update(text.encode("utf-8"))
+    h.update(source.encode("utf-8"))
+    h.update(target.encode("utf-8"))
+    h.update(purpose.encode("utf-8"))
+    return h.hexdigest()
+
+
+class SafeTranslator:
+    """
+    Wraps a TranslationProvider with:
+    - caching
+    - safety guardrails
+    - strict "do not translate citations/snippets" policy (caller responsibility)
+    """
+    def __init__(self, provider: TranslationProvider):
+        self.provider = provider
+        self.cache = InMemoryTTLCache(ttl_s=24 * 3600)
+
+    def translate(self, *, text: str, source_lang: Lang, target_lang: Lang, purpose: str) -> str:
+        if source_lang == target_lang:
+            return text
+        if not text.strip():
+            return text
+
+        key = _cache_key(text, source_lang, target_lang, purpose)
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+
+        # Hard guard: don't translate things that look like structured identifiers.
+        if purpose == "final_answer":
+            # allow, but keep it stable
+            pass
+
+        out = self.provider.translate(
+            text=text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            purpose=purpose,
+        )
+
+        # Minimal integrity guard: prevent empty outputs.
+        if not out or not out.strip():
+            out = text
+
+        self.cache.set(key, out)
+        return out
+
+
+# -------------------------
+# Example provider: OpenAI-compatible (optional)
+# Replace with your infra.
+# -------------------------
+
+class OpenAICompatibleTranslator(TranslationProvider):
+    """
+    Uses an OpenAI-compatible chat completions endpoint you already have.
+    Environment variables expected:
+      - VERIDOC_TRANSLATE_BASE_URL
+      - VERIDOC_TRANSLATE_API_KEY
+      - VERIDOC_TRANSLATE_MODEL
+    """
+    def __init__(self):
+        self.base_url = os.getenv("VERIDOC_TRANSLATE_BASE_URL", "").rstrip("/")
+        self.api_key = os.getenv("VERIDOC_TRANSLATE_API_KEY", "")
+        self.model = os.getenv("VERIDOC_TRANSLATE_MODEL", "gpt-4o-mini")  # example
+        if not self.base_url or not self.api_key:
+            raise RuntimeError("Translation provider not configured (missing VERIDOC_TRANSLATE_BASE_URL/API_KEY).")
+
+    def translate(self, *, text: str, source_lang: Lang, target_lang: Lang, purpose: str) -> str:
+        import httpx
+
+        # Prompt designed to avoid adding medical content.
+        system = (
+            "You are a translation engine for clinical decision support UI.\n"
+            "Rules:\n"
+            "- Translate faithfully.\n"
+            "- Do NOT add, remove, or infer clinical facts.\n"
+            "- Preserve numbers, units, and drug names.\n"
+            "- Preserve formatting, bulleting, and section headers.\n"
+            "- If text is already in the target language, return it unchanged.\n"
+        )
+
+        user = (
+            f"Translate from {source_lang} to {target_lang}.\n"
+            f"Purpose: {purpose}\n\n"
+            f"TEXT:\n{text}"
+        )
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+        }
+
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        url = f"{self.base_url}/v1/chat/completions"
+
+        with httpx.Client(timeout=20.0) as client:
+            r = client.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"]
+
+
+# -------------------------
+# Multilang orchestration helpers
+# -------------------------
+
+@dataclass
+class MultiLangPlan:
+    user_lang: Lang
+    detected_lang: Lang
+    retrieval_lang: Lang
+    query_for_retrieval: str
+
+
+def choose_retrieval_lang(user_lang: Lang) -> Lang:
+    """
+    Prefer same-language retrieval if your corpus supports it; else fall back to priority list.
+    """
+    if user_lang in RETRIEVAL_LANGS_PRIORITY:
+        return user_lang
+    return RETRIEVAL_LANGS_PRIORITY[0]
+
+
+def infer_user_language(request: Request, body_lang: Optional[str], query_text: str) -> Lang:
+    # 1) explicit
+    if body_lang:
+        return normalize_lang(body_lang)
+
+    # 2) header
+    al = parse_accept_language(request.headers.get("accept-language", ""))
+    for lang, _q in al:
+        nl = normalize_lang(lang)
+        if nl in SUPPORTED_LANGS:
+            return nl
+
+    # 3) detect
+    return normalize_lang(naive_detect_lang(query_text))
+
+
+def prepare_multilang_query(
+    *,
+    request: Request,
+    query_text: str,
+    explicit_lang: Optional[str],
+    translator: Optional[SafeTranslator],
+) -> MultiLangPlan:
+    user_lang = infer_user_language(request, explicit_lang, query_text)
+    detected_lang = normalize_lang(naive_detect_lang(query_text))
+    retrieval_lang = choose_retrieval_lang(user_lang)
+
+    # Decide whether to translate query for retrieval.
+    query_for_retrieval = query_text
+    if translator is not None and detected_lang != retrieval_lang:
+        query_for_retrieval = translator.translate(
+            text=query_text,
+            source_lang=detected_lang,
+            target_lang=retrieval_lang,
+            purpose="retrieval_query",
+        )
+
+    return MultiLangPlan(
+        user_lang=user_lang,
+        detected_lang=detected_lang,
+        retrieval_lang=retrieval_lang,
+        query_for_retrieval=query_for_retrieval,
+    )
+
+
+def finalize_multilang_answer(
+    *,
+    plan: MultiLangPlan,
+    answer: VeriDocAnswer,
+    translator: Optional[SafeTranslator],
+) -> VeriDocAnswer:
+    """
+    Translates only the final answer text, not citations/snippets.
+    """
+    answer.answer_language = plan.user_lang
+    answer.retrieval_language = plan.retrieval_lang
+
+    # Ensure citations include source_language if you track it per document.
+    # If not available, leave it None. (Do NOT guess.)
+    # Example: answer.citations[i].source_language already set by retriever.
+
+    if answer.status != "ok" or not answer.answer:
+        return answer
+
+    if translator is None:
+        return answer
+
+    # Translate the answer to user language ONLY if retrieval/synthesis not already in that language.
+    # If your synthesizer already writes in plan.user_lang, skip this.
+    if plan.user_lang != plan.retrieval_lang:
+        answer.answer = translator.translate(
+            text=answer.answer,
+            source_lang=plan.retrieval_lang,
+            target_lang=plan.user_lang,
+            purpose="final_answer",
+        )
+    return answer
+
+
+# -------------------------
+# Next.js i18n (frontend) minimal config snippet (paste into your repo)
+# -------------------------
+
+NEXT_INTL_SNIPPET = r"""
+// next-intl minimal wiring (Next.js App Router)
+// 1) npm i next-intl
+// 2) Create middleware.ts
+import createMiddleware from 'next-intl/middleware';
+
+export default createMiddleware({
+  locales: ['en','fr','es','de','it','pt','ar'],
+  defaultLocale: 'en',
+  localeDetection: true
+});
+
+export const config = {
+  matcher: ['/((?!api|_next|.*\\..*).*)']
+};
+
+// 3) In your API calls, pass `lang` explicitly (from router locale) to backend.
+// fetch('/api/ask', { method:'POST', body: JSON.stringify({ query, lang: locale }) })
+"""
+
+
+# -------------------------
+# Minimal backend usage example (wire to your existing endpoint)
+# -------------------------
+
+USAGE_EXAMPLE = r"""
+from fastapi import FastAPI, Request
+from veridoc_multilang import (
+    VeriDocQuery, VeriDocAnswer, SafeTranslator, OpenAICompatibleTranslator,
+    prepare_multilang_query, finalize_multilang_answer
+)
+
+app = FastAPI()
+
+translator = None
+if os.getenv("VERIDOC_TRANSLATE_BASE_URL") and os.getenv("VERIDOC_TRANSLATE_API_KEY"):
+    translator = SafeTranslator(OpenAICompatibleTranslator())
+
+@app.post("/api/ask", response_model=VeriDocAnswer)
+async def ask(req: Request, body: VeriDocQuery):
+    plan = prepare_multilang_query(
+        request=req,
+        query_text=body.query,
+        explicit_lang=body.lang,
+        translator=translator
+    )
+
+    # --- Your existing retrieval (use plan.query_for_retrieval) ---
+    # retrieved = retrieve(plan.query_for_retrieval, lang=plan.retrieval_lang)
+    # synthesized = synthesize(retrieved, answer_lang=plan.retrieval_lang)
+    # answer = VeriDocAnswer(status="ok", answer=synthesized.text, citations=synthesized.citations)
+
+    answer = VeriDocAnswer(status="ok", answer="...", citations=[])
+
+    # IMPORTANT: DO NOT translate citations/snippets
+    answer = finalize_multilang_answer(plan=plan, answer=answer, translator=translator)
+    return answer
+"""
+
+
+# -------------------------
+# Optional: export helpers
+# -------------------------
+
+__all__ = [
+    "SUPPORTED_LANGS",
+    "DEFAULT_LANG",
+    "VeriDocQuery",
+    "VeriDocAnswer",
+    "Citation",
+    "TranslationProvider",
+    "SafeTranslator",
+    "OpenAICompatibleTranslator",
+    "prepare_multilang_query",
+    "finalize_multilang_answer",
+    "NEXT_INTL_SNIPPET",
+    "USAGE_EXAMPLE",
+]

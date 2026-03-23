@@ -1,0 +1,288 @@
+================================================================================
+AESTHETICITE VISION — INTEGRATION PATCHES
+================================================================================
+
+================================================================================
+PATCH 1 — app/main.py
+================================================================================
+
+ADD import:
+
+    from app.api.vision_diagnosis import router as vision_diagnosis_router
+
+ADD router registration:
+
+    app.include_router(vision_diagnosis_router)
+
+Registers:
+  POST /api/vision/diagnose            ← single image complication recognition
+  POST /api/vision/diagnose-compare    ← baseline vs follow-up comparison
+  GET  /api/vision/complication-signs  ← complication sign dictionary
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD inside registerRoutes() — these are multipart form routes (like existing visual upload):
+
+    // ── AesthetiCite Vision — VisualDX-style diagnosis ───────────────────
+    app.post("/api/vision/diagnose", upload.single("file"), async (req, res) => {
+      try {
+        const formData = new FormData();
+        if (req.file) {
+          formData.append("file", req.file.buffer, {
+            filename: req.file.originalname || "photo.jpg",
+            contentType: req.file.mimetype,
+          });
+        }
+        // Pass clinical context fields
+        ["procedure", "region", "time_since", "product"].forEach((key) => {
+          if (req.body[key]) formData.append(key, req.body[key]);
+        });
+        const response = await fetch(`${PYTHON_API_BASE}/api/vision/diagnose`, {
+          method: "POST",
+          headers: {
+            ...formData.getHeaders(),
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+          },
+          body: formData as unknown as BodyInit,
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+      } catch (error) {
+        res.status(502).json({ detail: "Vision diagnosis unavailable" });
+      }
+    });
+
+    app.post("/api/vision/diagnose-compare", upload.fields([
+      { name: "baseline", maxCount: 1 },
+      { name: "followup", maxCount: 1 },
+    ]), async (req, res) => {
+      try {
+        const files = req.files as Record<string, Express.Multer.File[]>;
+        const formData = new FormData();
+        const baseFile = files["baseline"]?.[0];
+        const followFile = files["followup"]?.[0];
+        if (!baseFile || !followFile) {
+          return res.status(400).json({ detail: "Both baseline and followup images required." });
+        }
+        formData.append("baseline", baseFile.buffer, {
+          filename: baseFile.originalname || "baseline.jpg",
+          contentType: baseFile.mimetype,
+        });
+        formData.append("followup", followFile.buffer, {
+          filename: followFile.originalname || "followup.jpg",
+          contentType: followFile.mimetype,
+        });
+        ["procedure", "region", "days_since_baseline"].forEach((key) => {
+          if (req.body[key]) formData.append(key, req.body[key]);
+        });
+        const response = await fetch(`${PYTHON_API_BASE}/api/vision/diagnose-compare`, {
+          method: "POST",
+          headers: {
+            ...formData.getHeaders(),
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+          },
+          body: formData as unknown as BodyInit,
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+      } catch (error) {
+        res.status(502).json({ detail: "Vision compare unavailable" });
+      }
+    });
+
+    app.get("/api/vision/complication-signs", (req, res) =>
+      proxyToFastAPI(req, res, "/api/vision/complication-signs")
+    );
+
+
+================================================================================
+PATCH 3 — client/src/pages/visual-counseling.tsx  (pre-procedure page)
+================================================================================
+
+ADD import at top:
+
+    import { VisionDiagnoseButton, VisionDiagnoseResultPanel }
+      from "@/components/vision-diagnosis-result";
+
+FIND the area where the uploaded photo is displayed (after upload, the image
+preview is shown and the streaming answer appears).
+
+ADD the VisionDiagnoseButton directly below the image preview,
+BEFORE the streaming answer section:
+
+    {/* AesthetiCite Vision — Complication Recognition */}
+    {uploadedImageUrl && (
+      <div className="mt-4 border-t pt-4">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 flex items-center gap-1.5">
+          <Camera className="h-3.5 w-3.5" />
+          AesthetiCite Vision — Complication Screen
+        </p>
+        <p className="text-xs text-muted-foreground mb-3">
+          Run a structured complication scan on this image before proceeding.
+        </p>
+        <VisionDiagnoseButton
+          procedure={selectedProcedure}   // ← whatever state variable holds procedure
+          region={selectedRegion}          // ← region state
+          label="Screen for Complications"
+          variant="outline"
+          size="sm"
+        />
+      </div>
+    )}
+
+WHERE uploadedImageUrl, selectedProcedure, selectedRegion are the existing
+state variables in the visual-counseling page.
+
+This adds complication recognition as an ADDITIONAL screen before the
+free-text counseling answer — not replacing it.
+
+
+================================================================================
+PATCH 4 — client/src/pages/vision-followup.tsx  (post-procedure serial page)
+================================================================================
+
+ADD import at top:
+
+    import { VisionCompareResultPanel } from "@/components/vision-diagnosis-result";
+
+The vision-followup page already compares two images. The existing comparison
+output (asymmetry score, redness, swelling delta) should be ENRICHED with
+the structured complication diagnosis.
+
+FIND where the existing comparison result is displayed.
+ADD the VisionCompareResultPanel alongside or below it:
+
+    {/* Structured complication differential from serial comparison */}
+    {visionCompareResult && (
+      <VisionCompareResultPanel
+        result={visionCompareResult}
+        onReset={() => setVisionCompareResult(null)}
+      />
+    )}
+
+WHERE visionCompareResult is populated by calling POST /api/vision/diagnose-compare
+when both baseline and follow-up images are available.
+
+ADD the API call when both images are ready:
+
+    const runVisionCompare = async () => {
+      if (!baselineFile || !followupFile) return;
+      const token = getToken();
+      const fd = new FormData();
+      fd.append("baseline", baselineFile);
+      fd.append("followup", followupFile);
+      if (procedure) fd.append("procedure", procedure);
+      if (region)    fd.append("region", region);
+      if (daysSince) fd.append("days_since_baseline", daysSince);
+
+      const res = await fetch("/api/vision/diagnose-compare", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      const data = await res.json();
+      setVisionCompareResult(data);
+    };
+
+    // Call runVisionCompare when both images are present:
+    useEffect(() => {
+      if (baselineFile && followupFile) {
+        runVisionCompare();
+      }
+    }, [baselineFile, followupFile]);
+
+
+================================================================================
+PATCH 5 — client/src/App.tsx  (if /vision-diagnose standalone page wanted)
+================================================================================
+
+The VisionDiagnoseButton is a drop-in component for existing pages.
+No new page route is required — the feature integrates directly into
+/visual-counseling and /vision-followup.
+
+However, if you want a standalone /vision-diagnose page:
+
+    import VisionDiagnosePage from "@/pages/vision-diagnose";
+
+    <Route path="/vision-diagnose">
+      {() => <ProtectedRoute component={VisionDiagnosePage} />}
+    </Route>
+
+And create a simple page wrapper:
+
+    // client/src/pages/vision-diagnose.tsx
+    import { VisionDiagnoseButton } from "@/components/vision-diagnosis-result";
+    export default function VisionDiagnosePage() {
+      return (
+        <div className="max-w-2xl mx-auto px-4 py-8">
+          <h1 className="text-lg font-semibold mb-2">AesthetiCite Vision</h1>
+          <p className="text-sm text-muted-foreground mb-6">
+            Upload a clinical photograph for structured complication recognition.
+          </p>
+          <VisionDiagnoseButton label="Upload Photo for Diagnosis" variant="default" size="default" />
+        </div>
+      );
+    }
+
+
+================================================================================
+HOW THIS DIFFERS FROM EXISTING VISUAL FEATURES
+================================================================================
+
+                    Visual Counseling    Vision Follow-up    AesthetiCite Vision
+                    (/visual-counsel)    (/vision-followup)  (NEW)
+─────────────────────────────────────────────────────────────────────────────
+Input               1 photo (pre-proc)   2 photos (serial)   1 OR 2 photos
+Output              Free-text evidence   Pixel diff metrics  Ranked differential
+Format              Streaming SSE text   Numeric scores      Structured JSON
+Complication named? No (in answer text)  No                  YES — named + ranked
+Urgency classified? No                   No                  YES — immediate/urgent
+Protocol bridge?    No                   No                  YES → /decide?complication=
+Visual evidence?    No                   No                  YES — what AI observed
+Differential list?  No                   No                  YES — 4 alternatives
+Action given?       Generic evidence     None                Specific next step
+─────────────────────────────────────────────────────────────────────────────
+
+The three features are COMPLEMENTARY, not competing:
+  Visual Counseling  → evidence-backed consultation report (pre-procedure)
+  Vision Follow-up   → objective measurement over time (post-procedure)
+  AesthetiCite Vision → VisualDX-style named complication (any stage)
+
+AesthetiCite Vision sits inside both existing pages as an additional layer.
+
+
+================================================================================
+THE COMPLICATION SIGN DICTIONARY — WHAT MAKES IT VisualDX-LIKE
+================================================================================
+
+COMPLICATION_SIGNS in vision_diagnosis.py is the proprietary clinical asset:
+  9 complication types
+  Each with: display name, urgency, risk level, 5 specific visual signs,
+             clinical action, trigger protocol key
+
+This dictionary:
+  1. Grounds the LLM prompt (tells GPT-4o exactly what to look for)
+  2. Enriches the LLM output (adds action text + protocol key to result)
+  3. Is served via GET /api/vision/complication-signs for the frontend "what to look for" guide
+  4. Grows with every case logged → future fine-tuning dataset
+
+This is what VisualDX built over 20 years (their library is 30,000+ conditions).
+AesthetiCite Vision starts with 9 aesthetic-specific conditions — the exact ones that matter.
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  app/api/vision_diagnosis.py                        — VisualDX-style engine
+  client/src/components/vision-diagnosis-result.tsx  — Full result UI
+
+FILES PATCHED (additions only):
+  app/main.py                      — register vision_diagnosis_router
+  server/routes.ts                 — 3 multipart routes
+  client/src/pages/visual-counseling.tsx  — add VisionDiagnoseButton after upload
+  client/src/pages/vision-followup.tsx    — add VisionCompareResultPanel + API call
+================================================================================

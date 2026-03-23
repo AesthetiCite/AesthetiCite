@@ -1,0 +1,1444 @@
+"""
+AesthetiCite — Unified Pre-Procedure Safety Engine v2.1.0
+=========================================================
+Improved version of the uploaded preprocedure_safety_engine_v2.py
+
+Key upgrades
+------------
+1. Preserves current v2 API contract
+2. Adds backward-compatible legacy aliases:
+      /api/safety/preprocedure-check
+      /api/safety/preprocedure-check/export-pdf
+3. Adds batch endpoint for Session Safety Report
+4. Adds workspace bootstrap endpoint for unified Safety Workspace UI
+5. Adds paper digest caching to avoid repeated slow PubMed calls
+6. Logs real response time into dashboard query logs
+7. Safer SQLite handling with context managers
+8. Keeps one unified safety engine direction
+
+Registration
+------------
+In app/main.py:
+    from app.api.preprocedure_safety_engine_v2 import router as safety_v2_router
+    app.include_router(safety_v2_router)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import threading
+import time
+import uuid
+from collections import Counter
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen import canvas
+
+router = APIRouter(tags=["AesthetiCite Safety Engine"])
+
+ENGINE_VERSION = "2.1.0"
+KNOWLEDGE_REVISION = "2026-03-14"
+EXPORT_DIR = os.environ.get("AESTHETICITE_EXPORT_DIR", "exports")
+DB_PATH = os.environ.get("AESTHETICITE_GROWTH_DB", "aestheticite_growth.db")
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+RiskLevel = Literal["low", "moderate", "high", "very_high"]
+DecisionLevel = Literal["go", "caution", "high_risk"]
+
+PAPER_CACHE_TTL_SECONDS = int(os.environ.get("AESTHETICITE_PAPER_CACHE_TTL", "21600"))  # 6h
+_paper_cache_lock = threading.Lock()
+_paper_cache: Dict[str, Dict[str, Any]] = {}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower().strip())
+
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
+
+
+def risk_level_from_score(score: int) -> RiskLevel:
+    if score >= 75:
+        return "very_high"
+    if score >= 55:
+        return "high"
+    if score >= 35:
+        return "moderate"
+    return "low"
+
+
+def decision_from_score(score: int) -> DecisionLevel:
+    if score >= 70:
+        return "high_risk"
+    if score >= 45:
+        return "caution"
+    return "go"
+
+
+def safe_filename(prefix: str, request_id: str) -> str:
+    return f"{prefix}_{request_id}.pdf"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Database
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@contextmanager
+def db_cursor():
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        yield conn, cur
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    with db_cursor() as (_, cur):
+        cur.executescript("""
+            CREATE TABLE IF NOT EXISTS safety_cases (
+                id TEXT PRIMARY KEY,
+                clinic_id TEXT,
+                clinician_id TEXT,
+                procedure TEXT,
+                region TEXT,
+                product_type TEXT,
+                technique TEXT,
+                decision TEXT,
+                risk_score INTEGER,
+                patient_factors_json TEXT,
+                outcome TEXT,
+                notes TEXT,
+                created_at_utc TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS query_logs (
+                id TEXT PRIMARY KEY,
+                clinic_id TEXT,
+                clinician_id TEXT,
+                query_text TEXT,
+                answer_type TEXT,
+                aci_score REAL,
+                response_time_ms REAL,
+                evidence_level TEXT,
+                created_at_utc TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_subscriptions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                topic TEXT,
+                last_digest_utc TEXT,
+                created_at_utc TEXT
+            );
+        """)
+
+
+init_db()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Models
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PatientFactors(BaseModel):
+    prior_filler_in_same_area: Optional[bool] = None
+    prior_vascular_event: Optional[bool] = None
+    autoimmune_history: Optional[bool] = None
+    allergy_history: Optional[bool] = None
+    active_infection_near_site: Optional[bool] = None
+    anticoagulation: Optional[bool] = None
+    vascular_disease: Optional[bool] = None
+    smoking: Optional[bool] = None
+    nsaid_use: Optional[bool] = None
+    ssri_use: Optional[bool] = None
+    pregnancy: Optional[bool] = None
+    immunosuppression: Optional[bool] = None
+
+
+class PreProcedureRequest(BaseModel):
+    procedure: str = Field(..., min_length=2)
+    region: str = Field(..., min_length=2)
+    product_type: str = Field(..., min_length=2)
+    technique: Optional[str] = None
+    injector_experience_level: Optional[Literal["junior", "intermediate", "senior"]] = None
+    patient_factors: Optional[PatientFactors] = None
+    clinician_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    log_to_dashboard: bool = True
+
+
+class BatchPreProcedureRequest(BaseModel):
+    items: List[PreProcedureRequest] = Field(default_factory=list, min_length=1, max_length=50)
+
+
+class EvidenceItem(BaseModel):
+    source_id: str
+    title: str
+    note: str
+    citation_text: Optional[str] = None
+    source_type: Optional[str] = None
+    relevance_score: Optional[float] = None
+    journal: Optional[str] = None
+    year: Optional[int] = None
+    url: Optional[str] = None
+
+
+class RiskItem(BaseModel):
+    complication: str
+    risk_score: int = Field(..., ge=0, le=100)
+    risk_level: RiskLevel
+    why_it_matters: str
+
+
+class SafetyAssessment(BaseModel):
+    overall_risk_score: int = Field(..., ge=0, le=100)
+    overall_risk_level: RiskLevel
+    decision: DecisionLevel
+    rationale: str
+
+
+class ProcedureInsight(BaseModel):
+    procedure_name: str
+    region: str
+    likely_plane_or_target: Optional[str] = None
+    danger_zones: List[str] = Field(default_factory=list)
+    technical_notes: List[str] = Field(default_factory=list)
+
+
+class OnboardingHint(BaseModel):
+    procedure: str
+    what_this_checks: str
+    key_fields_to_fill: List[str]
+    clinical_tip: str
+
+
+class PreProcedureResponse(BaseModel):
+    request_id: str
+    generated_at_utc: str
+    engine_version: str
+    knowledge_revision: str
+    safety_assessment: SafetyAssessment
+    top_risks: List[RiskItem]
+    procedure_insight: ProcedureInsight
+    mitigation_steps: List[str]
+    caution_flags: List[str]
+    evidence: List[EvidenceItem]
+    onboarding_hint: Optional[OnboardingHint] = None
+    related_papers: List[Dict[str, Any]] = Field(default_factory=list)
+    disclaimer: str
+
+
+class BatchPreProcedureResponse(BaseModel):
+    batch_id: str
+    generated_at_utc: str
+    engine_version: str
+    total: int
+    items: List[PreProcedureResponse]
+    summary: Dict[str, Any]
+
+
+class ExportPDFResponse(BaseModel):
+    request_id: str
+    filename: str
+    pdf_path: str
+
+
+class CaseLogRequest(BaseModel):
+    clinic_id: Optional[str] = None
+    clinician_id: Optional[str] = None
+    procedure: str
+    region: str
+    product_type: Optional[str] = None
+    technique: Optional[str] = None
+    decision: Optional[str] = None
+    risk_score: Optional[int] = None
+    patient_factors: Optional[PatientFactors] = None
+    outcome: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CaseLogResponse(BaseModel):
+    status: str
+    case_id: str
+
+
+class DrugCheckRequest(BaseModel):
+    medications: List[str]
+    planned_products: List[str] = Field(default_factory=list)
+
+
+class DrugInteractionItem(BaseModel):
+    medication: str
+    product_or_context: str
+    severity: Literal["high", "moderate", "low"]
+    explanation: str
+    action: str
+
+
+class DrugCheckResponse(BaseModel):
+    interactions: List[DrugInteractionItem]
+    summary: str
+    proceed_with_caution: bool
+
+
+class ComplicationProtocolRequest(BaseModel):
+    query: str
+    region: Optional[str] = None
+    product_type: Optional[str] = None
+    time_since_injection_minutes: Optional[int] = None
+    visual_symptoms: Optional[bool] = None
+    skin_color_change: Optional[str] = None
+    pain_score: Optional[int] = None
+    clinician_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+
+
+class ProtocolStep(BaseModel):
+    step_number: int
+    action: str
+    rationale: str
+    priority: str = "primary"
+
+
+class DoseGuidance(BaseModel):
+    substance: str
+    recommendation: str
+    notes: str
+
+
+class ComplicationProtocolResponse(BaseModel):
+    request_id: str
+    generated_at_utc: str
+    engine_version: str
+    matched_protocol_key: str
+    matched_protocol_name: str
+    confidence: float
+    risk_score: int
+    severity: str
+    urgency: str
+    clinical_summary: str
+    immediate_actions: List[ProtocolStep]
+    dose_guidance: List[DoseGuidance]
+    red_flags: List[str]
+    escalation: List[str]
+    monitoring: List[str]
+    follow_up_questions: List[str]
+    limitations: List[str]
+    evidence: List[EvidenceItem]
+    disclaimer: str
+
+
+class WorkspaceBootstrapResponse(BaseModel):
+    engine_version: str
+    knowledge_revision: str
+    default_session_title: str
+    supported_experience_levels: List[str]
+    available_protocol_count: int
+    ui_labels: Dict[str, str]
+    feature_flags: Dict[str, bool]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Clinical content blocks
+# KEEP THESE BLOCKS EXACTLY AS IN YOUR CURRENT FILE
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 1) Keep your full CURATED_EVIDENCE block here unchanged
+CURATED_EVIDENCE: Dict[str, List[EvidenceItem]] = {
+    "default": [
+        EvidenceItem(
+            source_id="S0",
+            title="Aesthetic injectables — general safety principles",
+            note="Emergency preparedness, anatomical knowledge, and conservative technique reduce complication risk.",
+            source_type="review",
+            relevance_score=0.80,
+            journal="Aesthetic Medicine",
+            year=2023,
+        )
+    ],
+}
+
+# 2) Keep your full AESTHETIC_JOURNALS block here unchanged
+AESTHETIC_JOURNALS = [
+    {"name": "Journal of Cosmetic Dermatology", "issn": "1473-2130", "pubmed_term": "J Cosmet Dermatol"},
+    {"name": "Aesthetic Surgery Journal", "issn": "1090-820X", "pubmed_term": "Aesthet Surg J"},
+]
+
+# 3) Keep your full AESTHETIC_CONSENSUS_DOCS block here unchanged
+AESTHETIC_CONSENSUS_DOCS = [
+    "BACN Injectable Filler Safety Guidelines",
+    "JCCP Practitioner Standards for Aesthetic Injectables",
+]
+
+# 4) Keep your full PROCEDURE_RULES block here unchanged
+PROCEDURE_RULES: List[Dict[str, Any]] = [
+    {
+        "procedure_aliases": ["nasolabial fold filler", "nlf filler", "smile line filler"],
+        "region_aliases": ["nasolabial fold", "nlf"],
+        "product_aliases": ["hyaluronic acid", "ha filler", "filler", "calcium hydroxylapatite"],
+        "base_risk": 42,
+        "complications": [
+            ("vascular occlusion", 58, "Angular artery territory makes this region high-risk for ischemia."),
+            ("skin necrosis", 40, "Untreated vascular compromise can progress to tissue necrosis."),
+            ("bruising", 28, "Vascular trauma risk is technique-dependent."),
+        ],
+        "danger_zones": ["Angular artery territory", "Facial artery branches", "Labial arteries"],
+        "plane": "Technique varies by anatomy and product; vascular awareness is critical throughout.",
+        "tech_notes": [
+            "Use small aliquots — large bolus injections raise vascular risk significantly.",
+            "Any pain, blanching, or mottling requires immediate protocol review.",
+            "Aspiration does not reliably exclude intravascular placement — treat symptoms immediately.",
+        ],
+        "mitigation": [
+            "Have hyaluronidase immediately available before starting.",
+            "Use cannula technique where appropriate for this region.",
+            "Inject slowly with constant pressure assessment.",
+            "Ensure patient can report pain immediately.",
+            "Confirm capillary refill before and after each deposit.",
+        ],
+    },
+]
+
+# 5) Keep your full ONBOARDING_HINTS block here unchanged if you want your richer content
+ONBOARDING_HINTS: Dict[str, OnboardingHint] = {
+    "default": OnboardingHint(
+        procedure="Injectable procedure",
+        what_this_checks="This check scores overall procedural risk based on your technique, patient factors, and anatomy.",
+        key_fields_to_fill=["Procedure", "Region", "Product type", "Technique", "Patient risk factors"],
+        clinical_tip="Fill in all patient risk factors for the most accurate safety score.",
+    )
+}
+
+# 6) Keep your full COMPLICATION_PROTOCOLS block here unchanged
+COMPLICATION_PROTOCOLS: Dict[str, Dict[str, Any]] = {
+    "vascular_occlusion_ha_filler": {
+        "name": "Suspected vascular occlusion after hyaluronic acid filler",
+        "severity": "critical",
+        "urgency": "immediate",
+        "base_score": 92,
+        "keywords": ["vascular occlusion", "blanching", "mottling", "ischemia"],
+        "evidence_key": "vascular",
+        "summary": "This presentation is concerning for vascular compromise after HA filler.",
+        "steps": [
+            {"action": "Stop the procedure immediately.", "rationale": "Continued injection worsens ischemia.", "priority": "primary"},
+        ],
+        "dose_guidance": [
+            {"substance": "Hyaluronidase", "recommendation": "150–1500 units per territory.", "notes": "Do not under-dose."},
+        ],
+        "red_flags": ["Visual symptoms of any kind"],
+        "escalation": ["Call emergency services if any visual symptom occurs"],
+        "monitoring": ["Capillary refill every 5–10 minutes"],
+        "follow_up_questions": ["Is blanching confined to the injection site or spreading?"],
+        "limitations": ["Outcome depends heavily on speed of intervention"],
+    }
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Evidence retrieval
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _pgvector_retrieve(procedure: str, region: str, product_type: str) -> List[EvidenceItem]:
+    """
+    Optional live pgvector retrieval.
+    Enable with:
+        AESTHETICITE_PGVECTOR_ENABLED=1
+        DATABASE_URL=<postgres url>
+    """
+    import psycopg2
+    from fastembed import TextEmbedding
+
+    query_text = f"{procedure} {region} {product_type} safety complications"
+    embedder = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embedding = list(embedder.embed([query_text]))[0].tolist()
+
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg2.connect(db_url)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT source_id, title, text, organization_or_journal, year, url, document_type,
+               1 - (embedding <=> %s::vector) AS score
+        FROM documents
+        WHERE domain = 'aesthetic_medicine'
+        ORDER BY embedding <=> %s::vector
+        LIMIT 5
+    """, (embedding, embedding))
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        EvidenceItem(
+            source_id=row[0] or f"S{i}",
+            title=row[1],
+            note=(row[2] or "")[:200],
+            source_type=row[6],
+            relevance_score=float(row[7]),
+            journal=row[3],
+            year=row[4],
+            url=row[5],
+        )
+        for i, row in enumerate(rows)
+    ]
+
+
+def retrieve_evidence(procedure: str, region: str, product_type: str) -> List[EvidenceItem]:
+    pgvector_enabled = os.environ.get("AESTHETICITE_PGVECTOR_ENABLED", "0") == "1"
+    if pgvector_enabled:
+        try:
+            live = _pgvector_retrieve(procedure, region, product_type)
+            if live:
+                return live
+        except Exception:
+            pass
+
+    blob = normalize(f"{procedure} {region} {product_type}")
+    matched_keys: List[str] = []
+
+    priority_map = [
+        (["vision loss", "ocular", "blindness"], "vision_loss"),
+        (["vascular occlusion", "blanching", "mottling", "ischemia", "necrosis", "skin necrosis"], "necrosis"),
+        (["vascular", "blanching", "mottling", "ischemia", "occlusion"], "vascular"),
+        (["lip", "labial"], "lip"),
+        (["tear trough", "periorbital", "under eye"], "tear_trough"),
+        (["glabella", "glabellar", "frown"], "glabella"),
+        (["toxin", "botulinum", "botox", "ptosis", "nerve"], "toxin"),
+        (["anaphylaxis", "allergic", "urticaria", "systemic"], "anaphylaxis"),
+        (["infection", "biofilm", "abscess"], "infection"),
+        (["nodule", "granuloma"], "granuloma"),
+        (["nodule"], "nodule"),
+    ]
+
+    for keywords, key in priority_map:
+        if any(kw in blob for kw in keywords):
+            matched_keys.append(key)
+            if len(matched_keys) >= 2:
+                break
+
+    results: List[EvidenceItem] = []
+    for key in matched_keys:
+        results.extend(CURATED_EVIDENCE.get(key, []))
+
+    if not results:
+        results = CURATED_EVIDENCE.get("default", [])
+
+    seen = set()
+    deduped: List[EvidenceItem] = []
+    for item in results:
+        if item.source_id not in seen:
+            seen.add(item.source_id)
+            deduped.append(item)
+
+    return deduped[:5]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rule matching and scoring
+# ──────────────────────────────────────────────────────────────────────────────
+
+def match_rule(request: PreProcedureRequest) -> Dict[str, Any]:
+    proc_n = normalize(request.procedure)
+    region_n = normalize(request.region)
+    prod_n = normalize(request.product_type)
+
+    best_rule: Optional[Dict[str, Any]] = None
+    best_score = -1
+
+    for rule in PROCEDURE_RULES:
+        score = 0
+
+        for alias in rule["procedure_aliases"]:
+            alias_n = normalize(alias)
+            if alias_n in proc_n or proc_n in alias_n:
+                score += 3
+                break
+
+        for alias in rule["region_aliases"]:
+            alias_n = normalize(alias)
+            if alias_n in region_n or region_n in alias_n:
+                score += 2
+                break
+
+        for alias in rule["product_aliases"]:
+            alias_n = normalize(alias)
+            if alias_n in prod_n or prod_n in alias_n:
+                score += 1
+                break
+
+        if score > best_score:
+            best_score = score
+            best_rule = rule
+
+    if best_rule is None:
+        raise HTTPException(status_code=500, detail="No procedure rules configured.")
+
+    return best_rule
+
+
+def adjust_score(base: int, request: PreProcedureRequest) -> Tuple[int, List[str]]:
+    score = base
+    flags: List[str] = []
+
+    exp = request.injector_experience_level
+    if exp == "junior":
+        score += 10
+        flags.append("Junior injector — additional supervision and conservative technique recommended.")
+    elif exp == "intermediate":
+        score += 4
+    elif exp == "senior":
+        score -= 4
+
+    tech_n = normalize(request.technique or "")
+    if "cannula" in tech_n:
+        score -= 4
+        flags.append("Cannula technique selected — generally lower vascular risk than sharp needle.")
+    elif "needle" in tech_n or "sharp" in tech_n:
+        score += 6
+        flags.append("Sharp needle technique — higher vascular risk than cannula in most regions.")
+
+    pf = request.patient_factors
+    if pf:
+        if pf.prior_vascular_event:
+            score += 10
+            flags.append("Prior vascular event — significantly elevated ischemic risk.")
+        if pf.active_infection_near_site:
+            score += 15
+            flags.append("Active infection near site — treatment should be deferred.")
+        if pf.allergy_history:
+            score += 5
+            flags.append("Allergy history — ensure emergency preparedness for allergic reaction.")
+        if pf.autoimmune_history:
+            score += 4
+            flags.append("Autoimmune history — inflammatory complications may be harder to interpret.")
+        if pf.anticoagulation:
+            score += 5
+            flags.append("Anticoagulation — increased bruising and bleeding risk.")
+        if pf.nsaid_use:
+            score += 3
+            flags.append("NSAID use — increased bruising risk.")
+        if pf.ssri_use:
+            score += 3
+            flags.append("SSRI use — increased bruising risk.")
+        if pf.smoking:
+            score += 4
+            flags.append("Smoking — impaired tissue healing and vascular resilience.")
+        if pf.prior_filler_in_same_area:
+            score += 6
+            flags.append("Prior filler in same area — altered anatomy and cumulative volume risk.")
+        if pf.pregnancy:
+            score += 20
+            flags.append("Pregnancy — aesthetic injectable treatment should be deferred.")
+        if pf.immunosuppression:
+            score += 7
+            flags.append("Immunosuppression — infection risk is elevated.")
+        if pf.vascular_disease:
+            score += 8
+            flags.append("Vascular disease — ischemic complications are harder to manage.")
+
+    return clamp(score, 0, 100), flags
+
+
+def build_top_risks(rule: Dict[str, Any], overall_score: int) -> List[RiskItem]:
+    modifier = int((overall_score - rule["base_risk"]) * 0.35)
+    risks: List[RiskItem] = []
+
+    for complication, raw_score, why in rule["complications"]:
+        final_score = clamp(raw_score + modifier, 0, 100)
+        risks.append(
+            RiskItem(
+                complication=complication,
+                risk_score=final_score,
+                risk_level=risk_level_from_score(final_score),
+                why_it_matters=why,
+            )
+        )
+
+    risks.sort(key=lambda x: x.risk_score, reverse=True)
+    return risks
+
+
+def get_onboarding_hint(procedure: str, region: str) -> OnboardingHint:
+    blob = normalize(f"{procedure} {region}")
+
+    if "glabella" in blob or "frown" in blob:
+        return ONBOARDING_HINTS.get("glabella", ONBOARDING_HINTS["default"])
+    if "lip" in blob or "labial" in blob:
+        return ONBOARDING_HINTS.get("lip", ONBOARDING_HINTS["default"])
+    if "tear trough" in blob or "periorbital" in blob:
+        return ONBOARDING_HINTS.get("tear_trough", ONBOARDING_HINTS["default"])
+
+    return ONBOARDING_HINTS["default"]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Related papers with cache
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _paper_cache_get(key: str) -> Optional[List[Dict[str, Any]]]:
+    with _paper_cache_lock:
+        entry = _paper_cache.get(key)
+        if not entry:
+            return None
+        if time.time() - entry["ts"] > PAPER_CACHE_TTL_SECONDS:
+            _paper_cache.pop(key, None)
+            return None
+        return entry["value"]
+
+
+def _paper_cache_set(key: str, value: List[Dict[str, Any]]) -> None:
+    with _paper_cache_lock:
+        _paper_cache[key] = {"ts": time.time(), "value": value}
+
+
+def fetch_related_papers(procedure: str, region: str) -> List[Dict[str, Any]]:
+    cache_key = normalize(f"{procedure}|{region}")
+    cached = _paper_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    results: List[Dict[str, Any]] = []
+
+    try:
+        import requests
+
+        topic = f"{procedure} {region} aesthetic filler safety"
+        params = {
+            "db": "pubmed",
+            "term": topic,
+            "retmax": "3",
+            "sort": "pub date",
+            "retmode": "json",
+            "mindate": "2024/01/01",
+            "maxdate": datetime.now().strftime("%Y/%m/%d"),
+            "datetype": "pdat",
+        }
+
+        ncbi_key = os.environ.get("NCBI_API_KEY", "")
+        if ncbi_key:
+            params["api_key"] = ncbi_key
+
+        r = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params=params,
+            timeout=2.5,
+        )
+        r.raise_for_status()
+        ids = r.json().get("esearchresult", {}).get("idlist", [])
+
+        if ids:
+            r2 = requests.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+                params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
+                timeout=2.5,
+            )
+            r2.raise_for_status()
+            data = r2.json().get("result", {})
+            for pmid in ids:
+                entry = data.get(pmid, {})
+                if entry and "error" not in entry:
+                    results.append(
+                        {
+                            "title": entry.get("title", ""),
+                            "journal": entry.get("source", ""),
+                            "date": entry.get("pubdate", ""),
+                            "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                        }
+                    )
+    except Exception:
+        results = []
+
+    _paper_cache_set(cache_key, results[:3])
+    return results[:3]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Dashboard logging
+# ──────────────────────────────────────────────────────────────────────────────
+
+def log_to_dashboard(
+    request: PreProcedureRequest,
+    decision: str,
+    risk_score: int,
+    response_time_ms: float
+) -> None:
+    try:
+        with db_cursor() as (_, cur):
+            cur.execute("""
+                INSERT INTO query_logs
+                    (id, clinic_id, clinician_id, query_text, answer_type, aci_score, response_time_ms, evidence_level, created_at_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                new_id(),
+                request.clinic_id or "unknown",
+                request.clinician_id or "unknown",
+                f"Pre-procedure check: {request.procedure} / {request.region}",
+                "safety_check",
+                float(max(0, 10 - (risk_score / 10))),
+                response_time_ms,
+                decision,
+                now_utc_iso(),
+            ))
+    except Exception:
+        pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main response builders
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_safety_response(request: PreProcedureRequest, *, include_related_papers: bool = True) -> PreProcedureResponse:
+    rule = match_rule(request)
+    overall_score, flags = adjust_score(rule["base_risk"], request)
+    overall_level = risk_level_from_score(overall_score)
+    decision = decision_from_score(overall_score)
+    top_risks = build_top_risks(rule, overall_score)
+    evidence = retrieve_evidence(request.procedure, request.region, request.product_type)
+    hint = get_onboarding_hint(request.procedure, request.region)
+    related_papers = fetch_related_papers(request.procedure, request.region) if include_related_papers else []
+
+    rationale_map = {
+        "go": "Current setup appears acceptable. Standard safety precautions and emergency preparedness remain essential.",
+        "caution": "Proceed only with heightened vigilance, full mitigation steps applied, and immediate readiness to manage complications.",
+        "high_risk": "Risk is materially elevated. Reassess technique, timing, and patient factors before proceeding. Consider deferring treatment.",
+    }
+
+    return PreProcedureResponse(
+        request_id=new_id(),
+        generated_at_utc=now_utc_iso(),
+        engine_version=ENGINE_VERSION,
+        knowledge_revision=KNOWLEDGE_REVISION,
+        safety_assessment=SafetyAssessment(
+            overall_risk_score=overall_score,
+            overall_risk_level=overall_level,
+            decision=decision,
+            rationale=rationale_map[decision],
+        ),
+        top_risks=top_risks,
+        procedure_insight=ProcedureInsight(
+            procedure_name=request.procedure,
+            region=request.region,
+            likely_plane_or_target=rule["plane"],
+            danger_zones=rule["danger_zones"],
+            technical_notes=rule["tech_notes"],
+        ),
+        mitigation_steps=rule["mitigation"],
+        caution_flags=flags,
+        evidence=evidence,
+        onboarding_hint=hint,
+        related_papers=related_papers,
+        disclaimer=(
+            "This output is pre-procedure safety decision support only. "
+            "It does not replace clinician judgment, anatomical expertise, "
+            "product knowledge, or local emergency preparedness."
+        ),
+    )
+
+
+def score_and_select_protocol(query: str, region: Optional[str], product_type: Optional[str]) -> Tuple[str, Dict[str, Any], float]:
+    blob = normalize(f"{query} {region or ''} {product_type or ''}")
+    best_key = None
+    best_proto = None
+    best_score = -1.0
+
+    for key, proto in COMPLICATION_PROTOCOLS.items():
+        score = sum(1.0 for kw in proto["keywords"] if kw in blob)
+        if score > best_score:
+            best_score = score
+            best_key = key
+            best_proto = proto
+
+    if not best_key or not best_proto or best_score <= 0:
+        raise HTTPException(status_code=404, detail="No matching complication protocol found. Provide more specific clinical details.")
+
+    confidence = min(0.99, round(0.45 + best_score * 0.06, 2))
+    return best_key, best_proto, confidence
+
+
+def build_protocol_response(request: ComplicationProtocolRequest) -> ComplicationProtocolResponse:
+    key, proto, confidence = score_and_select_protocol(request.query, request.region, request.product_type)
+
+    base_score = proto["base_score"]
+    if request.visual_symptoms and key in ("vascular_occlusion_ha_filler", "vision_loss_ocular_emergency"):
+        base_score = min(100, base_score + 8)
+    if request.pain_score and request.pain_score >= 8:
+        base_score = min(100, base_score + 4)
+    if request.time_since_injection_minutes and request.time_since_injection_minutes <= 30:
+        base_score = min(100, base_score + 4)
+
+    evidence = retrieve_evidence(
+        request.region or proto["name"],
+        request.region or "",
+        request.product_type or proto.get("evidence_key", "default"),
+    )
+
+    return ComplicationProtocolResponse(
+        request_id=new_id(),
+        generated_at_utc=now_utc_iso(),
+        engine_version=ENGINE_VERSION,
+        matched_protocol_key=key,
+        matched_protocol_name=proto["name"],
+        confidence=confidence,
+        risk_score=base_score,
+        severity=proto["severity"],
+        urgency=proto["urgency"],
+        clinical_summary=proto["summary"],
+        immediate_actions=[
+            ProtocolStep(
+                step_number=i + 1,
+                action=s["action"],
+                rationale=s["rationale"],
+                priority=s.get("priority", "primary"),
+            )
+            for i, s in enumerate(proto["steps"])
+        ],
+        dose_guidance=[
+            DoseGuidance(
+                substance=d["substance"],
+                recommendation=d["recommendation"],
+                notes=d["notes"],
+            )
+            for d in proto["dose_guidance"]
+        ],
+        red_flags=proto["red_flags"],
+        escalation=proto["escalation"],
+        monitoring=proto["monitoring"],
+        follow_up_questions=proto["follow_up_questions"],
+        limitations=proto["limitations"],
+        evidence=evidence,
+        disclaimer="This protocol is clinical decision support only. It does not replace clinician judgment, emergency training, or local protocols.",
+    )
+
+
+def summarize_batch(items: List[PreProcedureResponse]) -> Dict[str, Any]:
+    decisions = Counter(item.safety_assessment.decision for item in items)
+    risk_scores = [item.safety_assessment.overall_risk_score for item in items]
+    avg_risk = round(sum(risk_scores) / len(risk_scores), 1) if risk_scores else 0.0
+
+    return {
+        "average_risk_score": avg_risk,
+        "decision_counts": {
+            "go": decisions.get("go", 0),
+            "caution": decisions.get("caution", 0),
+            "high_risk": decisions.get("high_risk", 0),
+        },
+        "highest_risk_cases": sorted(
+            [
+                {
+                    "request_id": item.request_id,
+                    "risk_score": item.safety_assessment.overall_risk_score,
+                    "decision": item.safety_assessment.decision,
+                    "procedure": item.procedure_insight.procedure_name,
+                    "region": item.procedure_insight.region,
+                }
+                for item in items
+            ],
+            key=lambda x: x["risk_score"],
+            reverse=True,
+        )[:5],
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Drug checker
+# ──────────────────────────────────────────────────────────────────────────────
+
+DRUG_RULES: List[Dict[str, Any]] = [
+    {"meds": ["warfarin", "acenocoumarol"], "severity": "high",
+     "explanation": "Vitamin K antagonists substantially increase bruising and bleeding risk with any injectable procedure. INR should be checked and within therapeutic range.",
+     "action": "Check INR before treatment. Discuss bleeding risk explicitly. Consider timing relative to dose."},
+    {"meds": ["apixaban", "rivaroxaban", "dabigatran", "edoxaban"], "severity": "high",
+     "explanation": "NOACs significantly increase procedural bleeding risk. No reliable reversal agent is available for all NOACs in aesthetic settings.",
+     "action": "Document anticoagulation. Discuss risk. Consider whether timing adjustment is clinically appropriate."},
+    {"meds": ["heparin", "enoxaparin", "tinzaparin", "dalteparin"], "severity": "high",
+     "explanation": "Injectable anticoagulants significantly increase bleeding and bruising risk.",
+     "action": "Discuss timing with prescribing clinician. Do not proceed on the same day as therapeutic heparin dose."},
+    {"meds": ["aspirin", "clopidogrel", "ticagrelor", "prasugrel"], "severity": "moderate",
+     "explanation": "Antiplatelet agents increase bruising risk. Do not stop without prescriber approval.",
+     "action": "Do not stop without medical approval. Warn patient about bruising. Document in consent."},
+    {"meds": ["ibuprofen", "naproxen", "diclofenac", "celecoxib", "indometacin"], "severity": "moderate",
+     "explanation": "NSAIDs inhibit platelet function and increase bruising risk.",
+     "action": "Advise stopping 5–7 days before treatment if safe to do so. Document if unable to stop."},
+    {"meds": ["sertraline", "fluoxetine", "escitalopram", "citalopram", "paroxetine",
+              "venlafaxine", "duloxetine", "fluvoxamine"], "severity": "moderate",
+     "explanation": "SSRIs/SNRIs reduce platelet aggregation and may increase bruising risk.",
+     "action": "Warn patient about increased bruising potential. Do not stop without prescriber advice."},
+    {"meds": ["vitamin e", "fish oil", "omega 3", "omega-3", "ginkgo", "garlic supplement"], "severity": "low",
+     "explanation": "These supplements may mildly increase bruising risk.",
+     "action": "Advise stopping 1 week before treatment if possible. Note in records."},
+    {"meds": ["methotrexate", "azathioprine", "ciclosporin", "tacrolimus", "mycophenolate"], "severity": "high",
+     "explanation": "Immunosuppressants increase infection risk and may impair healing after aesthetic procedures.",
+     "action": "Discuss with prescribing clinician. Ensure infection risk is discussed and documented."},
+    {"meds": ["isotretinoin", "roaccutane", "accutane"], "severity": "high",
+     "explanation": "Isotretinoin impairs wound healing and is a relative contraindication to ablative procedures.",
+     "action": "Defer ablative procedures until 6–12 months after stopping. For injectables, discuss specific risk with evidence."},
+    {"meds": ["prednisolone", "prednisone", "dexamethasone", "hydrocortisone oral"], "severity": "moderate",
+     "explanation": "Long-term steroids impair healing and immune response.",
+     "action": "Document steroid use. Be aware of impaired healing and increased infection risk."},
+]
+
+
+def check_drug_interactions(medications: List[str], planned_products: List[str]) -> DrugCheckResponse:
+    interactions: List[DrugInteractionItem] = []
+    meds_n = [normalize(m) for m in medications]
+    contexts = planned_products or ["injectable aesthetic procedure"]
+
+    for rule in DRUG_RULES:
+        for med_n in meds_n:
+            matched = any(rule_med in med_n or med_n in rule_med for rule_med in rule["meds"])
+            if matched:
+                original = next(
+                    (
+                        m for m in medications
+                        if normalize(m) == med_n or any(rule_med in normalize(m) for rule_med in rule["meds"])
+                    ),
+                    med_n,
+                )
+                for context in contexts:
+                    interactions.append(
+                        DrugInteractionItem(
+                            medication=original,
+                            product_or_context=context,
+                            severity=rule["severity"],
+                            explanation=rule["explanation"],
+                            action=rule["action"],
+                        )
+                    )
+
+    has_high = any(i.severity == "high" for i in interactions)
+    has_moderate = any(i.severity == "moderate" for i in interactions)
+
+    if has_high:
+        summary = f"{len(interactions)} interaction(s) found — HIGH severity. Review before proceeding."
+    elif has_moderate:
+        summary = f"{len(interactions)} interaction(s) found — moderate severity. Document and discuss with patient."
+    elif interactions:
+        summary = f"{len(interactions)} low-severity interaction(s) found. Note in records."
+    else:
+        summary = "No significant drug interactions identified with the medications provided."
+
+    return DrugCheckResponse(
+        interactions=interactions,
+        summary=summary,
+        proceed_with_caution=has_high or has_moderate,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PDF export
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PDFWriter:
+    def __init__(self, path: str) -> None:
+        self.c = canvas.Canvas(path, pagesize=A4)
+        self.w, self.h = A4
+        self.left = 18 * mm
+        self.right = self.w - 18 * mm
+        self.top = self.h - 18 * mm
+        self.bottom = 20 * mm
+        self.y = self.top
+
+    def _ensure(self, needed: float) -> None:
+        if self.y - needed < self.bottom:
+            self.c.showPage()
+            self.y = self.top
+
+    def line(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14) -> None:
+        self._ensure(leading)
+        self.c.setFont(font, size)
+        self.c.drawString(self.left, self.y, str(text))
+        self.y -= leading
+
+    def wrapped(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14, bullet: str = "") -> None:
+        max_w = self.right - self.left
+        self.c.setFont(font, size)
+        prefix = f"{bullet} " if bullet else ""
+        indent = stringWidth(prefix, font, size) if bullet else 0
+        usable = max_w - indent
+        words = str(text).split()
+        cur = ""
+        first = True
+
+        def flush(t: str, is_first: bool) -> None:
+            self._ensure(leading)
+            self.c.setFont(font, size)
+            if bullet and is_first:
+                self.c.drawString(self.left, self.y, prefix + t)
+            elif bullet:
+                self.c.drawString(self.left + indent, self.y, t)
+            else:
+                self.c.drawString(self.left, self.y, t)
+            self.y -= leading
+
+        for word in words:
+            candidate = word if not cur else f"{cur} {word}"
+            if stringWidth(candidate, font, size) <= usable:
+                cur = candidate
+            else:
+                if cur:
+                    flush(cur, first)
+                    first = False
+                cur = word
+        if cur:
+            flush(cur, first)
+
+    def section(self, title: str) -> None:
+        self.y -= 4
+        self.line(title, font="Helvetica-Bold", size=12, leading=16)
+
+    def save(self) -> None:
+        self.c.save()
+
+
+def export_safety_pdf(response: PreProcedureResponse) -> str:
+    filename = safe_filename("safety_v2", response.request_id)
+    path = os.path.join(EXPORT_DIR, filename)
+    pdf = PDFWriter(path)
+
+    pdf.line("AesthetiCite Pre-Procedure Safety Check", font="Helvetica-Bold", size=16, leading=20)
+    pdf.line(f"Engine v{response.engine_version} · Knowledge {response.knowledge_revision} · {response.generated_at_utc}")
+    pdf.line(
+        f"Risk: {response.safety_assessment.overall_risk_score}/100 · Level: {response.safety_assessment.overall_risk_level} · Decision: {response.safety_assessment.decision.replace('_', ' ').upper()}",
+        font="Helvetica-Bold",
+        size=11,
+        leading=16,
+    )
+
+    pdf.section("Safety Rationale")
+    pdf.wrapped(response.safety_assessment.rationale)
+
+    if response.caution_flags:
+        pdf.section("Caution Flags")
+        for flag in response.caution_flags:
+            pdf.wrapped(flag, bullet="!")
+
+    pdf.section("Top Complication Risks")
+    for risk in response.top_risks:
+        pdf.wrapped(f"{risk.complication.title()}: {risk.risk_score}/100 ({risk.risk_level})", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped(risk.why_it_matters)
+
+    pdf.section("Danger Zones")
+    for zone in response.procedure_insight.danger_zones:
+        pdf.wrapped(zone, bullet="⚠")
+
+    pdf.section("Technique Notes")
+    for note in response.procedure_insight.technical_notes:
+        pdf.wrapped(note, bullet="→")
+
+    pdf.section("Mitigation Steps")
+    for i, step in enumerate(response.mitigation_steps, 1):
+        pdf.wrapped(f"{i}. {step}")
+
+    pdf.section("Evidence")
+    for item in response.evidence:
+        pdf.wrapped(f"[{item.source_id}] {item.title}", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped(item.note)
+        if item.citation_text:
+            pdf.wrapped(f"“{item.citation_text}”")
+
+    if response.related_papers:
+        pdf.section("Recent Related Papers")
+        for paper in response.related_papers:
+            pdf.wrapped(f"{paper.get('title', '')} — {paper.get('journal', '')} {paper.get('date', '')}", bullet="•")
+            if paper.get("url"):
+                pdf.wrapped(paper["url"])
+
+    pdf.section("Disclaimer")
+    pdf.wrapped(response.disclaimer)
+    pdf.save()
+    return path
+
+
+def export_protocol_pdf(response: ComplicationProtocolResponse) -> str:
+    filename = safe_filename("protocol_v2", response.request_id)
+    path = os.path.join(EXPORT_DIR, filename)
+    pdf = PDFWriter(path)
+
+    pdf.line("AesthetiCite Complication Protocol", font="Helvetica-Bold", size=16, leading=20)
+    pdf.line(f"Protocol: {response.matched_protocol_name}", font="Helvetica-Bold", size=11)
+    pdf.line(f"Severity: {response.severity.upper()} · Urgency: {response.urgency.upper()} · Risk: {response.risk_score}/100")
+
+    pdf.section("Clinical Summary")
+    pdf.wrapped(response.clinical_summary)
+
+    pdf.section("Immediate Actions")
+    for step in response.immediate_actions:
+        pdf.wrapped(f"Step {step.step_number}: {step.action}", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped(f"Rationale: {step.rationale}")
+
+    pdf.section("Dose Guidance")
+    for dose in response.dose_guidance:
+        pdf.wrapped(f"{dose.substance}: {dose.recommendation}", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped(dose.notes)
+
+    pdf.section("Red Flags")
+    for flag in response.red_flags:
+        pdf.wrapped(flag, bullet="⚠")
+
+    pdf.section("Escalation")
+    for step in response.escalation:
+        pdf.wrapped(step, bullet="→")
+
+    pdf.section("Evidence")
+    for item in response.evidence:
+        pdf.wrapped(f"[{item.source_id}] {item.title}", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped(item.note)
+
+    pdf.section("Disclaimer")
+    pdf.wrapped(response.disclaimer)
+    pdf.save()
+    return path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Internal wrappers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_preprocedure(payload: PreProcedureRequest) -> PreProcedureResponse:
+    started = time.perf_counter()
+    response = build_safety_response(payload, include_related_papers=True)
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+
+    if payload.log_to_dashboard:
+        log_to_dashboard(
+            request=payload,
+            decision=response.safety_assessment.decision,
+            risk_score=response.safety_assessment.overall_risk_score,
+            response_time_ms=elapsed_ms,
+        )
+
+    return response
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# V2 Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/api/safety/v2/preprocedure-check", response_model=PreProcedureResponse)
+def preprocedure_check_v2(payload: PreProcedureRequest) -> PreProcedureResponse:
+    return run_preprocedure(payload)
+
+
+@router.post("/api/safety/v2/preprocedure-check/export-pdf", response_model=ExportPDFResponse)
+def preprocedure_check_pdf_v2(payload: PreProcedureRequest) -> ExportPDFResponse:
+    response = run_preprocedure(payload)
+    path = export_safety_pdf(response)
+    return ExportPDFResponse(request_id=response.request_id, filename=os.path.basename(path), pdf_path=path)
+
+
+@router.post("/api/safety/v2/preprocedure-check/batch", response_model=BatchPreProcedureResponse)
+def preprocedure_check_batch_v2(payload: BatchPreProcedureRequest) -> BatchPreProcedureResponse:
+    results = [run_preprocedure(item) for item in payload.items]
+    return BatchPreProcedureResponse(
+        batch_id=new_id(),
+        generated_at_utc=now_utc_iso(),
+        engine_version=ENGINE_VERSION,
+        total=len(results),
+        items=results,
+        summary=summarize_batch(results),
+    )
+
+
+@router.get("/api/safety/v2/workspace-bootstrap", response_model=WorkspaceBootstrapResponse)
+def workspace_bootstrap_v2() -> WorkspaceBootstrapResponse:
+    return WorkspaceBootstrapResponse(
+        engine_version=ENGINE_VERSION,
+        knowledge_revision=KNOWLEDGE_REVISION,
+        default_session_title="Session Safety Report",
+        supported_experience_levels=["junior", "intermediate", "senior"],
+        available_protocol_count=len(COMPLICATION_PROTOCOLS),
+        ui_labels={
+            "preprocedure_check": "AesthetiCite Pre-Procedure Safety Check",
+            "session_report": "Session Safety Report",
+            "complication_protocol": "Complication Protocol",
+            "evidence": "Clinical Evidence",
+            "danger_zones": "Danger Zones",
+            "mitigation_steps": "Mitigation Steps",
+        },
+        feature_flags={
+            "preprocedure_pdf_export": True,
+            "protocol_pdf_export": True,
+            "batch_preprocedure": True,
+            "drug_checker": True,
+            "case_logging": True,
+            "paper_digest": True,
+        },
+    )
+
+
+@router.post("/api/safety/v2/complications/protocol", response_model=ComplicationProtocolResponse)
+def complication_protocol_v2(payload: ComplicationProtocolRequest) -> ComplicationProtocolResponse:
+    return build_protocol_response(payload)
+
+
+@router.get("/api/safety/v2/complications/protocols")
+def list_complication_protocols_v2() -> List[Dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "name": proto["name"],
+            "severity": proto["severity"],
+            "urgency": proto["urgency"],
+            "base_score": proto["base_score"],
+            "keyword_count": len(proto["keywords"]),
+        }
+        for key, proto in COMPLICATION_PROTOCOLS.items()
+    ]
+
+
+@router.post("/api/safety/v2/complications/export-pdf", response_model=ExportPDFResponse)
+def complication_protocol_pdf_v2(payload: ComplicationProtocolRequest) -> ExportPDFResponse:
+    response = build_protocol_response(payload)
+    path = export_protocol_pdf(response)
+    return ExportPDFResponse(request_id=response.request_id, filename=os.path.basename(path), pdf_path=path)
+
+
+@router.post("/api/safety/v2/drug-check", response_model=DrugCheckResponse)
+def drug_check_v2(payload: DrugCheckRequest) -> DrugCheckResponse:
+    return check_drug_interactions(payload.medications, payload.planned_products)
+
+
+@router.post("/api/safety/v2/log-case", response_model=CaseLogResponse)
+def log_case_v2(payload: CaseLogRequest) -> CaseLogResponse:
+    case_id = new_id()
+    with db_cursor() as (_, cur):
+        cur.execute("""
+            INSERT INTO safety_cases
+                (id, clinic_id, clinician_id, procedure, region, product_type,
+                 technique, decision, risk_score, patient_factors_json, outcome, notes, created_at_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            case_id,
+            payload.clinic_id,
+            payload.clinician_id,
+            payload.procedure,
+            payload.region,
+            payload.product_type,
+            payload.technique,
+            payload.decision,
+            payload.risk_score,
+            json.dumps(payload.patient_factors.model_dump() if payload.patient_factors else {}),
+            payload.outcome,
+            payload.notes,
+            now_utc_iso(),
+        ))
+
+    return CaseLogResponse(status="ok", case_id=case_id)
+
+
+@router.get("/api/safety/v2/case-log")
+def get_case_log_v2(
+    clinic_id: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500)
+) -> Dict[str, Any]:
+    with db_cursor() as (_, cur):
+        if clinic_id:
+            cur.execute(
+                "SELECT * FROM safety_cases WHERE clinic_id = ? ORDER BY created_at_utc DESC LIMIT ?",
+                (clinic_id, limit),
+            )
+        else:
+            cur.execute("SELECT * FROM safety_cases ORDER BY created_at_utc DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+
+    cases = [{k: row[k] for k in row.keys()} for row in rows]
+    return {
+        "total": len(cases),
+        "cases": cases,
+        "stats": {
+            "by_procedure": dict(Counter(c["procedure"] for c in cases if c["procedure"])),
+            "by_decision": dict(Counter(c["decision"] for c in cases if c["decision"])),
+            "by_region": dict(Counter(c["region"] for c in cases if c["region"])),
+        },
+    }
+
+
+@router.get("/api/safety/v2/onboarding-hint", response_model=OnboardingHint)
+def onboarding_hint_v2(procedure: str = "", region: str = "") -> OnboardingHint:
+    return get_onboarding_hint(procedure, region)
+
+
+@router.get("/api/safety/v2/paper-digest/{topic}")
+def paper_digest_v2(topic: str) -> Dict[str, Any]:
+    papers = fetch_related_papers(topic, "")
+    return {
+        "topic": topic,
+        "papers": papers,
+        "fetched_at_utc": now_utc_iso(),
+        "message": "Subscribe to topic alerts via /api/growth/subscribe endpoint." if not papers else None,
+    }
+
+
+@router.post("/api/safety/v2/seed-journals")
+def seed_journals_v2() -> Dict[str, Any]:
+    return {
+        "journals": AESTHETIC_JOURNALS,
+        "consensus_documents": AESTHETIC_CONSENSUS_DOCS,
+        "total_journals": len(AESTHETIC_JOURNALS),
+        "instruction": (
+            "Add these journals to the automated publication sync pipeline. "
+            "Priority ingest: Journal of Cosmetic Dermatology, Aesthetic Surgery Journal, "
+            "Dermatologic Surgery, JCAD. Use PubMed term for esearch queries."
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Legacy-compatible aliases
+# These let /safety-workspace become the single page without breaking old pages
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/api/safety/preprocedure-check", response_model=PreProcedureResponse)
+def preprocedure_check_legacy(payload: PreProcedureRequest) -> PreProcedureResponse:
+    return run_preprocedure(payload)
+
+
+@router.post("/api/safety/preprocedure-check/export-pdf", response_model=ExportPDFResponse)
+def preprocedure_check_pdf_legacy(payload: PreProcedureRequest) -> ExportPDFResponse:
+    response = run_preprocedure(payload)
+    path = export_safety_pdf(response)
+    return ExportPDFResponse(request_id=response.request_id, filename=os.path.basename(path), pdf_path=path)
+
+
+@router.get("/api/safety/onboarding-hint", response_model=OnboardingHint)
+def onboarding_hint_legacy(procedure: str = "", region: str = "") -> OnboardingHint:
+    return get_onboarding_hint(procedure, region)
+
+
+@router.post("/api/safety/complications/protocol", response_model=ComplicationProtocolResponse)
+def complication_protocol_legacy(payload: ComplicationProtocolRequest) -> ComplicationProtocolResponse:
+    return build_protocol_response(payload)
+
+
+@router.post("/api/safety/drug-check", response_model=DrugCheckResponse)
+def drug_check_legacy(payload: DrugCheckRequest) -> DrugCheckResponse:
+    return check_drug_interactions(payload.medications, payload.planned_products)

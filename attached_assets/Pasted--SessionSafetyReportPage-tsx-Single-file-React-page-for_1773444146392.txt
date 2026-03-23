@@ -1,0 +1,944 @@
+// SessionSafetyReportPage.tsx
+//
+// Single-file React page for the AesthetiCite Session Safety Report UI
+//
+// What it does:
+// - creates a session safety report
+// - lets clinicians add 5–8 procedures/patients to one session
+// - runs the existing pre-procedure safety engine for each entry
+// - stores each engine result into the session report
+// - shows a consolidated session summary
+// - exports one PDF for the whole session
+//
+// Backend endpoints used:
+// - POST /api/safety/preprocedure-check
+// - POST /session-reports
+// - POST /session-reports/{report_id}/items
+// - GET  /session-reports/{report_id}
+// - POST /session-reports/{report_id}/export-pdf
+//
+// Assumptions:
+// - React + TypeScript
+// - Tailwind CSS available
+// - shadcn/ui available
+// - lucide-react available
+//
+// Notes:
+// - Set API_BASE if needed
+// - This page is designed to pair directly with the backend already created
+
+import React, { useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ClipboardList,
+  Download,
+  FileText,
+  Loader2,
+  Plus,
+  ShieldAlert,
+  Trash2,
+  UserRound,
+} from "lucide-react";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+
+const API_BASE = "";
+
+type RiskLevel = "low" | "moderate" | "high" | "very_high";
+type DecisionLevel = "go" | "caution" | "high_risk";
+
+type PatientFactors = {
+  prior_filler_in_same_area?: boolean;
+  prior_vascular_event?: boolean;
+  autoimmune_history?: boolean;
+  allergy_history?: boolean;
+  active_infection_near_site?: boolean;
+  anticoagulation?: boolean;
+  vascular_disease?: boolean;
+  smoking?: boolean;
+};
+
+type PreProcedureRequest = {
+  procedure: string;
+  region: string;
+  product_type: string;
+  technique?: string;
+  injector_experience_level?: "junior" | "intermediate" | "senior";
+  patient_factors?: PatientFactors;
+  clinician_id?: string;
+  clinic_id?: string;
+};
+
+type RiskItem = {
+  complication: string;
+  risk_score: number;
+  risk_level: RiskLevel;
+  why_it_matters: string;
+};
+
+type SafetyAssessment = {
+  overall_risk_score: number;
+  overall_risk_level: RiskLevel;
+  decision: DecisionLevel;
+  rationale: string;
+};
+
+type ProcedureInsight = {
+  procedure_name: string;
+  region: string;
+  likely_plane_or_target?: string | null;
+  danger_zones: string[];
+  technical_notes: string[];
+};
+
+type EvidenceItem = {
+  source_id: string;
+  title: string;
+  note: string;
+  citation_text?: string | null;
+  source_type?: string | null;
+  relevance_score?: number | null;
+};
+
+type PreProcedureResponse = {
+  request_id: string;
+  generated_at_utc: string;
+  engine_version: string;
+  knowledge_revision: string;
+  safety_assessment: SafetyAssessment;
+  top_risks: RiskItem[];
+  procedure_insight: ProcedureInsight;
+  mitigation_steps: string[];
+  caution_flags: string[];
+  evidence: EvidenceItem[];
+  disclaimer: string;
+};
+
+type SessionReportResponse = {
+  id: string;
+  clinic_id?: string | null;
+  clinician_id?: string | null;
+  title: string;
+  report_date?: string | null;
+  notes?: string | null;
+  created_at_utc: string;
+};
+
+type SessionReportItemResponse = {
+  id: string;
+  report_id: string;
+  patient_label?: string | null;
+  procedure: string;
+  region: string;
+  product_type: string;
+  technique?: string | null;
+  injector_experience_level?: string | null;
+  engine_response_json: PreProcedureResponse;
+  created_at_utc: string;
+};
+
+type SessionReportFetchResponse = {
+  report: SessionReportResponse;
+  items: Array<{
+    id: string;
+    report_id: string;
+    patient_label?: string | null;
+    procedure: string;
+    region: string;
+    product_type: string;
+    technique?: string | null;
+    injector_experience_level?: string | null;
+    engine_response_json: PreProcedureResponse;
+    created_at_utc: string;
+  }>;
+};
+
+type ProcedureDraft = {
+  localId: string;
+  patient_label: string;
+  procedure: string;
+  region: string;
+  product_type: string;
+  technique: string;
+  injector_experience_level: "junior" | "intermediate" | "senior";
+  patient_factors: PatientFactors;
+};
+
+const emptyFactors: PatientFactors = {
+  prior_filler_in_same_area: false,
+  prior_vascular_event: false,
+  autoimmune_history: false,
+  allergy_history: false,
+  active_infection_near_site: false,
+  anticoagulation: false,
+  vascular_disease: false,
+  smoking: false,
+};
+
+function makeDraft(): ProcedureDraft {
+  return {
+    localId: crypto.randomUUID(),
+    patient_label: "",
+    procedure: "",
+    region: "",
+    product_type: "",
+    technique: "",
+    injector_experience_level: "intermediate",
+    patient_factors: { ...emptyFactors },
+  };
+}
+
+export default function SessionSafetyReportPage() {
+  const [clinicId, setClinicId] = useState("");
+  const [clinicianId, setClinicianId] = useState("");
+  const [reportTitle, setReportTitle] = useState("");
+  const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [drafts, setDrafts] = useState<ProcedureDraft[]>([makeDraft()]);
+  const [report, setReport] = useState<SessionReportResponse | null>(null);
+  const [savedItems, setSavedItems] = useState<SessionReportItemResponse[]>([]);
+  const [loadingCreate, setLoadingCreate] = useState(false);
+  const [loadingAnalyze, setLoadingAnalyze] = useState(false);
+  const [loadingPdf, setLoadingPdf] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canCreateReport = useMemo(() => reportTitle.trim().length > 1, [reportTitle]);
+
+  const canAnalyze = useMemo(() => {
+    return (
+      report !== null &&
+      drafts.some(
+        (d) =>
+          d.procedure.trim().length > 1 &&
+          d.region.trim().length > 1 &&
+          d.product_type.trim().length > 1
+      )
+    );
+  }, [report, drafts]);
+
+  const summary = useMemo(() => {
+    const total = savedItems.length;
+    const decisions = savedItems.reduce(
+      (acc, item) => {
+        const d = item.engine_response_json?.safety_assessment?.decision;
+        if (d === "go") acc.go += 1;
+        else if (d === "caution") acc.caution += 1;
+        else if (d === "high_risk") acc.highRisk += 1;
+        return acc;
+      },
+      { go: 0, caution: 0, highRisk: 0 }
+    );
+
+    const avgRisk =
+      total > 0
+        ? Math.round(
+            savedItems.reduce(
+              (sum, item) => sum + (item.engine_response_json?.safety_assessment?.overall_risk_score || 0),
+              0
+            ) / total
+          )
+        : 0;
+
+    return { total, ...decisions, avgRisk };
+  }, [savedItems]);
+
+  function updateDraft(localId: string, patch: Partial<ProcedureDraft>) {
+    setDrafts((prev) => prev.map((d) => (d.localId === localId ? { ...d, ...patch } : d)));
+  }
+
+  function updateFactor(localId: string, key: keyof PatientFactors, value: boolean) {
+    setDrafts((prev) =>
+      prev.map((d) =>
+        d.localId === localId
+          ? { ...d, patient_factors: { ...d.patient_factors, [key]: value } }
+          : d
+      )
+    );
+  }
+
+  function addDraft() {
+    setDrafts((prev) => [...prev, makeDraft()]);
+  }
+
+  function removeDraft(localId: string) {
+    setDrafts((prev) => (prev.length === 1 ? prev : prev.filter((d) => d.localId !== localId)));
+  }
+
+  async function createReport() {
+    setLoadingCreate(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/session-reports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clinic_id: clinicId.trim() || undefined,
+          clinician_id: clinicianId.trim() || undefined,
+          title: reportTitle.trim(),
+          report_date: reportDate || undefined,
+          notes: notes.trim() || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+
+      const data: SessionReportResponse = await res.json();
+      setReport(data);
+      setSavedItems([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create report.");
+    } finally {
+      setLoadingCreate(false);
+    }
+  }
+
+  async function runSingleDraft(draft: ProcedureDraft): Promise<SessionReportItemResponse> {
+    if (!report) throw new Error("Report not created.");
+
+    const enginePayload: PreProcedureRequest = {
+      procedure: draft.procedure.trim(),
+      region: draft.region.trim(),
+      product_type: draft.product_type.trim(),
+      technique: draft.technique.trim() || undefined,
+      injector_experience_level: draft.injector_experience_level,
+      patient_factors: draft.patient_factors,
+      clinic_id: clinicId.trim() || undefined,
+      clinician_id: clinicianId.trim() || undefined,
+    };
+
+    const engineRes = await fetch(`${API_BASE}/api/safety/preprocedure-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(enginePayload),
+    });
+
+    if (!engineRes.ok) {
+      throw new Error(await engineRes.text());
+    }
+
+    const engineData: PreProcedureResponse = await engineRes.json();
+
+    const storeRes = await fetch(`${API_BASE}/session-reports/${report.id}/items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        patient_label: draft.patient_label.trim() || undefined,
+        procedure: draft.procedure.trim(),
+        region: draft.region.trim(),
+        product_type: draft.product_type.trim(),
+        technique: draft.technique.trim() || undefined,
+        injector_experience_level: draft.injector_experience_level,
+        engine_response_json: engineData,
+      }),
+    });
+
+    if (!storeRes.ok) {
+      throw new Error(await storeRes.text());
+    }
+
+    return (await storeRes.json()) as SessionReportItemResponse;
+  }
+
+  async function analyzeAll() {
+    setLoadingAnalyze(true);
+    setError(null);
+
+    try {
+      const validDrafts = drafts.filter(
+        (d) =>
+          d.procedure.trim().length > 1 &&
+          d.region.trim().length > 1 &&
+          d.product_type.trim().length > 1
+      );
+
+      const createdItems: SessionReportItemResponse[] = [];
+      for (const draft of validDrafts) {
+        const item = await runSingleDraft(draft);
+        createdItems.push(item);
+      }
+
+      setSavedItems((prev) => [...prev, ...createdItems]);
+
+      const res = await fetch(`${API_BASE}/session-reports/${report?.id}`);
+      if (res.ok) {
+        const data: SessionReportFetchResponse = await res.json();
+        setSavedItems(data.items as SessionReportItemResponse[]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to analyze session.");
+    } finally {
+      setLoadingAnalyze(false);
+    }
+  }
+
+  async function exportPdf() {
+    if (!report) return;
+    setLoadingPdf(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/session-reports/${report.id}/export-pdf`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+
+      const data: { report_id: string; pdf_path: string; filename: string } = await res.json();
+      window.open(data.pdf_path, "_blank");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export PDF.");
+    } finally {
+      setLoadingPdf(false);
+    }
+  }
+
+  function decisionBadge(decision: DecisionLevel) {
+    if (decision === "go") {
+      return (
+        <Badge className="rounded-full px-3 py-1 text-sm">
+          <CheckCircle2 className="mr-1 h-4 w-4" />
+          GO
+        </Badge>
+      );
+    }
+    if (decision === "caution") {
+      return (
+        <Badge variant="secondary" className="rounded-full px-3 py-1 text-sm">
+          <AlertTriangle className="mr-1 h-4 w-4" />
+          CAUTION
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="destructive" className="rounded-full px-3 py-1 text-sm">
+        <ShieldAlert className="mr-1 h-4 w-4" />
+        HIGH RISK
+      </Badge>
+    );
+  }
+
+  function riskChip(level: RiskLevel) {
+    const cls =
+      level === "low"
+        ? "bg-green-50 text-green-700 border-green-200"
+        : level === "moderate"
+        ? "bg-yellow-50 text-yellow-700 border-yellow-200"
+        : level === "high"
+        ? "bg-orange-50 text-orange-700 border-orange-200"
+        : "bg-red-50 text-red-700 border-red-200";
+
+    return <span className={`rounded-full border px-2 py-1 text-xs font-medium ${cls}`}>{level.replace("_", " ")}</span>;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      <div className="mx-auto max-w-7xl">
+        <div className="mb-8 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">Session Safety Report</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Queue multiple procedures, run safety checks, and export one consolidated clinical report.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 rounded-2xl border bg-white px-4 py-2 shadow-sm">
+            <ClipboardList className="h-4 w-4 text-slate-500" />
+            <span className="text-sm text-slate-600">Clinic workflow demo feature</span>
+          </div>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[430px_minmax(0,1fr)]">
+          <div className="space-y-6">
+            <Card className="rounded-2xl border-0 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-xl">Session Setup</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Report Title</Label>
+                  <Input
+                    placeholder="e.g. Morning injectable list"
+                    value={reportTitle}
+                    onChange={(e) => setReportTitle(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Clinic ID</Label>
+                    <Input
+                      placeholder="optional"
+                      value={clinicId}
+                      onChange={(e) => setClinicId(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Clinician ID</Label>
+                    <Input
+                      placeholder="optional"
+                      value={clinicianId}
+                      onChange={(e) => setClinicianId(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Report Date</Label>
+                  <Input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Notes</Label>
+                  <Textarea
+                    placeholder="Optional notes for this treatment session"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="min-h-[100px]"
+                  />
+                </div>
+
+                <Button onClick={createReport} disabled={!canCreateReport || loadingCreate} className="w-full rounded-xl">
+                  {loadingCreate ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="mr-2 h-4 w-4" />
+                      Create Session Report
+                    </>
+                  )}
+                </Button>
+
+                {report && (
+                  <div className="rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
+                    <div className="font-medium text-slate-900">Active report</div>
+                    <div className="mt-1">ID: {report.id}</div>
+                    <div>Created: {new Date(report.created_at_utc).toLocaleString()}</div>
+                  </div>
+                )}
+
+                {error && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {error}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-2xl border-0 shadow-sm">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-xl">Procedure Queue</CardTitle>
+                <Button variant="outline" size="sm" className="rounded-xl" onClick={addDraft}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Patient
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {drafts.map((draft, index) => (
+                  <ProcedureDraftCard
+                    key={draft.localId}
+                    index={index + 1}
+                    draft={draft}
+                    onChange={updateDraft}
+                    onFactorChange={updateFactor}
+                    onRemove={removeDraft}
+                  />
+                ))}
+
+                <Button onClick={analyzeAll} disabled={!canAnalyze || loadingAnalyze} className="w-full rounded-xl">
+                  {loadingAnalyze ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Running session analysis...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldAlert className="mr-2 h-4 w-4" />
+                      Run Session Safety Analysis
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="space-y-6">
+            <Card className="rounded-2xl border-0 shadow-sm">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-xl">Session Summary</CardTitle>
+                <Button
+                  variant="outline"
+                  className="rounded-xl"
+                  onClick={exportPdf}
+                  disabled={!report || savedItems.length === 0 || loadingPdf}
+                >
+                  {loadingPdf ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Exporting...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="mr-2 h-4 w-4" />
+                      Export Session PDF
+                    </>
+                  )}
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {savedItems.length === 0 ? (
+                  <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm text-slate-500">
+                    No analyzed procedures yet. Create a report, queue procedures, and run the session safety analysis.
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-4 md:grid-cols-4">
+                      <MetricCard label="Total Cases" value={String(summary.total)} />
+                      <MetricCard label="Average Risk" value={`${summary.avgRisk}/100`} />
+                      <MetricCard label="Caution" value={String(summary.caution)} />
+                      <MetricCard label="High Risk" value={String(summary.highRisk)} />
+                    </div>
+
+                    <div className="mt-6 grid gap-4 md:grid-cols-3">
+                      <SummaryDecisionCard title="GO" count={summary.go} tone="green" />
+                      <SummaryDecisionCard title="CAUTION" count={summary.caution} tone="yellow" />
+                      <SummaryDecisionCard title="HIGH RISK" count={summary.highRisk} tone="red" />
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {savedItems.map((item, idx) => {
+              const engine = item.engine_response_json;
+              return (
+                <Card key={item.id} className="rounded-2xl border-0 shadow-sm">
+                  <CardHeader>
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <CardTitle className="text-xl">
+                          {item.patient_label || `Patient ${idx + 1}`}
+                        </CardTitle>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {item.procedure} · {item.region} · {item.product_type}
+                        </p>
+                      </div>
+                      {decisionBadge(engine.safety_assessment.decision)}
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="space-y-5">
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <MetricCard
+                        label="Risk Score"
+                        value={`${engine.safety_assessment.overall_risk_score}/100`}
+                      />
+                      <MetricCard
+                        label="Risk Level"
+                        value={engine.safety_assessment.overall_risk_level.replace("_", " ")}
+                      />
+                      <MetricCard
+                        label="Top Danger Zone"
+                        value={engine.procedure_insight?.danger_zones?.[0] || "N/A"}
+                      />
+                    </div>
+
+                    <div className="rounded-2xl border bg-slate-50 p-4">
+                      <p className="text-sm font-medium text-slate-800">Rationale</p>
+                      <p className="mt-1 text-sm text-slate-600">{engine.safety_assessment.rationale}</p>
+                    </div>
+
+                    <div className="grid gap-6 xl:grid-cols-2">
+                      <SectionList
+                        title="Top Risks"
+                        items={engine.top_risks.map(
+                          (risk) => `${risk.complication} — ${risk.risk_score}/100`
+                        )}
+                        renderRight={(i) => riskChip(engine.top_risks[i].risk_level)}
+                      />
+                      <SectionList title="Mitigation Steps" items={engine.mitigation_steps} />
+                    </div>
+
+                    <div className="grid gap-6 xl:grid-cols-2">
+                      <SectionList
+                        title="Danger Zones"
+                        items={engine.procedure_insight?.danger_zones || []}
+                      />
+                      <SectionList
+                        title="Caution Flags"
+                        items={engine.caution_flags.length ? engine.caution_flags : ["No additional caution flags triggered."]}
+                      />
+                    </div>
+
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium text-slate-800">Evidence</p>
+                      {engine.evidence?.length ? (
+                        engine.evidence.slice(0, 3).map((ev) => (
+                          <div key={ev.source_id} className="rounded-2xl border p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-medium">
+                                [{ev.source_id}] {ev.title}
+                              </div>
+                              {typeof ev.relevance_score === "number" && (
+                                <Badge variant="secondary">
+                                  {Math.round(ev.relevance_score * 100)}%
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="mt-2 text-sm text-slate-600">{ev.note}</p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-2xl border bg-slate-50 p-4 text-sm text-slate-500">
+                          No evidence items returned.
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProcedureDraftCard({
+  index,
+  draft,
+  onChange,
+  onFactorChange,
+  onRemove,
+}: {
+  index: number;
+  draft: ProcedureDraft;
+  onChange: (localId: string, patch: Partial<ProcedureDraft>) => void;
+  onFactorChange: (localId: string, key: keyof PatientFactors, value: boolean) => void;
+  onRemove: (localId: string) => void;
+}) {
+  return (
+    <div className="rounded-2xl border bg-slate-50 p-4">
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <UserRound className="h-4 w-4 text-slate-500" />
+          <p className="font-medium text-slate-800">Patient / Procedure {index}</p>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => onRemove(draft.localId)}>
+          <Trash2 className="h-4 w-4 text-slate-500" />
+        </Button>
+      </div>
+
+      <div className="grid gap-4">
+        <div className="space-y-2">
+          <Label>Patient Label</Label>
+          <Input
+            placeholder="e.g. Patient A"
+            value={draft.patient_label}
+            onChange={(e) => onChange(draft.localId, { patient_label: e.target.value })}
+          />
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field
+            label="Procedure"
+            value={draft.procedure}
+            placeholder="e.g. tear trough filler"
+            onChange={(v) => onChange(draft.localId, { procedure: v })}
+          />
+          <Field
+            label="Region"
+            value={draft.region}
+            placeholder="e.g. tear trough"
+            onChange={(v) => onChange(draft.localId, { region: v })}
+          />
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field
+            label="Product Type"
+            value={draft.product_type}
+            placeholder="e.g. hyaluronic acid filler"
+            onChange={(v) => onChange(draft.localId, { product_type: v })}
+          />
+          <Field
+            label="Technique"
+            value={draft.technique}
+            placeholder="e.g. needle or cannula"
+            onChange={(v) => onChange(draft.localId, { technique: v })}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Injector Experience</Label>
+          <select
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            value={draft.injector_experience_level}
+            onChange={(e) =>
+              onChange(draft.localId, {
+                injector_experience_level: e.target.value as "junior" | "intermediate" | "senior",
+              })
+            }
+          >
+            <option value="junior">Junior</option>
+            <option value="intermediate">Intermediate</option>
+            <option value="senior">Senior</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 rounded-2xl border bg-white p-4 md:grid-cols-2">
+          <FactorRow
+            label="Prior filler in same area"
+            checked={!!draft.patient_factors.prior_filler_in_same_area}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "prior_filler_in_same_area", v)}
+          />
+          <FactorRow
+            label="Prior vascular event"
+            checked={!!draft.patient_factors.prior_vascular_event}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "prior_vascular_event", v)}
+          />
+          <FactorRow
+            label="Autoimmune history"
+            checked={!!draft.patient_factors.autoimmune_history}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "autoimmune_history", v)}
+          />
+          <FactorRow
+            label="Allergy history"
+            checked={!!draft.patient_factors.allergy_history}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "allergy_history", v)}
+          />
+          <FactorRow
+            label="Active infection near site"
+            checked={!!draft.patient_factors.active_infection_near_site}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "active_infection_near_site", v)}
+          />
+          <FactorRow
+            label="Anticoagulation"
+            checked={!!draft.patient_factors.anticoagulation}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "anticoagulation", v)}
+          />
+          <FactorRow
+            label="Vascular disease"
+            checked={!!draft.patient_factors.vascular_disease}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "vascular_disease", v)}
+          />
+          <FactorRow
+            label="Smoking"
+            checked={!!draft.patient_factors.smoking}
+            onCheckedChange={(v) => onFactorChange(draft.localId, "smoking", v)}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Input value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+}
+
+function FactorRow({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label className="text-sm font-normal text-slate-700">{label}</Label>
+      <Checkbox checked={checked} onCheckedChange={(v) => onCheckedChange(Boolean(v))} />
+    </div>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border bg-white p-4">
+      <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-2 text-lg font-semibold capitalize text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function SummaryDecisionCard({
+  title,
+  count,
+  tone,
+}: {
+  title: string;
+  count: number;
+  tone: "green" | "yellow" | "red";
+}) {
+  const toneClass =
+    tone === "green"
+      ? "bg-green-50 border-green-200 text-green-700"
+      : tone === "yellow"
+      ? "bg-yellow-50 border-yellow-200 text-yellow-700"
+      : "bg-red-50 border-red-200 text-red-700";
+
+  return (
+    <div className={`rounded-2xl border p-4 ${toneClass}`}>
+      <p className="text-xs uppercase tracking-wide">{title}</p>
+      <p className="mt-2 text-2xl font-semibold">{count}</p>
+    </div>
+  );
+}
+
+function SectionList({
+  title,
+  items,
+  renderRight,
+}: {
+  title: string;
+  items: string[];
+  renderRight?: (index: number) => React.ReactNode;
+}) {
+  return (
+    <div>
+      <p className="mb-3 text-sm font-medium text-slate-800">{title}</p>
+      <div className="space-y-2">
+        {items.map((item, idx) => (
+          <div key={`${item}-${idx}`} className="flex items-start justify-between gap-3 rounded-xl border bg-slate-50 p-3">
+            <div className="flex items-start gap-3">
+              <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
+              <p className="text-sm text-slate-700">{item}</p>
+            </div>
+            {renderRight ? renderRight(idx) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

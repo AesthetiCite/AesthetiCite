@@ -1,0 +1,378 @@
+# STEP C (single drop-in patch): Real pgvector retrieval + embeddings + DB models/session
+# Paste this whole block into the Replit AI Agent. It will create/overwrite the needed files.
+# Assumes you already created the Postgres tables from Step B (documents/chunks with VECTOR(768)).
+
+set -e
+
+echo "==> 1) Update requirements.txt"
+cat > requirements.txt <<'EOF'
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+python-multipart==0.0.17
+
+# Embeddings (open-source)
+sentence-transformers==2.7.0
+torch==2.2.2
+numpy==1.26.4
+EOF
+
+mkdir -p app/db app/rag ingestion
+
+echo "==> 2) DB session: app/db/session.py"
+cat > app/db/session.py <<'EOF'
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+
+# Create engine (psycopg driver via SQLAlchemy URL)
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+EOF
+
+echo "==> 3) DB models: app/db/models.py"
+cat > app/db/models.py <<'EOF'
+from __future__ import annotations
+from typing import Optional
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import Text, Integer, ForeignKey, DateTime, func
+from pgvector.sqlalchemy import Vector
+import uuid
+from sqlalchemy.dialects.postgresql import UUID
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    source_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    authors: Mapped[Optional[str]] = mapped_column(Text)
+    organization_or_journal: Mapped[Optional[str]] = mapped_column(Text)
+    year: Mapped[Optional[int]] = mapped_column(Integer)
+    document_type: Mapped[str] = mapped_column(Text, nullable=False)   # guideline/review/rct/consensus/ifu
+    domain: Mapped[str] = mapped_column(Text, nullable=False)          # medicine/dermatology/aesthetic_medicine
+    version: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    file_path: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    chunks: Mapped[list["Chunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    page_or_section: Mapped[Optional[str]] = mapped_column(Text)
+    evidence_level: Mapped[Optional[str]] = mapped_column(Text)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(768))
+    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    document: Mapped["Document"] = relationship(back_populates="chunks")
+EOF
+
+echo "==> 4) Embedder: app/rag/embedder.py (open-source, 768-dim)"
+cat > app/rag/embedder.py <<'EOF'
+from __future__ import annotations
+from functools import lru_cache
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+# 768-dimensional embeddings model (fits VECTOR(768))
+# Good default, widely used. You can swap later, but keep the dimension consistent with DB.
+MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
+
+
+@lru_cache(maxsize=1)
+def _model() -> SentenceTransformer:
+    return SentenceTransformer(MODEL_NAME)
+
+
+def embed_text(text: str) -> list[float]:
+    """
+    Returns a 768-dim embedding as a Python list[float] compatible with pgvector.
+    """
+    m = _model()
+    vec = m.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
+    # Ensure plain Python floats (JSON/DB friendly)
+    return [float(x) for x in np.asarray(vec, dtype=np.float32).tolist()]
+EOF
+
+echo "==> 5) Real retriever: app/rag/retriever.py (pgvector cosine search + citations metadata)"
+cat > app/rag/retriever.py <<'EOF'
+from __future__ import annotations
+from typing import List, Dict, Optional
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.rag.embedder import embed_text
+
+# NOTE:
+# - Requires Postgres extensions + tables created in Step B
+# - Uses cosine distance operator via pgvector: (embedding <=> :qvec)
+# - The ivfflat index you created uses vector_cosine_ops; keep that.
+
+
+SQL = """
+SELECT
+  d.source_id,
+  d.title,
+  d.year,
+  d.organization_or_journal,
+  d.document_type,
+  d.domain,
+  c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text,
+  (c.embedding <=> :qvec) AS distance
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND c.embedding IS NOT NULL
+  AND (:domain IS NULL OR d.domain = :domain)
+ORDER BY c.embedding <=> :qvec
+LIMIT :k;
+"""
+
+
+def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int = 6) -> List[Dict]:
+    qvec = embed_text(question)
+    rows = db.execute(
+        text(SQL),
+        {"qvec": qvec, "domain": domain, "k": int(k)},
+    ).mappings().all()
+
+    results: List[Dict] = []
+    for r in rows:
+        results.append({
+            "source_id": r["source_id"],
+            "title": r["title"],
+            "year": r["year"],
+            "organization_or_journal": r["organization_or_journal"],
+            "page_or_section": r["page_or_section"],
+            "evidence_level": r["evidence_level"],
+            "text": r["text"],
+            "distance": float(r["distance"]) if r["distance"] is not None else None,
+        })
+    return results
+EOF
+
+echo "==> 6) Update citations mapper: app/rag/citations.py"
+cat > app/rag/citations.py <<'EOF'
+from typing import List, Dict
+from app.schemas.ask import Citation
+
+def to_citations(chunks: List[Dict]) -> List[Citation]:
+    citations: List[Citation] = []
+    seen = set()
+    for c in chunks:
+        sid = c.get("source_id", "")
+        key = (sid, c.get("page_or_section"))
+        if key in seen:
+            continue
+        seen.add(key)
+        citations.append(Citation(
+            source_id=sid,
+            title=c.get("title", "Unknown source"),
+            year=c.get("year"),
+            organization_or_journal=c.get("organization_or_journal"),
+            page_or_section=c.get("page_or_section"),
+            evidence_level=c.get("evidence_level"),
+            quote=None,
+        ))
+    return citations
+EOF
+
+echo "==> 7) Update /ask to use DB retriever: app/api/ask.py"
+cat > app/api/ask.py <<'EOF'
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.schemas.ask import AskRequest, AskResponse
+from app.core.config import settings
+from app.core.safety import safety_screen
+from app.db.session import get_db
+from app.rag.retriever import retrieve_db
+from app.rag.citations import to_citations
+from app.rag.answer import build_answer
+
+router = APIRouter(prefix="", tags=["ask"])
+
+
+@router.post("/ask", response_model=AskResponse)
+def ask(payload: AskRequest, db: Session = Depends(get_db)) -> AskResponse:
+    safety = safety_screen(payload.question)
+    if not safety.allowed:
+        return AskResponse(
+            answer="",
+            citations=[],
+            refusal=True,
+            refusal_reason=safety.refusal_reason or "Request refused by safety policy."
+        )
+
+    # Real retrieval from pgvector
+    retrieved = retrieve_db(db=db, question=payload.question, domain=payload.domain, k=6)
+    citations = to_citations(retrieved)
+
+    # Rule #1: no citations => refuse
+    if len(citations) < settings.MIN_CITATIONS_REQUIRED:
+        return AskResponse(
+            answer="",
+            citations=[],
+            refusal=True,
+            refusal_reason="Insufficient evidence retrieved to answer with citations."
+        )
+
+    answer = build_answer(
+        question=payload.question,
+        mode=payload.mode,
+        domain=payload.domain,
+        retrieved=retrieved,
+        escalation_note=safety.escalation_note,
+    )
+
+    return AskResponse(answer=answer, citations=citations, refusal=False)
+EOF
+
+echo "==> 8) Minimal ingestion helper (optional but useful now): ingestion/seed_demo.py"
+cat > ingestion/seed_demo.py <<'EOF'
+"""
+Seeds the database with 2 demo documents + chunks + embeddings.
+Run once after setting DATABASE_URL in .env.
+
+Usage:
+  python ingestion/seed_demo.py
+"""
+from sqlalchemy import create_engine, text
+from app.core.config import settings
+from app.rag.embedder import embed_text
+
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+
+DEMO_DOCS = [
+    {
+        "source_id": "consensus_demo_2021",
+        "title": "Consensus guidance on management of vascular compromise after dermal filler (DEMO)",
+        "authors": "Demo Group",
+        "organization_or_journal": "Consensus Statement",
+        "year": 2021,
+        "document_type": "consensus",
+        "domain": "aesthetic_medicine",
+        "version": "demo",
+        "status": "active",
+        "chunks": [
+            ("Algorithm / Emergency Management", "Early recognition and prompt intervention are emphasized; recommendations are consensus-based."),
+            ("Hyaluronidase", "When hyaluronic acid filler is implicated, hyaluronidase is described as a rescue option in consensus guidance; evidence quality may be limited.")
+        ],
+    },
+    {
+        "source_id": "review_demo_2020",
+        "title": "Review: Hyaluronidase use in filler-related ischemic events (DEMO)",
+        "authors": "Demo Author",
+        "organization_or_journal": "Dermatologic Review",
+        "year": 2020,
+        "document_type": "review",
+        "domain": "aesthetic_medicine",
+        "version": "demo",
+        "status": "active",
+        "chunks": [
+            ("Treatment approach", "The evidence base is limited; practice commonly relies on expert consensus and case series."),
+        ],
+    },
+]
+
+def upsert_document(conn, d):
+    # insert doc
+    doc_id = conn.execute(text("""
+      INSERT INTO documents (source_id, title, authors, organization_or_journal, year, document_type, domain, version, status)
+      VALUES (:source_id, :title, :authors, :org, :year, :dtype, :domain, :version, :status)
+      ON CONFLICT (source_id) DO UPDATE SET
+        title=EXCLUDED.title,
+        authors=EXCLUDED.authors,
+        organization_or_journal=EXCLUDED.organization_or_journal,
+        year=EXCLUDED.year,
+        document_type=EXCLUDED.document_type,
+        domain=EXCLUDED.domain,
+        version=EXCLUDED.version,
+        status=EXCLUDED.status,
+        updated_at=now()
+      RETURNING id;
+    """), {
+        "source_id": d["source_id"],
+        "title": d["title"],
+        "authors": d.get("authors"),
+        "org": d.get("organization_or_journal"),
+        "year": d.get("year"),
+        "dtype": d.get("document_type"),
+        "domain": d.get("domain"),
+        "version": d.get("version"),
+        "status": d.get("status", "active"),
+    }).scalar_one()
+    return doc_id
+
+def insert_chunks(conn, doc_id, chunks):
+    # clean existing demo chunks for idempotency
+    conn.execute(text("DELETE FROM chunks WHERE document_id = :doc_id;"), {"doc_id": doc_id})
+
+    for i, (pos, txt) in enumerate(chunks):
+        vec = embed_text(txt)
+        conn.execute(text("""
+          INSERT INTO chunks (document_id, chunk_index, text, page_or_section, evidence_level, embedding)
+          VALUES (:doc_id, :idx, :text, :pos, :evidence, :emb);
+        """), {
+            "doc_id": doc_id,
+            "idx": i,
+            "text": txt,
+            "pos": pos,
+            "evidence": None,
+            "emb": vec,
+        })
+
+def main():
+    with engine.begin() as conn:
+        for d in DEMO_DOCS:
+            doc_id = upsert_document(conn, d)
+            insert_chunks(conn, doc_id, d["chunks"])
+        conn.execute(text("ANALYZE;"))
+    print("✅ Seeded demo documents and chunks with embeddings.")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+echo "==> 9) Done. Next actions:"
+cat <<'EOF'
+1) Ensure your .env has DATABASE_URL set correctly.
+2) Install deps (Replit will do it automatically after requirements.txt changes).
+3) Seed demo data (optional but recommended now):
+     python ingestion/seed_demo.py
+4) Run the API:
+     uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+5) Test /ask:
+   POST /ask with domain "aesthetic_medicine" and a hyaluronidase/necrosis question.
+EOF

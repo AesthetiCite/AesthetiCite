@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#6366f1" />
+  <title>AesthetiCite — Offline</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --success: #10b981;
+      --warning: #f59e0b;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 48px 40px;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 25px 50px rgba(0,0,0,.4);
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 32px;
+    }
+
+    .logo-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      color: white;
+      font-weight: 700;
+    }
+
+    .logo-text {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .offline-icon {
+      width: 72px;
+      height: 72px;
+      background: rgba(99, 102, 241, 0.1);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 24px;
+      font-size: 32px;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+
+    .status-list {
+      list-style: none;
+      margin-bottom: 32px;
+      text-align: left;
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dot-green { background: var(--success); }
+    .dot-orange { background: var(--warning); }
+    .dot-red { background: #ef4444; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 14px 28px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      text-decoration: none;
+      width: 100%;
+      justify-content: center;
+      margin-bottom: 12px;
+    }
+
+    .btn:hover { background: var(--primary-dark); }
+    .btn:active { transform: scale(0.98); }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .btn-ghost:hover { background: rgba(255,255,255,.05); }
+
+    .footer-note {
+      margin-top: 24px;
+      font-size: 12px;
+      color: var(--muted);
+      opacity: 0.6;
+      line-height: 1.5;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .pulse { animation: pulse 2s ease-in-out infinite; }
+
+    #connection-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      margin-bottom: 20px;
+    }
+
+    #connection-status.online {
+      background: rgba(16, 185, 129, 0.1);
+      border-color: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+    }
+
+    @media (max-width: 480px) {
+      .card { padding: 32px 24px; border-radius: 16px; }
+      h1 { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <div class="logo-icon">⬡</div>
+      <span class="logo-text">AesthetiCite</span>
+    </div>
+
+    <div id="connection-status">
+      <span class="pulse" style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;"></span>
+      <span id="status-text">No connection</span>
+    </div>
+
+    <div class="offline-icon">📡</div>
+
+    <h1>You're offline</h1>
+    <p class="subtitle">
+      Clinical safety checks and evidence search require an internet connection.
+      Please reconnect to continue using AesthetiCite.
+    </p>
+
+    <ul class="status-list">
+      <li class="status-item">
+        <span class="status-dot dot-green"></span>
+        Cached pages available for offline viewing
+      </li>
+      <li class="status-item">
+        <span class="status-dot dot-orange"></span>
+        Evidence search requires connection
+      </li>
+      <li class="status-item">
+        <span class="status-dot dot-red"></span>
+        Safety checks require connection
+      </li>
+    </ul>
+
+    <button class="btn" onclick="handleRetry()">
+      ↺ Try again
+    </button>
+
+    <a href="/" class="btn btn-ghost">
+      ← Go to home
+    </a>
+
+    <p class="footer-note">
+      AesthetiCite — Clinical safety and evidence engine for aesthetic injectables.<br />
+      Your data is never stored offline for clinical safety reasons.
+    </p>
+  </div>
+
+  <script>
+    function updateConnectionStatus() {
+      const el = document.getElementById('connection-status');
+      const text = document.getElementById('status-text');
+      if (navigator.onLine) {
+        el.classList.add('online');
+        text.textContent = 'Connection restored';
+        setTimeout(() => { window.location.href = '/'; }, 1500);
+      } else {
+        el.classList.remove('online');
+        text.textContent = 'No connection';
+      }
+    }
+
+    function handleRetry() {
+      if (navigator.onLine) {
+        window.location.reload();
+      } else {
+        const btn = document.querySelector('.btn');
+        btn.textContent = 'Still offline — try again later';
+        btn.disabled = true;
+        setTimeout(() => {
+          btn.textContent = '↺ Try again';
+          btn.disabled = false;
+        }, 3000);
+      }
+    }
+
+    window.addEventListener('online', updateConnectionStatus);
+    window.addEventListener('offline', updateConnectionStatus);
+    updateConnectionStatus();
+  </script>
+</body>
+</html>

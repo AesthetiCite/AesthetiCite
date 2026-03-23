@@ -1,0 +1,835 @@
+{
+  "record_id": "99af898b-2a17-4a48-bc98-38bde54cc825",
+  "doi": "10.1056/NEJMoa2035389",
+  "title": "Efficacy and Safety of the mRNA-1273 SARS-CoV-2 Vaccine",
+  "journal": "New England Journal of Medicine",
+  "year": 2021,
+  "publisher_url": "https://doi.org/10.1056/nejmoa2035389",
+  "pmid": "33378609",
+  "abstract": "Vaccines are needed to prevent coronavirus disease 2019 (Covid-19) and to protect persons who are at high risk for complications. The mRNA-1273 vaccine is a lipid nanoparticle-encapsulated mRNA-based vaccine that encodes the prefusion stabilized full-length spike protein of the severe acute respiratory syndrome coronavirus 2 (SARS-CoV-2), the virus that causes Covid-19.\nThis phase 3 randomized, observer-blinded, placebo-controlled trial was conducted at 99 centers across the United States. Persons at high risk for SARS-CoV-2 infection or its complications were randomly assigned in a 1:1 ratio to receive two intramuscular injections of mRNA-1273 (100 &#x3bc;g) or placebo 28 days apart. The primary end point was prevention of Covid-19 illness with onset at least 14 days after the second injection in participants who had not previously been infected with SARS-CoV-2.\nThe trial enrolled 30,420 volunteers who were randomly assigned in a 1:1 ratio to receive either vaccine or placebo (15,210 participants in each group). More than 96% of participants received both injections, and 2.2% had evidence (serologic, virologic, or both) of SARS-CoV-2 infection at baseline. Symptomatic Covid-19 illness was confirmed in 185 participants in the placebo group (56.5 per 1000 person-years; 95% confidence interval [CI], 48.7 to 65.3) and in 11 participants in the mRNA-1273 group (3.3 per 1000 person-years; 95% CI, 1.7 to 6.0); vaccine efficacy was 94.1% (95% CI, 89.3 to 96.8%; P<0.001). Efficacy was similar across key secondary analyses, including assessment 14 days after the first dose, analyses that included participants who had evidence of SARS-CoV-2 infection at baseline, and analyses in participants 65 years of age or older. Severe Covid-19 occurred in 30 participants, with one fatality; all 30 were in the placebo group. Moderate, transient reactogenicity after vaccination occurred more frequently in the mRNA-1273 group. Serious adverse events were rare, and the incidence was similar in the two groups.\nThe mRNA-1273 vaccine showed 94.1% efficacy at preventing Covid-19 illness, including severe disease. Aside from transient local and systemic reactions, no safety concerns were identified. (Funded by the Biomedical Advanced Research and Development Authority and the National Institute of Allergy and Infectious Diseases; COVE ClinicalTrials.gov number, NCT04470427.).",
+  "crossref": {
+    "indexed": {
+      "date-parts": [
+        [
+          2026,
+          2,
+          16
+        ]
+      ],
+      "date-time": "2026-02-16T20:54:34Z",
+      "timestamp": 1771275274764,
+      "version": "3.50.1"
+    },
+    "reference-count": 28,
+    "publisher": "Massachusetts Medical Society",
+    "issue": "5",
+    "license": [
+      {
+        "start": {
+          "date-parts": [
+            [
+              2021,
+              2,
+              4
+            ]
+          ],
+          "date-time": "2021-02-04T00:00:00Z",
+          "timestamp": 1612396800000
+        },
+        "content-version": "vor",
+        "delay-in-days": 0,
+        "URL": "http://www.nejmgroup.org/legal/terms-of-use.htm"
+      }
+    ],
+    "funder": [
+      {
+        "DOI": "10.13039/100000060",
+        "name": "National Institute of Allergy and Infectious Diseases",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "ACTG Leadership and Operations Center UM1 AI 68636"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "ACTG Leadership and Operations Center UM1 AI 68636"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/100000060",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      },
+      {
+        "DOI": "10.13039/100000060",
+        "name": "National Institute of Allergy and Infectious Diseases",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "HPTN Leadership and Operations Center UM1 AI 68619"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "HPTN Leadership and Operations Center UM1 AI 68619"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/100000060",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      },
+      {
+        "DOI": "10.13039/100000060",
+        "name": "National Institute of Allergy and Infectious Diseases",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "HVTN Laboratory Center UM1 AI 68618"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "HVTN Laboratory Center UM1 AI 68618"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/100000060",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      },
+      {
+        "DOI": "10.13039/100000060",
+        "name": "National Institute of Allergy and Infectious Diseases",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "HVTN Leadership and Operations Center UM1 AI 68614"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "HVTN Leadership and Operations Center UM1 AI 68614"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/100000060",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      },
+      {
+        "DOI": "10.13039/100000060",
+        "name": "National Institute of Allergy and Infectious Diseases",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "HVTN Statistics and Data Management Center UM1 AI"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "HVTN Statistics and Data Management Center UM1 AI"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/100000060",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      },
+      {
+        "DOI": "10.13039/100000060",
+        "name": "National Institute of Allergy and Infectious Diseases",
+        "doi-asserted-by": "publisher",
+        "award": [
+          "IDCRC leadership group 5 UM1 AI148684-03"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "IDCRC leadership group 5 UM1 AI148684-03"
+            ]
+          }
+        ],
+        "id": [
+          {
+            "id": "10.13039/100000060",
+            "id-type": "DOI",
+            "asserted-by": "publisher"
+          }
+        ]
+      },
+      {
+        "name": "Federal funds from the Office of the Assistant Secretary for Preparedness and Response, Biomedical Advanced Research and Development Authority",
+        "award": [
+          "Contract No. 75A50120C00034"
+        ],
+        "award-info": [
+          {
+            "award-number": [
+              "Contract No. 75A50120C00034"
+            ]
+          }
+        ]
+      }
+    ],
+    "content-domain": {
+      "domain": [],
+      "crossmark-restriction": false
+    },
+    "short-container-title": [
+      "N Engl J Med"
+    ],
+    "published-print": {
+      "date-parts": [
+        [
+          2021,
+          2,
+          4
+        ]
+      ]
+    },
+    "DOI": "10.1056/nejmoa2035389",
+    "type": "journal-article",
+    "created": {
+      "date-parts": [
+        [
+          2020,
+          12,
+          30
+        ]
+      ],
+      "date-time": "2020-12-30T17:26:33Z",
+      "timestamp": 1609349193000
+    },
+    "page": "403-416",
+    "source": "Crossref",
+    "is-referenced-by-count": 9524,
+    "title": [
+      "Efficacy and Safety of the mRNA-1273 SARS-CoV-2 Vaccine"
+    ],
+    "prefix": "10.1056",
+    "volume": "384",
+    "author": [
+      {
+        "given": "Lindsey R.",
+        "family": "Baden",
+        "sequence": "first",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "ORCID": "https://orcid.org/0000-0003-0489-0074",
+        "authenticated-orcid": false,
+        "given": "Hana M.",
+        "family": "El Sahly",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Brandon",
+        "family": "Essink",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Karen",
+        "family": "Kotloff",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Sharon",
+        "family": "Frey",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Rick",
+        "family": "Novak",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "David",
+        "family": "Diemert",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Stephen A.",
+        "family": "Spector",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Nadine",
+        "family": "Rouphael",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "C. Buddy",
+        "family": "Creech",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "John",
+        "family": "McGettigan",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Shishir",
+        "family": "Khetan",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Nathan",
+        "family": "Segall",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Joel",
+        "family": "Solis",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Adam",
+        "family": "Brosz",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Carlos",
+        "family": "Fierro",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Howard",
+        "family": "Schwartz",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Kathleen",
+        "family": "Neuzil",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "ORCID": "https://orcid.org/0000-0002-2179-2436",
+        "authenticated-orcid": false,
+        "given": "Lawrence",
+        "family": "Corey",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Peter",
+        "family": "Gilbert",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Holly",
+        "family": "Janes",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Dean",
+        "family": "Follmann",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Mary",
+        "family": "Marovich",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "John",
+        "family": "Mascola",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Laura",
+        "family": "Polakowski",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Julie",
+        "family": "Ledgerwood",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Barney S.",
+        "family": "Graham",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Hamilton",
+        "family": "Bennett",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Rolando",
+        "family": "Pajon",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Conor",
+        "family": "Knightly",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Brett",
+        "family": "Leav",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Weiping",
+        "family": "Deng",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Honghong",
+        "family": "Zhou",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Shu",
+        "family": "Han",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Melanie",
+        "family": "Ivarsson",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Jacqueline",
+        "family": "Miller",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      },
+      {
+        "given": "Tal",
+        "family": "Zaks",
+        "sequence": "additional",
+        "affiliation": [
+          {
+            "name": "From Brigham and Women’s Hospital (L.R.B.), Boston, and Moderna, Cambridge (H.B., R.P., C.K., B.L., W.D., H.Z., S.H., M.I., J. Miller, T.Z.) — both in Massachusetts; Baylor College of Medicine (H.M.E.S.) and Centex Studies (J.S.) — both in Houston; Meridian Clinical Research, Savannah (B.E., S.K., A.B.), and Emory University (N.R.) and Atlanta Clinical Research Center (N.S.), Atlanta — all in Georgia; University of Maryland School of Medicine, Baltimore (K.K., K.N.), and National Institute of Allergy and Infectious Diseases, Bethesda (D.F., M.M., J. Mascola, L.P., J.L., B.S.G.) — both in Maryland; Saint Louis University School of Medicine, St. Louis (S.F.); University of Illinois, Chicago, Chicago (R.N.); George Washington University School of Medicine and Health Sciences, Washington, DC (D.D.); University of California, San Diego, San Diego (S.A.S.); Vanderbilt University School of Medicine, Nashville (C.B.C.); Quality of Life Medical and Research Center, Tucson, AZ (J. McGettigan); Johnson County Clin-Tr..."
+          }
+        ]
+      }
+    ],
+    "member": "150",
+    "reference": [
+      {
+        "key": "e_1_3_5_2_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa2022483"
+      },
+      {
+        "key": "e_1_3_5_3_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa2026920"
+      },
+      {
+        "key": "e_1_3_5_4_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa2027906"
+      },
+      {
+        "key": "e_1_3_5_5_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa2028436"
+      },
+      {
+        "key": "e_1_3_5_6_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/S0140-6736(20)31604-4"
+      },
+      {
+        "key": "e_1_3_5_7_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/S0140-6736(20)32466-1"
+      },
+      {
+        "key": "e_1_3_5_8_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/S1473-3099(20)30843-4"
+      },
+      {
+        "key": "e_1_3_5_9_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/S0140-6736(20)31605-6"
+      },
+      {
+        "key": "e_1_3_5_10_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/S0140-6736(20)32661-1"
+      },
+      {
+        "key": "e_1_3_5_11_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1128/JVI.00083-06"
+      },
+      {
+        "key": "e_1_3_5_12_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1177/0192623320959090"
+      },
+      {
+        "key": "e_1_3_5_13_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMp2005630"
+      },
+      {
+        "key": "e_1_3_5_14_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1038/d41573-020-00073-5"
+      },
+      {
+        "key": "e_1_3_5_15_2",
+        "unstructured": "Corbett KS Edwards D Leist SR et al. SARS-CoV-2 mRNA vaccine development enabled by prototype pathogen preparedness. June 11 2020 (https://www.biorxiv.org/content/10.1101/2020.06.11.145920v1). preprint."
+      },
+      {
+        "key": "e_1_3_5_16_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa2024671"
+      },
+      {
+        "key": "e_1_3_5_17_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa2034577"
+      },
+      {
+        "key": "e_1_3_5_18_2",
+        "unstructured": "Department of Health and Human Services Food and Drug Administration Center for Drug Evaluation and Research (CDER) Center for Biologics Evaluation and Research (CBER). Enhancing the diversity of clinical trial populations — eligibility criteria enrollment practices and trial designs: guidance for industry. November 2020 (https://www.fda.gov/media/127712/download)."
+      },
+      {
+        "key": "e_1_3_5_19_2",
+        "unstructured": "Centers for Disease Control and Prevention. Coronavirus disease 2019 (COVID 19). 2020 (https://www.cdc.gov/coronavirus/2019-ncov/need-extra-precautions/people-at-higher-risk.html)."
+      },
+      {
+        "key": "e_1_3_5_20_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/S1473-3099(11)70295-X"
+      },
+      {
+        "key": "e_1_3_5_21_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1093/cid/cir750"
+      },
+      {
+        "key": "e_1_3_5_22_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1056/NEJMoa1603800"
+      },
+      {
+        "key": "e_1_3_5_23_2",
+        "first-page": "1576",
+        "article-title": "Adjuvanted herpes zoster subunit vaccine in older adults.",
+        "volume": "373",
+        "author": "Lal H",
+        "year": "2015",
+        "unstructured": "Lal H, Cunningham AL, Heineman TC. Adjuvanted herpes zoster subunit vaccine in older adults. N Engl J Med 2015;373:1576-1577.26465999",
+        "journal-title": "N Engl J Med"
+      },
+      {
+        "key": "e_1_3_5_24_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1080/21645515.2016.1177688"
+      },
+      {
+        "key": "e_1_3_5_25_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1128/JVI.06048-11"
+      },
+      {
+        "key": "e_1_3_5_26_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1371/journal.pone.0035421"
+      },
+      {
+        "key": "e_1_3_5_27_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1016/j.vaccine.2020.10.064"
+      },
+      {
+        "key": "e_1_3_5_28_2",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1038/s41586-020-2608-y"
+      },
+      {
+        "key": "e_1_3_5_29_2",
+        "unstructured": "Vogel AB Kanevsky I Che Y et al. A prefusion SARS-CoV-2 spike RNA vaccine is highly immunogenic and prevents lung infection in non-human primates. September 8 2020 (https://www.biorxiv.org/content/10.1101/2020.09.08.280818v1). preprint."
+      }
+    ],
+    "container-title": [
+      "New England Journal of Medicine"
+    ],
+    "original-title": [],
+    "language": "en",
+    "link": [
+      {
+        "URL": "http://www.nejm.org/doi/pdf/10.1056/NEJMoa2035389",
+        "content-type": "unspecified",
+        "content-version": "vor",
+        "intended-application": "similarity-checking"
+      }
+    ],
+    "deposited": {
+      "date-parts": [
+        [
+          2025,
+          6,
+          11
+        ]
+      ],
+      "date-time": "2025-06-11T18:29:56Z",
+      "timestamp": 1749666596000
+    },
+    "score": 1,
+    "resource": {
+      "primary": {
+        "URL": "http://www.nejm.org/doi/10.1056/NEJMoa2035389"
+      }
+    },
+    "subtitle": [],
+    "short-title": [],
+    "issued": {
+      "date-parts": [
+        [
+          2021,
+          2,
+          4
+        ]
+      ]
+    },
+    "references-count": 28,
+    "journal-issue": {
+      "issue": "5",
+      "published-print": {
+        "date-parts": [
+          [
+            2021,
+            2,
+            4
+          ]
+        ]
+      }
+    },
+    "alternative-id": [
+      "10.1056/NEJMoa2035389"
+    ],
+    "URL": "https://doi.org/10.1056/nejmoa2035389",
+    "relation": {},
+    "ISSN": [
+      "0028-4793",
+      "1533-4406"
+    ],
+    "issn-type": [
+      {
+        "value": "0028-4793",
+        "type": "print"
+      },
+      {
+        "value": "1533-4406",
+        "type": "electronic"
+      }
+    ],
+    "subject": [],
+    "published": {
+      "date-parts": [
+        [
+          2021,
+          2,
+          4
+        ]
+      ]
+    }
+  },
+  "unpaywall": {
+    "error": "UNPAYWALL_EMAIL not set"
+  }
+}

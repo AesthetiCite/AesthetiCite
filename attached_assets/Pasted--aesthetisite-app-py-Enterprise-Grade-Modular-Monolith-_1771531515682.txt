@@ -1,0 +1,199 @@
+# aesthetisite_app.py
+# Enterprise-Grade Modular Monolith Architecture
+# Implements:
+# - Governance pipeline
+# - Retrieval weighting
+# - Intent-aware logic
+# - LLM abstraction
+# - Audit logging
+# - Domain segmentation
+# - Security hardening
+# - Background ingestion queue
+# - Admin governance endpoint
+
+import os, json, time, re, hashlib, asyncio
+from typing import Dict, Any, List
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+# =====================================================
+# CONFIG
+# =====================================================
+
+MAX_QUESTION_LENGTH = 1200
+ALLOWED_LANGS = {"en", "fr", "es", "ar"}
+
+# Domain weights
+DOMAIN_WEIGHTS = {
+    "aesthetic_core": 1.0,
+    "plastic_surgery": 0.8,
+    "dermatology": 0.6,
+    "general_medicine": 0.4,
+}
+
+# =====================================================
+# MODELS
+# =====================================================
+
+class AskBody(BaseModel):
+    q: str
+    conversation_id: str
+    lang: str | None = None
+
+# =====================================================
+# LLM ABSTRACTION LAYER
+# =====================================================
+
+class LLMService:
+    def __init__(self):
+        self.model = os.getenv("COMPOSE_MODEL", "gpt-4o-mini")
+
+    async def generate(self, prompt: str) -> str:
+        # Replace with real proxy call
+        return f"Generated answer using {self.model}\n\n{prompt[:500]}..."
+
+llm_service = LLMService()
+
+# =====================================================
+# SECURITY HARDENING
+# =====================================================
+
+def sanitize_input(q: str) -> str:
+    if len(q) > MAX_QUESTION_LENGTH:
+        raise HTTPException(400, "Question too long")
+    q = re.sub(r"(system:|assistant:)", "", q, flags=re.I)
+    return q.strip()
+
+# =====================================================
+# INTENT DETECTION
+# =====================================================
+
+def detect_intent(q: str) -> str:
+    ql = q.lower()
+    if any(k in ql for k in ["occlusion", "necrosis", "complication"]):
+        return "complication"
+    if any(k in ql for k in ["dose", "units", "dilution"]):
+        return "dosing"
+    return "general"
+
+# =====================================================
+# RETRIEVAL LAYER (Mock)
+# =====================================================
+
+async def retrieve_documents(q: str, intent: str) -> List[Dict]:
+    # Simulated retrieval output
+    docs = [
+        {"sid": "S1", "domain": "aesthetic_core", "evidence_rank": 1, "year": 2023},
+        {"sid": "S2", "domain": "plastic_surgery", "evidence_rank": 2, "year": 2021},
+        {"sid": "S3", "domain": "dermatology", "evidence_rank": 4, "year": 2019},
+    ]
+    return rerank_documents(docs, intent)
+
+def rerank_documents(docs: List[Dict], intent: str) -> List[Dict]:
+    def score(d):
+        base = DOMAIN_WEIGHTS.get(d["domain"], 0.5)
+        evidence_bonus = (10 - d["evidence_rank"]) / 10
+        recency_bonus = (d["year"] - 2000) / 50
+        intent_boost = 0.2 if intent == "complication" and d["evidence_rank"] <= 2 else 0
+        return base + evidence_bonus + recency_bonus + intent_boost
+
+    docs.sort(key=score, reverse=True)
+    return docs
+
+# =====================================================
+# ACI SCORING
+# =====================================================
+
+def compute_aci(docs: List[Dict]) -> Dict:
+    if not docs:
+        return {"score": 0, "gaps": ["No evidence retrieved"]}
+
+    best = min(d["evidence_rank"] for d in docs)
+    support = len(docs)
+    score = min(10, 6 + (3 if best <= 2 else 1) + min(1, support / 10))
+
+    gaps = []
+    if best > 3:
+        gaps.append("No high-level evidence identified")
+    if support < 3:
+        gaps.append("Limited supporting sources")
+
+    return {"score": round(score, 1), "gaps": gaps}
+
+# =====================================================
+# GOVERNANCE PIPELINE
+# =====================================================
+
+async def governance_pipeline(question: str, lang: str):
+    question = sanitize_input(question)
+
+    intent = detect_intent(question)
+    docs = await retrieve_documents(question, intent)
+    aci = compute_aci(docs)
+
+    prompt = f"""
+    Language: {lang}
+    Question: {question}
+    Evidence score: {aci['score']}
+    """
+
+    answer = await llm_service.generate(prompt)
+
+    citation_density = 1.0  # assume valid for mock
+
+    log_governance_event(question, docs, aci, citation_density)
+
+    return {
+        "answer": answer,
+        "aci": aci,
+        "sources": docs,
+        "citation_density": citation_density,
+    }
+
+# =====================================================
+# GOVERNANCE LOGGING
+# =====================================================
+
+GOVERNANCE_LOGS = []
+
+def log_governance_event(q, docs, aci, density):
+    GOVERNANCE_LOGS.append({
+        "timestamp": time.time(),
+        "question": q,
+        "source_ids": [d["sid"] for d in docs],
+        "aci_score": aci["score"],
+        "citation_density": density,
+        "hash": hashlib.sha256(q.encode()).hexdigest()
+    })
+
+# =====================================================
+# BACKGROUND INGESTION QUEUE
+# =====================================================
+
+INGEST_QUEUE = asyncio.Queue()
+
+async def background_worker():
+    while True:
+        item = await INGEST_QUEUE.get()
+        await asyncio.sleep(0.5)
+        INGEST_QUEUE.task_done()
+
+# =====================================================
+# FASTAPI APP
+# =====================================================
+
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(background_worker())
+
+@app.post("/ask")
+async def ask(body: AskBody):
+    lang = body.lang if body.lang in ALLOWED_LANGS else "en"
+    result = await governance_pipeline(body.q, lang)
+    return result
+
+@app.get("/admin/governance-logs")
+async def governance_logs():
+    return {"logs": GOVERNANCE_LOGS}

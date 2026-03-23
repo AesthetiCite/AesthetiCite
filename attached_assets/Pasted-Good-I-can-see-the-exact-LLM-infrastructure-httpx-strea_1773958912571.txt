@@ -1,0 +1,25 @@
+Good. I can see the exact LLM infrastructure — httpx streaming to an AI proxy, SSE format, JSON mode. The existing build_reasoning() in clinical_decision.py is deterministic keyword matching. The build plan wants real LLM reasoning. I'll build the streaming backend + the UI component, designed so the workflow loads instantly while the reasoning streams in parallel.Created 3 files, read a fileCreated 3 files, read a file3 files. Here's what was built and the one design decision that matters most.
+
+The parallel fetch architecture is the critical insight.
+The build plan shows reasoning as a sequential step — query → reasoning → workflow. That would add 2–4 seconds of latency to the main path. Instead:
+
+/api/decide fires and returns the workflow in < 300ms (deterministic, cached)
+/api/reasoning/stream fires at the same time and streams LLM reasoning into its own card
+The clinician sees the workflow and can start acting on it immediately
+The reasoning section fills in as the LLM generates, appearing ~2 seconds later
+
+The doctor never waits. The reasoning section is enrichment, not a gate.
+
+What the LLM does that the deterministic version couldn't:
+The previous build_reasoning() in clinical_decision.py used keyword matching — if "blanching" was in the query, confidence was "high". That produced reasonable results but identical outputs for different cases.
+The new prompt:
+
+Passes the actual region, procedure, product, and time-since-injection to the model
+Injects the top-3 retrieved evidence chunks as grounding context, so the reasoning references real papers
+Forces the model to explain why each differential is excluded (not just list alternatives)
+Uses response_format: json_object (GPT-4o JSON mode) — guaranteed parseable, no regex needed
+Uses temperature: 0.15 — consistent, not variable between runs
+Uses gpt-4o not gpt-4o-mini — clinical reasoning needs the full model
+
+The 8-field output vs the build plan's 4:
+The build plan specified diagnosis, reasoning[], differentials[], confidence. The implementation adds confidence_why, key_signs, against_signs, red_flags, limitations, evidence_refs. The supporting/against signs split is directly how clinicians think — SOCRATES-style assessment. The limitations field forces the model to be honest when information is missing rather than confidently hallucinating.

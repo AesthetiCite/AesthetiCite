@@ -1,0 +1,245 @@
+# VERIDOC TOOLS PATCH (Backend)
+# Adds:
+# - POST /tools/interactions  (RxNav interaction check)
+# - POST /tools/calculators/bmi
+# - POST /tools/calculators/bsa
+# - POST /tools/calculators/cockcroft-gault
+# - POST /tools/calculators/unit-convert
+# - POST /tools/dose/mgkg  (generic mg/kg calculator only)
+#
+# Notes:
+# - Interaction check uses NIH RxNav public API (requires outbound internet from your backend runtime).
+# - If your Replit runtime blocks outbound calls, the endpoint will return a clear error.
+# - Dosing tool here is generic math only (no drug-specific clinical recommendations).
+#
+# Paste into backend Replit AI Agent.
+
+set -e
+mkdir -p app/api app/schemas app/core
+
+python - <<'PY'
+from pathlib import Path
+req = Path("requirements.txt").read_text().splitlines()
+if "httpx==0.27.2" not in req:
+    req.append("httpx==0.27.2")
+Path("requirements.txt").write_text("\n".join([r for r in req if r.strip()]) + "\n")
+print("✅ requirements updated")
+PY
+
+cat > app/schemas/tools.py <<'PY'
+from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
+
+class InteractionRequest(BaseModel):
+    # free text names, e.g. ["ibuprofen", "warfarin"]
+    drugs: List[str] = Field(..., min_length=2, max_length=12)
+
+class InteractionFinding(BaseModel):
+    severity: Optional[str] = None
+    description: str
+    source: Optional[str] = None
+
+class InteractionResponse(BaseModel):
+    ok: bool
+    drugs: List[str]
+    findings: List[InteractionFinding]
+    disclaimer: str
+
+class BMIRequest(BaseModel):
+    weight_kg: float = Field(..., gt=0)
+    height_cm: float = Field(..., gt=0)
+
+class BSARequest(BaseModel):
+    weight_kg: float = Field(..., gt=0)
+    height_cm: float = Field(..., gt=0)
+    method: Literal["mosteller"] = "mosteller"
+
+class CockcroftGaultRequest(BaseModel):
+    age_years: int = Field(..., ge=1, le=120)
+    weight_kg: float = Field(..., gt=0)
+    serum_creatinine_mg_dl: float = Field(..., gt=0)
+    sex: Literal["male","female"]
+
+class UnitConvertRequest(BaseModel):
+    value: float
+    from_unit: Literal["mcg","mg","g","ml","l"]
+    to_unit: Literal["mcg","mg","g","ml","l"]
+
+class MgKgDoseRequest(BaseModel):
+    dose_mg_per_kg: float = Field(..., gt=0)
+    weight_kg: float = Field(..., gt=0)
+
+class GenericCalcResponse(BaseModel):
+    ok: bool
+    result: float
+    unit: Optional[str] = None
+    details: Optional[dict] = None
+    disclaimer: str
+PY
+
+cat > app/api/tools.py <<'PY'
+from __future__ import annotations
+from fastapi import APIRouter, HTTPException
+import math
+import httpx
+from typing import List
+
+from app.schemas.tools import (
+    InteractionRequest, InteractionResponse, InteractionFinding,
+    BMIRequest, BSARequest, CockcroftGaultRequest, UnitConvertRequest, MgKgDoseRequest,
+    GenericCalcResponse
+)
+
+router = APIRouter(prefix="/tools", tags=["tools"])
+
+DISCLAIMER = (
+    "Clinical decision support only. Verify with local protocols and authoritative sources. "
+    "This tool does not replace clinical judgment."
+)
+
+# ---------- Drug interaction check (NIH RxNav) ----------
+RXNAV_BASE = "https://rxnav.nlm.nih.gov/REST"
+
+async def _rxnorm_ids_for_name(name: str) -> List[str]:
+    # RxNav: approximateTerm?term=... returns rxnormIds (if found)
+    url = f"{RXNAV_BASE}/approximateTerm.json"
+    params = {"term": name, "maxEntries": 3}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+    ids = []
+    for cand in data.get("approximateGroup", {}).get("candidate", []) or []:
+        rid = cand.get("rxcui")
+        if rid:
+            ids.append(rid)
+    return ids
+
+async def _interactions_for_rxcuis(rxcuis: List[str]) -> List[InteractionFinding]:
+    # RxNav interaction endpoint: interaction/list.json?rxcuis=...
+    url = f"{RXNAV_BASE}/interaction/list.json"
+    params = {"rxcuis": "+".join(rxcuis)}
+    async with httpx.AsyncClient(timeout=25) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    findings: List[InteractionFinding] = []
+    # Parse groups → interactionPair
+    groups = data.get("fullInteractionTypeGroup", []) or []
+    for g in groups:
+        src = g.get("sourceName")
+        for fit in g.get("fullInteractionType", []) or []:
+            for pair in fit.get("interactionPair", []) or []:
+                desc = pair.get("description") or ""
+                sev = pair.get("severity") or None
+                if desc:
+                    findings.append(InteractionFinding(severity=sev, description=desc, source=src))
+    return findings
+
+@router.post("/interactions", response_model=InteractionResponse)
+async def interactions(payload: InteractionRequest):
+    # Resolve each drug to RxCUI(s)
+    all_rxcuis: List[str] = []
+    for d in payload.drugs:
+        ids = await _rxnorm_ids_for_name(d)
+        if ids:
+            all_rxcuis.extend(ids[:1])  # keep best match
+    if len(all_rxcuis) < 2:
+        raise HTTPException(status_code=400, detail="Could not resolve enough drugs to RxNorm identifiers.")
+
+    findings = await _interactions_for_rxcuis(all_rxcuis)
+    # Keep response readable: de-duplicate descriptions
+    seen = set()
+    deduped = []
+    for f in findings:
+        key = (f.severity, f.description)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+
+    return InteractionResponse(ok=True, drugs=payload.drugs, findings=deduped, disclaimer=DISCLAIMER)
+
+# ---------- Calculators ----------
+@router.post("/calculators/bmi", response_model=GenericCalcResponse)
+def bmi(payload: BMIRequest):
+    h_m = payload.height_cm / 100.0
+    result = payload.weight_kg / (h_m * h_m)
+    return GenericCalcResponse(ok=True, result=round(result, 2), unit="kg/m^2", disclaimer=DISCLAIMER)
+
+@router.post("/calculators/bsa", response_model=GenericCalcResponse)
+def bsa(payload: BSARequest):
+    # Mosteller: sqrt((cm*kg)/3600)
+    result = math.sqrt((payload.height_cm * payload.weight_kg) / 3600.0)
+    return GenericCalcResponse(ok=True, result=round(result, 3), unit="m^2", disclaimer=DISCLAIMER)
+
+@router.post("/calculators/cockcroft-gault", response_model=GenericCalcResponse)
+def cockcroft_gault(payload: CockcroftGaultRequest):
+    # CrCl (mL/min) = ((140 - age) * weight) / (72 * SCr) * (0.85 if female)
+    crcl = ((140 - payload.age_years) * payload.weight_kg) / (72.0 * payload.serum_creatinine_mg_dl)
+    if payload.sex == "female":
+        crcl *= 0.85
+    return GenericCalcResponse(
+        ok=True,
+        result=round(crcl, 1),
+        unit="mL/min",
+        details={"formula": "Cockcroft–Gault"},
+        disclaimer=DISCLAIMER
+    )
+
+@router.post("/calculators/unit-convert", response_model=GenericCalcResponse)
+def unit_convert(payload: UnitConvertRequest):
+    # Simple mass: mcg <-> mg <-> g ; volume: ml <-> l
+    mass = {"mcg": 1e-6, "mg": 1e-3, "g": 1.0}
+    vol = {"ml": 1e-3, "l": 1.0}
+
+    if payload.from_unit in mass and payload.to_unit in mass:
+        base_g = payload.value * mass[payload.from_unit]
+        out = base_g / mass[payload.to_unit]
+        return GenericCalcResponse(ok=True, result=out, unit=payload.to_unit, disclaimer=DISCLAIMER)
+
+    if payload.from_unit in vol and payload.to_unit in vol:
+        base_l = payload.value * vol[payload.from_unit]
+        out = base_l / vol[payload.to_unit]
+        return GenericCalcResponse(ok=True, result=out, unit=payload.to_unit, disclaimer=DISCLAIMER)
+
+    raise HTTPException(status_code=400, detail="Incompatible units (mass vs volume).")
+
+# ---------- Generic dosing math (no drug-specific guidance) ----------
+@router.post("/dose/mgkg", response_model=GenericCalcResponse)
+def dose_mgkg(payload: MgKgDoseRequest):
+    total_mg = payload.dose_mg_per_kg * payload.weight_kg
+    return GenericCalcResponse(
+        ok=True,
+        result=round(total_mg, 3),
+        unit="mg",
+        details={"dose_mg_per_kg": payload.dose_mg_per_kg, "weight_kg": payload.weight_kg},
+        disclaimer=DISCLAIMER
+    )
+PY
+
+echo "==> 2) Wire router into app/main.py"
+python - <<'PY'
+from pathlib import Path
+p = Path("app/main.py")
+txt = p.read_text()
+if "tools_router" not in txt:
+    # add import
+    if "from app.api.tools import router as tools_router" not in txt:
+        txt = txt.replace(
+            "from app.api.analytics import router as analytics_router",
+            "from app.api.analytics import router as analytics_router\nfrom app.api.tools import router as tools_router"
+        )
+    # include router
+    if "app.include_router(tools_router)" not in txt:
+        txt = txt.replace(
+            "app.include_router(analytics_router)",
+            "app.include_router(analytics_router)\napp.include_router(tools_router)"
+        )
+p.write_text(txt)
+print("✅ tools router wired")
+PY
+
+echo "==> DONE. Restart backend:"
+echo "uvicorn app.main:app --host 0.0.0.0 --port 8000"

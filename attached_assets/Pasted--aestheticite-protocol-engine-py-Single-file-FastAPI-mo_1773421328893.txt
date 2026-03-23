@@ -1,0 +1,1006 @@
+# aestheticite_protocol_engine.py
+#
+# Single-file FastAPI module for:
+# 1) Structured emergency protocols for:
+#    - vascular occlusion
+#    - anaphylaxis
+#    - Tyndall effect
+#    - ptosis
+# 2) Live evidence hook
+# 3) One-click "Protocol + Evidence + PDF export"
+#
+# Requirements:
+#   pip install fastapi pydantic reportlab
+#
+# How to use:
+#   from aestheticite_protocol_engine import router as protocol_router
+#   app.include_router(protocol_router)
+#
+# Endpoints:
+#   POST /api/protocols/run         -> JSON protocol + evidence
+#   POST /api/protocols/export-pdf  -> generates PDF and returns file path + download URL hint
+#
+# Notes:
+# - Replace DummyEvidenceRetriever with your real RAG / citation layer.
+# - The PDF export is intentionally simple, clinical, and print-friendly.
+# - This is decision support, not a substitute for clinician judgment.
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen import canvas
+
+router = APIRouter(prefix="/api/protocols", tags=["AesthetiCite Protocol Engine"])
+
+# ---------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------
+
+ENGINE_VERSION = "1.0.0"
+PROTOCOL_REVISION = "2026-03-13"
+EXPORT_DIR = os.environ.get("AESTHETICITE_EXPORT_DIR", "exports")
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+SeverityLevel = Literal["low", "moderate", "high", "critical"]
+UrgencyLevel = Literal["routine", "same_day", "urgent", "immediate"]
+EvidenceStrength = Literal["limited", "moderate", "strong"]
+
+
+# ---------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------
+
+class ClinicalContext(BaseModel):
+    region: Optional[str] = None
+    product_type: Optional[str] = None
+    symptoms: List[str] = Field(default_factory=list)
+    time_since_injection_minutes: Optional[int] = None
+    visual_symptoms: Optional[bool] = None
+    skin_color_change: Optional[str] = None
+    pain_score_10: Optional[int] = Field(default=None, ge=0, le=10)
+
+    tenderness: Optional[bool] = None
+    warmth: Optional[bool] = None
+    erythema: Optional[bool] = None
+    capillary_refill_delayed: Optional[bool] = None
+
+    wheeze: Optional[bool] = None
+    hypotension: Optional[bool] = None
+    facial_or_tongue_swelling: Optional[bool] = None
+    generalized_urticaria: Optional[bool] = None
+
+    eyelid_droop: Optional[bool] = None
+    brow_heaviness: Optional[bool] = None
+    diplopia: Optional[bool] = None
+
+    filler_confirmed_ha: Optional[bool] = None
+    toxin_recent: Optional[bool] = None
+
+    free_text: Optional[str] = None
+
+
+class ProtocolRequest(BaseModel):
+    query: str = Field(..., min_length=3)
+    context: Optional[ClinicalContext] = None
+    clinician_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    mode: Literal["decision_support", "emergency", "teaching"] = "decision_support"
+
+
+class EvidenceItem(BaseModel):
+    source_id: str
+    title: str
+    note: str
+    citation_text: Optional[str] = None
+    source_type: Optional[str] = None
+    relevance_score: Optional[float] = None
+
+
+class ProtocolStep(BaseModel):
+    step_number: int
+    action: str
+    rationale: str
+    priority: Literal["primary", "secondary"] = "primary"
+
+
+class DoseGuidance(BaseModel):
+    substance: str
+    recommendation: str
+    notes: str
+
+
+class RiskAssessment(BaseModel):
+    risk_score: int = Field(..., ge=0, le=100)
+    severity: SeverityLevel
+    urgency: UrgencyLevel
+    likely_time_critical: bool
+    evidence_strength: EvidenceStrength
+
+
+class ProtocolResponse(BaseModel):
+    request_id: str
+    engine_version: str
+    protocol_revision: str
+    generated_at_utc: str
+
+    matched_protocol_key: str
+    matched_protocol_name: str
+    confidence: float
+
+    risk_assessment: RiskAssessment
+    clinical_summary: str
+    immediate_actions: List[ProtocolStep]
+    dose_guidance: List[DoseGuidance]
+    red_flags: List[str]
+    escalation: List[str]
+    monitoring: List[str]
+    limitations: List[str]
+    follow_up_questions: List[str]
+    evidence: List[EvidenceItem]
+    disclaimer: str
+
+
+class ExportPDFResponse(BaseModel):
+    request_id: str
+    pdf_path: str
+    filename: str
+
+
+# ---------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def joined_context_text(context: Optional[ClinicalContext]) -> str:
+    if not context:
+        return ""
+    parts: List[str] = []
+    if context.region:
+        parts.append(context.region)
+    if context.product_type:
+        parts.append(context.product_type)
+    if context.symptoms:
+        parts.extend(context.symptoms)
+    if context.free_text:
+        parts.append(context.free_text)
+    return normalize(" ".join(parts))
+
+
+# ---------------------------------------------------------------------
+# Evidence adapter
+# Replace this with your real retrieval layer
+# ---------------------------------------------------------------------
+
+class EvidenceRetriever:
+    def retrieve(self, protocol_key: str, query: str, context: Optional[ClinicalContext]) -> List[EvidenceItem]:
+        raise NotImplementedError
+
+
+class DummyEvidenceRetriever(EvidenceRetriever):
+    def retrieve(self, protocol_key: str, query: str, context: Optional[ClinicalContext]) -> List[EvidenceItem]:
+        data: Dict[str, List[EvidenceItem]] = {
+            "vascular_occlusion": [
+                EvidenceItem(
+                    source_id="S1",
+                    title="Expert consensus on management of vascular occlusion after HA fillers",
+                    note="Supports urgent territory-based hyaluronidase treatment and repeated reassessment.",
+                    citation_text="High-dose pulsed hyaluronidase is central to early management of HA filler-related ischemia.",
+                    source_type="consensus_review",
+                    relevance_score=0.97,
+                ),
+                EvidenceItem(
+                    source_id="S2",
+                    title="Clinical guidance for visual symptoms after filler injection",
+                    note="Supports immediate emergency escalation for ocular symptoms.",
+                    citation_text="Any visual symptom after filler injection should be treated as an emergency.",
+                    source_type="guideline_review",
+                    relevance_score=0.98,
+                ),
+            ],
+            "anaphylaxis": [
+                EvidenceItem(
+                    source_id="S10",
+                    title="Emergency management principles for anaphylaxis",
+                    note="Supports immediate intramuscular epinephrine as first-line treatment.",
+                    citation_text="Prompt intramuscular epinephrine is the first-line treatment for anaphylaxis.",
+                    source_type="guideline",
+                    relevance_score=0.99,
+                ),
+                EvidenceItem(
+                    source_id="S11",
+                    title="Observation and escalation guidance after anaphylaxis",
+                    note="Supports emergency transfer, airway assessment, and observation.",
+                    citation_text="Airway, breathing, and circulation should be assessed urgently, with emergency transfer.",
+                    source_type="guideline",
+                    relevance_score=0.95,
+                ),
+            ],
+            "tyndall_effect": [
+                EvidenceItem(
+                    source_id="S20",
+                    title="Superficial HA filler placement and Tyndall effect",
+                    note="Supports conservative targeted reversal when cosmetically indicated.",
+                    citation_text="Low-volume targeted hyaluronidase may correct superficial HA filler-related bluish discoloration.",
+                    source_type="review",
+                    relevance_score=0.90,
+                ),
+            ],
+            "ptosis_after_toxin": [
+                EvidenceItem(
+                    source_id="S30",
+                    title="Botulinum toxin adverse effects and eyelid ptosis management",
+                    note="Supports recognition of toxin diffusion-related ptosis and symptomatic management.",
+                    citation_text="Eyelid ptosis after botulinum toxin is usually temporary and may be managed symptomatically.",
+                    source_type="review",
+                    relevance_score=0.91,
+                ),
+            ],
+        }
+        return data.get(protocol_key, [])
+
+
+evidence_retriever: EvidenceRetriever = DummyEvidenceRetriever()
+
+
+# ---------------------------------------------------------------------
+# Protocol library
+# ---------------------------------------------------------------------
+
+PROTOCOL_LIBRARY: Dict[str, Dict[str, Any]] = {
+    "vascular_occlusion": {
+        "name": "Suspected vascular occlusion after hyaluronic acid filler",
+        "base_severity": "critical",
+        "base_urgency": "immediate",
+        "evidence_strength": "moderate",
+        "summary": (
+            "This presentation is concerning for impending or established vascular compromise after hyaluronic acid filler. "
+            "Time-critical intervention is required to reduce the risk of tissue necrosis. Any visual symptom requires "
+            "immediate emergency escalation."
+        ),
+        "keywords": [
+            "vascular occlusion", "blanching", "mottling", "livedo", "ischemia",
+            "dusky", "violaceous", "pain after filler", "capillary refill", "ha filler",
+        ],
+        "steps": [
+            {
+                "action": "Stop injection immediately and do not place additional filler.",
+                "rationale": "Further injection may worsen intravascular obstruction and ischemia.",
+                "priority": "primary",
+            },
+            {
+                "action": "Assess capillary refill, skin color, temperature, pain, and the full territory of blanching or livedo.",
+                "rationale": "This defines extent and progression of tissue compromise.",
+                "priority": "primary",
+            },
+            {
+                "action": "Massage the area and apply warm compresses if not contraindicated.",
+                "rationale": "This may support vasodilation and local dispersion.",
+                "priority": "secondary",
+            },
+            {
+                "action": "Administer high-dose hyaluronidase promptly across the affected vascular territory.",
+                "rationale": "Rapid HA filler breakdown is the key reversible intervention.",
+                "priority": "primary",
+            },
+            {
+                "action": "Reassess perfusion and repeat hyaluronidase if ischemic signs persist.",
+                "rationale": "Persistent blanching, pain, or delayed refill suggests ongoing obstruction.",
+                "priority": "primary",
+            },
+            {
+                "action": "Escalate immediately if visual symptoms are present.",
+                "rationale": "Ocular ischemia is an emergency.",
+                "priority": "primary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": (
+                    "Use high-dose pulsed treatment. A practical starting point is at least 500 IU per affected ischemic area, "
+                    "with many expert protocols using 500 to 1500 IU or more depending on extent, repeated at short intervals "
+                    "until reperfusion improves."
+                ),
+                "notes": "Inject across the full compromised vascular territory rather than only at the original injection point.",
+            },
+            {
+                "substance": "Aspirin",
+                "recommendation": "Consider according to clinician judgment and local protocol when not contraindicated.",
+                "notes": "Use depends on bleeding risk and local practice.",
+            },
+        ],
+        "red_flags": [
+            "Visual disturbance, blurred vision, diplopia, vision loss",
+            "Severe escalating pain",
+            "Rapidly spreading blanching or livedo",
+            "Delayed or absent capillary refill",
+            "Dusky or violaceous discoloration",
+        ],
+        "escalation": [
+            "Immediate ophthalmology / emergency referral for any visual symptom",
+            "Urgent senior clinician review if reperfusion does not improve after initial treatment",
+            "Emergency department referral if tissue compromise is progressive or extensive",
+        ],
+        "monitoring": [
+            "Reassess capillary refill every 15 to 30 minutes initially",
+            "Track pain progression and skin color changes",
+            "Repeat photographs after each treatment cycle",
+        ],
+        "limitations": [
+            "Evidence is based largely on expert consensus and review literature rather than randomized trials",
+            "Optimal hyaluronidase dose and interval are not fully standardized",
+        ],
+        "follow_up_questions": [
+            "Was the product definitely hyaluronic acid filler?",
+            "Which anatomical region was injected?",
+            "Are there visual symptoms?",
+            "How many minutes have passed since injection?",
+        ],
+    },
+    "anaphylaxis": {
+        "name": "Suspected anaphylaxis after aesthetic treatment",
+        "base_severity": "critical",
+        "base_urgency": "immediate",
+        "evidence_strength": "strong",
+        "summary": (
+            "This presentation is concerning for anaphylaxis. Immediate recognition and emergency treatment are required. "
+            "Airway, breathing, and circulation must be assessed without delay."
+        ),
+        "keywords": [
+            "anaphylaxis", "allergic reaction", "hypotension", "wheeze", "stridor",
+            "tongue swelling", "facial swelling", "urticaria", "collapse", "breathing difficulty",
+        ],
+        "steps": [
+            {
+                "action": "Stop the procedure immediately and call for emergency assistance.",
+                "rationale": "Anaphylaxis is a medical emergency requiring immediate team response.",
+                "priority": "primary",
+            },
+            {
+                "action": "Assess airway, breathing, circulation, mental status, and oxygen saturation if available.",
+                "rationale": "Rapid ABC assessment identifies life-threatening compromise.",
+                "priority": "primary",
+            },
+            {
+                "action": "Administer intramuscular epinephrine promptly according to emergency protocol.",
+                "rationale": "Epinephrine is the first-line treatment for anaphylaxis.",
+                "priority": "primary",
+            },
+            {
+                "action": "Place the patient supine with legs elevated unless contraindicated by breathing difficulty or vomiting.",
+                "rationale": "This supports circulation and reduces risk of collapse.",
+                "priority": "secondary",
+            },
+            {
+                "action": "Provide high-flow oxygen if available and establish emergency transfer.",
+                "rationale": "Respiratory and hemodynamic deterioration can be rapid.",
+                "priority": "primary",
+            },
+            {
+                "action": "Repeat epinephrine if symptoms persist or worsen according to emergency protocol.",
+                "rationale": "Refractory symptoms may require repeated dosing.",
+                "priority": "primary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Epinephrine (IM)",
+                "recommendation": "Use immediate intramuscular epinephrine according to adult emergency anaphylaxis protocol.",
+                "notes": "Follow local resuscitation policy, dose chart, and device availability.",
+            },
+            {
+                "substance": "Adjunctive medications",
+                "recommendation": "Adjuncts do not replace epinephrine.",
+                "notes": "Airway and hemodynamic stabilization take priority over antihistamines or steroids.",
+            },
+        ],
+        "red_flags": [
+            "Airway swelling",
+            "Wheeze or stridor",
+            "Hypotension or collapse",
+            "Rapid progression of symptoms",
+            "Generalized urticaria with respiratory or cardiovascular involvement",
+        ],
+        "escalation": [
+            "Immediate emergency medical transfer",
+            "Urgent airway support if swelling or respiratory compromise is present",
+            "Observe after stabilization according to emergency protocol because biphasic reactions may occur",
+        ],
+        "monitoring": [
+            "Continuous observation of airway, breathing, circulation, and mental status",
+            "Repeat vital signs frequently",
+            "Document exact times of symptom onset and each medication given",
+        ],
+        "limitations": [
+            "Follow local emergency resuscitation and anaphylaxis policy",
+            "This tool does not replace formal emergency protocols or clinician training",
+        ],
+        "follow_up_questions": [
+            "Is there airway swelling or breathing difficulty?",
+            "Is the patient hypotensive or collapsed?",
+            "Was epinephrine already given?",
+        ],
+    },
+    "tyndall_effect": {
+        "name": "Suspected Tyndall effect after superficial hyaluronic acid filler",
+        "base_severity": "low",
+        "base_urgency": "routine",
+        "evidence_strength": "moderate",
+        "summary": (
+            "This presentation is consistent with superficial HA filler causing bluish or blue-gray discoloration. "
+            "It is usually not an emergency, but ischemia must first be excluded."
+        ),
+        "keywords": [
+            "tyndall", "blue discoloration", "blue-gray", "bluish under eyes",
+            "superficial filler", "tear trough blue",
+        ],
+        "steps": [
+            {
+                "action": "Confirm there are no ischemic features such as pain, blanching, livedo, or delayed capillary refill.",
+                "rationale": "Tyndall effect must be distinguished from vascular compromise.",
+                "priority": "primary",
+            },
+            {
+                "action": "Assess whether superficial HA filler placement is the likely cause.",
+                "rationale": "Management depends on product identity and filler depth.",
+                "priority": "primary",
+            },
+            {
+                "action": "Consider conservative targeted low-volume hyaluronidase if correction is desired.",
+                "rationale": "Superficial HA filler can often be partially reversed.",
+                "priority": "secondary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Hyaluronidase",
+                "recommendation": "Use conservative targeted dosing based on area and desired degree of correction.",
+                "notes": "Avoid overcorrection. Reassess before repeating.",
+            }
+        ],
+        "red_flags": [
+            "Pain",
+            "Blanching",
+            "Livedo",
+            "Delayed capillary refill",
+            "Rapid progression",
+        ],
+        "escalation": [
+            "Escalate immediately if ischemic features are present instead of isolated bluish discoloration",
+        ],
+        "monitoring": [
+            "Monitor cosmetic response and avoid overcorrection",
+        ],
+        "limitations": [
+            "Requires confirmation that the product is HA and the finding is superficial placement rather than ischemia",
+        ],
+        "follow_up_questions": [
+            "Is the discoloration blue-gray rather than pale or mottled?",
+            "Was HA filler used?",
+            "Is there pain or blanching?",
+        ],
+    },
+    "ptosis_after_toxin": {
+        "name": "Suspected ptosis after botulinum toxin treatment",
+        "base_severity": "moderate",
+        "base_urgency": "same_day",
+        "evidence_strength": "moderate",
+        "summary": (
+            "This presentation is consistent with toxin diffusion-related eyelid or brow ptosis after botulinum toxin treatment. "
+            "It is usually temporary, but visual symptoms, diplopia, or atypical neurologic findings require escalation."
+        ),
+        "keywords": [
+            "ptosis", "eyelid droop", "brow heaviness", "droopy eyelid",
+            "botox ptosis", "toxin ptosis", "diplopia after botox",
+        ],
+        "steps": [
+            {
+                "action": "Confirm recent botulinum toxin treatment and define whether the issue is eyelid ptosis, brow ptosis, or another neurologic problem.",
+                "rationale": "Pattern recognition guides reassurance, symptomatic treatment, and escalation.",
+                "priority": "primary",
+            },
+            {
+                "action": "Assess for diplopia, visual disturbance, anisocoria, or atypical neurologic signs.",
+                "rationale": "These findings may indicate an alternative diagnosis or need for escalation.",
+                "priority": "primary",
+            },
+            {
+                "action": "Provide symptomatic management according to local practice if uncomplicated toxin-related ptosis is likely.",
+                "rationale": "Most cases are temporary and improve with time.",
+                "priority": "secondary",
+            },
+            {
+                "action": "Document timing, injection sites, dose, and onset of symptoms.",
+                "rationale": "This supports clinical review and future prevention.",
+                "priority": "secondary",
+            },
+        ],
+        "dose_guidance": [
+            {
+                "substance": "Symptomatic ophthalmic support",
+                "recommendation": "Use according to clinician judgment and local prescribing practice.",
+                "notes": "Symptomatic measures may be considered for uncomplicated eyelid ptosis.",
+            }
+        ],
+        "red_flags": [
+            "Diplopia",
+            "Visual disturbance",
+            "Atypical neurologic findings",
+            "Progressive weakness",
+        ],
+        "escalation": [
+            "Urgent clinician review if diplopia or atypical neurologic symptoms are present",
+            "Specialist review if diagnosis is uncertain",
+        ],
+        "monitoring": [
+            "Monitor symptom progression and functional impact",
+            "Document expected recovery discussion and follow-up plan",
+        ],
+        "limitations": [
+            "Management depends on confirming uncomplicated toxin diffusion rather than another neurologic or ophthalmic diagnosis",
+        ],
+        "follow_up_questions": [
+            "When was the toxin injected?",
+            "Is the issue eyelid ptosis or brow heaviness?",
+            "Is there diplopia or other visual change?",
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------
+# Matching
+# ---------------------------------------------------------------------
+
+def score_protocol(query: str, context: Optional[ClinicalContext], protocol: Dict[str, Any]) -> float:
+    score = 0.0
+    q = normalize(query)
+    ctext = joined_context_text(context)
+
+    for kw in protocol["keywords"]:
+        if kw in q:
+            score += 1.0
+        if kw in ctext:
+            score += 0.5
+
+    if context:
+        if context.visual_symptoms and "vascular occlusion" in protocol["name"].lower():
+            score += 3.0
+        if context.capillary_refill_delayed and "vascular occlusion" in protocol["name"].lower():
+            score += 2.0
+        if context.skin_color_change:
+            scc = context.skin_color_change.lower()
+            if scc in ("blanching", "mottling", "dusky", "violaceous") and "vascular occlusion" in protocol["name"].lower():
+                score += 2.0
+            if ("blue" in scc or "bluish" in scc or "blue-gray" in scc) and "tyndall" in protocol["name"].lower():
+                score += 2.0
+
+        if context.wheeze or context.hypotension or context.facial_or_tongue_swelling or context.generalized_urticaria:
+            if "anaphylaxis" in protocol["name"].lower():
+                score += 3.0
+
+        if context.eyelid_droop or context.brow_heaviness or context.diplopia or context.toxin_recent:
+            if "ptosis" in protocol["name"].lower():
+                score += 2.5
+
+        if context.product_type and "hyaluronic" in context.product_type.lower():
+            if "hyaluronic acid filler" in protocol["name"].lower():
+                score += 1.0
+
+    return score
+
+
+def select_protocol(query: str, context: Optional[ClinicalContext]) -> Tuple[str, Dict[str, Any], float]:
+    best_key: Optional[str] = None
+    best_protocol: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+
+    for key, protocol in PROTOCOL_LIBRARY.items():
+        score = score_protocol(query, context, protocol)
+        if score > best_score:
+            best_score = score
+            best_key = key
+            best_protocol = protocol
+
+    if not best_key or not best_protocol or best_score <= 0:
+        raise HTTPException(status_code=404, detail="No matching protocol found.")
+
+    confidence = min(0.99, round(0.45 + best_score * 0.06, 2))
+    return best_key, best_protocol, confidence
+
+
+# ---------------------------------------------------------------------
+# Risk assessment
+# ---------------------------------------------------------------------
+
+def compute_risk_assessment(protocol_key: str, protocol: Dict[str, Any], context: Optional[ClinicalContext]) -> RiskAssessment:
+    base_map = {"low": 20, "moderate": 50, "high": 75, "critical": 92}
+    severity: SeverityLevel = protocol["base_severity"]
+    urgency: UrgencyLevel = protocol["base_urgency"]
+    score = base_map[severity]
+
+    if context:
+        if protocol_key == "vascular_occlusion":
+            if context.visual_symptoms:
+                score += 8
+                severity = "critical"
+                urgency = "immediate"
+            if context.capillary_refill_delayed:
+                score += 5
+            if context.pain_score_10 is not None and context.pain_score_10 >= 8:
+                score += 4
+
+        if protocol_key == "anaphylaxis":
+            if context.hypotension or context.wheeze or context.facial_or_tongue_swelling:
+                score += 6
+                severity = "critical"
+                urgency = "immediate"
+
+        if protocol_key == "ptosis_after_toxin":
+            if context.diplopia or context.visual_symptoms:
+                score += 10
+                urgency = "urgent"
+                severity = "high"
+
+    score = max(0, min(100, score))
+    return RiskAssessment(
+        risk_score=score,
+        severity=severity,
+        urgency=urgency,
+        likely_time_critical=urgency in ("urgent", "immediate"),
+        evidence_strength=protocol["evidence_strength"],
+    )
+
+
+# ---------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------
+
+def build_steps(protocol: Dict[str, Any]) -> List[ProtocolStep]:
+    return [
+        ProtocolStep(
+            step_number=i + 1,
+            action=s["action"],
+            rationale=s["rationale"],
+            priority=s.get("priority", "primary"),
+        )
+        for i, s in enumerate(protocol["steps"])
+    ]
+
+
+def build_doses(protocol: Dict[str, Any]) -> List[DoseGuidance]:
+    return [
+        DoseGuidance(
+            substance=d["substance"],
+            recommendation=d["recommendation"],
+            notes=d["notes"],
+        )
+        for d in protocol["dose_guidance"]
+    ]
+
+
+def build_response(
+    request_id: str,
+    protocol_key: str,
+    protocol: Dict[str, Any],
+    confidence: float,
+    query: str,
+    context: Optional[ClinicalContext],
+) -> ProtocolResponse:
+    evidence = evidence_retriever.retrieve(protocol_key, query, context)
+    risk = compute_risk_assessment(protocol_key, protocol, context)
+
+    return ProtocolResponse(
+        request_id=request_id,
+        engine_version=ENGINE_VERSION,
+        protocol_revision=PROTOCOL_REVISION,
+        generated_at_utc=now_utc_iso(),
+        matched_protocol_key=protocol_key,
+        matched_protocol_name=protocol["name"],
+        confidence=confidence,
+        risk_assessment=risk,
+        clinical_summary=protocol["summary"],
+        immediate_actions=build_steps(protocol),
+        dose_guidance=build_doses(protocol),
+        red_flags=list(protocol["red_flags"]),
+        escalation=list(protocol["escalation"]),
+        monitoring=list(protocol["monitoring"]),
+        limitations=list(protocol["limitations"]),
+        follow_up_questions=list(protocol["follow_up_questions"]),
+        evidence=evidence,
+        disclaimer=(
+            "This output is clinical decision support and not a substitute for clinician judgment. "
+            "Escalate immediately for visual symptoms, airway compromise, shock, progressive ischemia, "
+            "or diagnostic uncertainty."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
+# PDF export
+# ---------------------------------------------------------------------
+
+class PDFBuilder:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.c = canvas.Canvas(path, pagesize=A4)
+        self.width, self.height = A4
+        self.left = 18 * mm
+        self.right = self.width - 18 * mm
+        self.top = self.height - 18 * mm
+        self.bottom = 18 * mm
+        self.y = self.top
+
+    def _new_page(self) -> None:
+        self.c.showPage()
+        self.y = self.top
+
+    def _ensure_space(self, needed: float) -> None:
+        if self.y - needed < self.bottom:
+            self._new_page()
+
+    def line(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14) -> None:
+        self._ensure_space(leading)
+        self.c.setFont(font, size)
+        self.c.drawString(self.left, self.y, text)
+        self.y -= leading
+
+    def wrapped_text(
+        self,
+        text: str,
+        font: str = "Helvetica",
+        size: int = 10,
+        leading: int = 14,
+        bullet: Optional[str] = None,
+    ) -> None:
+        max_width = self.right - self.left
+        self.c.setFont(font, size)
+
+        prefix = f"{bullet} " if bullet else ""
+        available_first = max_width - stringWidth(prefix, font, size)
+        words = text.split()
+        current = ""
+        first_line = True
+
+        def flush_line(line: str, is_first: bool) -> None:
+            self._ensure_space(leading)
+            self.c.setFont(font, size)
+            if is_first and bullet:
+                self.c.drawString(self.left, self.y, prefix + line)
+            else:
+                indent = stringWidth(prefix, font, size) if bullet else 0
+                self.c.drawString(self.left + indent, self.y, line)
+            self.y -= leading
+
+        for word in words:
+            test = word if not current else f"{current} {word}"
+            width_limit = available_first if first_line else max_width - (stringWidth(prefix, font, size) if bullet else 0)
+            if stringWidth(test, font, size) <= width_limit:
+                current = test
+            else:
+                flush_line(current, first_line)
+                first_line = False
+                current = word
+
+        if current:
+            flush_line(current, first_line)
+
+    def section_title(self, title: str) -> None:
+        self.y -= 4
+        self.line(title, font="Helvetica-Bold", size=12, leading=16)
+
+    def save(self) -> None:
+        self.c.save()
+
+
+def export_protocol_pdf(response: ProtocolResponse) -> str:
+    filename = f"protocol_{response.matched_protocol_key}_{response.request_id}.pdf"
+    path = os.path.join(EXPORT_DIR, filename)
+    pdf = PDFBuilder(path)
+
+    pdf.line("AesthetiCite Clinical Protocol Export", font="Helvetica-Bold", size=16, leading=20)
+    pdf.line(f"Protocol: {response.matched_protocol_name}", font="Helvetica-Bold", size=11)
+    pdf.line(f"Request ID: {response.request_id}")
+    pdf.line(f"Generated: {response.generated_at_utc}")
+    pdf.line(f"Engine Version: {response.engine_version} | Revision: {response.protocol_revision}")
+    pdf.line(
+        f"Risk Score: {response.risk_assessment.risk_score}/100 | "
+        f"Severity: {response.risk_assessment.severity} | "
+        f"Urgency: {response.risk_assessment.urgency}"
+    )
+
+    pdf.section_title("Clinical Summary")
+    pdf.wrapped_text(response.clinical_summary)
+
+    pdf.section_title("Immediate Actions")
+    for step in response.immediate_actions:
+        pdf.wrapped_text(f"Step {step.step_number}: {step.action}", font="Helvetica-Bold", bullet="•")
+        pdf.wrapped_text(f"Rationale: {step.rationale}", bullet="-")
+
+    pdf.section_title("Dose Guidance")
+    if response.dose_guidance:
+        for dose in response.dose_guidance:
+            pdf.wrapped_text(f"{dose.substance}: {dose.recommendation}", font="Helvetica-Bold", bullet="•")
+            pdf.wrapped_text(f"Notes: {dose.notes}", bullet="-")
+    else:
+        pdf.wrapped_text("No dose guidance available.", bullet="•")
+
+    pdf.section_title("Red Flags")
+    for item in response.red_flags:
+        pdf.wrapped_text(item, bullet="•")
+
+    pdf.section_title("Escalation")
+    for item in response.escalation:
+        pdf.wrapped_text(item, bullet="•")
+
+    pdf.section_title("Monitoring")
+    for item in response.monitoring:
+        pdf.wrapped_text(item, bullet="•")
+
+    pdf.section_title("Follow-up Questions")
+    for item in response.follow_up_questions:
+        pdf.wrapped_text(item, bullet="•")
+
+    pdf.section_title("Limitations")
+    for item in response.limitations:
+        pdf.wrapped_text(item, bullet="•")
+
+    pdf.section_title("Evidence")
+    if response.evidence:
+        for e in response.evidence:
+            pdf.wrapped_text(f"[{e.source_id}] {e.title}", font="Helvetica-Bold", bullet="•")
+            pdf.wrapped_text(e.note, bullet="-")
+            if e.citation_text:
+                pdf.wrapped_text(f'Citation: "{e.citation_text}"', bullet="-")
+    else:
+        pdf.wrapped_text("No evidence retrieved.", bullet="•")
+
+    pdf.section_title("Disclaimer")
+    pdf.wrapped_text(response.disclaimer)
+
+    pdf.save()
+    return path
+
+
+# ---------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------
+
+@router.post("/run", response_model=ProtocolResponse)
+def run_protocol(payload: ProtocolRequest) -> ProtocolResponse:
+    request_id = str(uuid.uuid4())
+    protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
+    return build_response(
+        request_id=request_id,
+        protocol_key=protocol_key,
+        protocol=protocol,
+        confidence=confidence,
+        query=payload.query,
+        context=payload.context,
+    )
+
+
+@router.post("/export-pdf", response_model=ExportPDFResponse)
+def run_protocol_and_export_pdf(payload: ProtocolRequest) -> ExportPDFResponse:
+    request_id = str(uuid.uuid4())
+    protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
+    response = build_response(
+        request_id=request_id,
+        protocol_key=protocol_key,
+        protocol=protocol,
+        confidence=confidence,
+        query=payload.query,
+        context=payload.context,
+    )
+    pdf_path = export_protocol_pdf(response)
+    return ExportPDFResponse(
+        request_id=request_id,
+        pdf_path=pdf_path,
+        filename=os.path.basename(pdf_path),
+    )
+
+
+# ---------------------------------------------------------------------
+# Example integration
+# ---------------------------------------------------------------------
+
+FASTAPI_MAIN_EXAMPLE = """
+from fastapi import FastAPI
+from aestheticite_protocol_engine import router as protocol_router
+
+app = FastAPI(title="AesthetiCite API")
+app.include_router(protocol_router)
+""".strip()
+
+
+# ---------------------------------------------------------------------
+# Example payloads
+# ---------------------------------------------------------------------
+
+EXAMPLE_REQUESTS = {
+    "vascular_occlusion": {
+        "query": "suspected vascular occlusion after hyaluronic acid filler",
+        "context": {
+            "region": "nasolabial fold",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["pain", "blanching", "mottling"],
+            "time_since_injection_minutes": 20,
+            "visual_symptoms": False,
+            "skin_color_change": "blanching",
+            "pain_score_10": 8,
+            "capillary_refill_delayed": True,
+            "filler_confirmed_ha": True
+        },
+        "mode": "emergency"
+    },
+    "anaphylaxis": {
+        "query": "sudden wheeze and facial swelling after treatment",
+        "context": {
+            "symptoms": ["wheeze", "facial swelling", "urticaria"],
+            "wheeze": True,
+            "facial_or_tongue_swelling": True,
+            "generalized_urticaria": True,
+            "hypotension": False
+        },
+        "mode": "emergency"
+    },
+    "tyndall_effect": {
+        "query": "blue-gray discoloration after tear trough filler",
+        "context": {
+            "region": "tear trough",
+            "product_type": "hyaluronic acid filler",
+            "symptoms": ["blue-gray discoloration"],
+            "skin_color_change": "blue-gray",
+            "pain_score_10": 1,
+            "filler_confirmed_ha": True
+        },
+        "mode": "decision_support"
+    },
+    "ptosis_after_toxin": {
+        "query": "droopy eyelid after botulinum toxin treatment",
+        "context": {
+            "symptoms": ["eyelid droop"],
+            "eyelid_droop": True,
+            "toxin_recent": True,
+            "diplopia": False
+        },
+        "mode": "decision_support"
+    }
+}
+
+
+if __name__ == "__main__":
+    # Simple local test without running FastAPI
+    sample_payload = ProtocolRequest(**EXAMPLE_REQUESTS["vascular_occlusion"])
+    protocol_key, protocol, confidence = select_protocol(sample_payload.query, sample_payload.context)
+    response = build_response(
+        request_id=str(uuid.uuid4()),
+        protocol_key=protocol_key,
+        protocol=protocol,
+        confidence=confidence,
+        query=sample_payload.query,
+        context=sample_payload.context,
+    )
+    print(json.dumps(response.model_dump(), indent=2, ensure_ascii=False))
+    path = export_protocol_pdf(response)
+    print(f"PDF generated: {path}")

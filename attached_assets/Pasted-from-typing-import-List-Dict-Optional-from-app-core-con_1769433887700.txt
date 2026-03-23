@@ -1,0 +1,53 @@
+from typing import List, Dict, Optional
+from app.core.config import settings
+
+
+def build_answer(
+    question: str,
+    mode: str,
+    domain: str,
+    retrieved: List[Dict],
+    escalation_note: Optional[str] = None,
+) -> str:
+    # Strict day-1: only use retrieved snippets; no “freeform” medical protocol details
+    # (You can add more clinical structure once the corpus is real.)
+    citations_summary = "\n".join(
+        [f"- {r.get('title')} ({r.get('year', 'n.d.')}) [{r.get('evidence_level', 'Source')}]" for r in retrieved]
+    )
+
+    summary = (
+        "Clinical summary\n"
+        f"- Question received for domain: {domain}. The system will answer ONLY from retrieved evidence.\n"
+    )
+
+    actions = (
+        "Recommended actions (evidence-bounded)\n"
+        "- Confirm diagnosis and severity using clinically accepted assessment steps referenced in the retrieved sources.\n"
+        "- Follow a locally approved emergency pathway when tissue ischemia/necrosis is suspected.\n"
+        "- Use hyaluronidase only in line with protocols described in your authoritative sources and local governance.\n"
+    )
+
+    vigilance = (
+        "Red flags / escalation\n"
+        "- Any visual symptoms, rapidly progressing pain, expanding livedo/ischemia, or systemic signs require urgent escalation.\n"
+    )
+    if escalation_note:
+        vigilance += f"- Note: {escalation_note}\n"
+
+    evidence = (
+        "Evidence level\n"
+        "- This topic is often supported primarily by consensus statements and reviews; high-quality randomized evidence may be limited.\n"
+    )
+
+    limits = (
+        "Limits and uncertainty\n"
+        "- Without access to your full approved protocol set and patient-specific details, this answer cannot provide dosing or step-by-step emergency instructions.\n"
+        "- If the retrieved evidence is insufficient or outdated, the system should refuse and request stronger sources.\n"
+    )
+
+    sources = "Sources retrieved\n" + (citations_summary if citations_summary else "- None")
+
+    answer = "\n".join([summary, actions, vigilance, evidence, sources, limits])
+
+    # Enforce context size cap (defensive)
+    return answer[: settings.MAX_CONTEXT_CHARS]

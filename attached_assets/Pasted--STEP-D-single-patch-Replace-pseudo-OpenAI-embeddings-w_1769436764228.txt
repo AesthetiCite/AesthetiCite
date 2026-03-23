@@ -1,0 +1,163 @@
+# STEP D (single patch): Replace pseudo/OpenAI embeddings with real open-source embeddings (768-dim)
+# Paste into Replit AI Agent.
+
+set -e
+
+echo "==> 1) Update requirements.txt (add sentence-transformers stack)"
+# If you already have these, this will just overwrite with a safe set.
+cat > requirements.txt <<'EOF'
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+python-multipart==0.0.17
+
+# Open-source embeddings (768 dims)
+sentence-transformers==2.7.0
+torch==2.2.2
+numpy==1.26.4
+EOF
+
+echo "==> 2) Replace app/rag/embedder.py with open-source embedder (768-dim)"
+cat > app/rag/embedder.py <<'EOF'
+from __future__ import annotations
+from functools import lru_cache
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+# Must match DB: VECTOR(768)
+MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
+
+@lru_cache(maxsize=1)
+def _model() -> SentenceTransformer:
+    return SentenceTransformer(MODEL_NAME)
+
+def embed_text(text: str) -> list[float]:
+    """
+    Returns a 768-dim normalized embedding as list[float] compatible with pgvector.
+    """
+    m = _model()
+    vec = m.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
+    return [float(x) for x in np.asarray(vec, dtype=np.float32).tolist()]
+EOF
+
+echo "==> 3) Make seed_demo.py re-embed chunks using the new embedder"
+# This keeps your existing logic but guarantees real embeddings are used.
+cat > ingestion/seed_demo.py <<'EOF'
+"""
+Seeds the database with 2 demo documents + chunks + REAL open-source embeddings (768).
+Run after setting DATABASE_URL in .env.
+
+Usage:
+  python ingestion/seed_demo.py
+"""
+from sqlalchemy import create_engine, text
+from app.core.config import settings
+from app.rag.embedder import embed_text
+
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+
+DEMO_DOCS = [
+    {
+        "source_id": "consensus_demo_2021",
+        "title": "Consensus guidance on management of vascular compromise after dermal filler (DEMO)",
+        "authors": "Demo Group",
+        "organization_or_journal": "Consensus Statement",
+        "year": 2021,
+        "document_type": "consensus",
+        "domain": "aesthetic_medicine",
+        "version": "demo",
+        "status": "active",
+        "chunks": [
+            ("Algorithm / Emergency Management",
+             "Early recognition and prompt intervention are emphasized; recommendations are consensus-based."),
+            ("Hyaluronidase",
+             "When hyaluronic acid filler is implicated, hyaluronidase is described as a rescue option in consensus guidance; evidence quality may be limited.")
+        ],
+    },
+    {
+        "source_id": "review_demo_2020",
+        "title": "Review: Hyaluronidase use in filler-related ischemic events (DEMO)",
+        "authors": "Demo Author",
+        "organization_or_journal": "Dermatologic Review",
+        "year": 2020,
+        "document_type": "review",
+        "domain": "aesthetic_medicine",
+        "version": "demo",
+        "status": "active",
+        "chunks": [
+            ("Treatment approach",
+             "The evidence base is limited; practice commonly relies on expert consensus and case series."),
+        ],
+    },
+]
+
+def upsert_document(conn, d):
+    doc_id = conn.execute(text("""
+      INSERT INTO documents (source_id, title, authors, organization_or_journal, year, document_type, domain, version, status)
+      VALUES (:source_id, :title, :authors, :org, :year, :dtype, :domain, :version, :status)
+      ON CONFLICT (source_id) DO UPDATE SET
+        title=EXCLUDED.title,
+        authors=EXCLUDED.authors,
+        organization_or_journal=EXCLUDED.organization_or_journal,
+        year=EXCLUDED.year,
+        document_type=EXCLUDED.document_type,
+        domain=EXCLUDED.domain,
+        version=EXCLUDED.version,
+        status=EXCLUDED.status,
+        updated_at=now()
+      RETURNING id;
+    """), {
+        "source_id": d["source_id"],
+        "title": d["title"],
+        "authors": d.get("authors"),
+        "org": d.get("organization_or_journal"),
+        "year": d.get("year"),
+        "dtype": d.get("document_type"),
+        "domain": d.get("domain"),
+        "version": d.get("version"),
+        "status": d.get("status", "active"),
+    }).scalar_one()
+    return doc_id
+
+def insert_chunks(conn, doc_id, chunks):
+    conn.execute(text("DELETE FROM chunks WHERE document_id = :doc_id;"), {"doc_id": doc_id})
+    for i, (pos, txt) in enumerate(chunks):
+        vec = embed_text(txt)
+        conn.execute(text("""
+          INSERT INTO chunks (document_id, chunk_index, text, page_or_section, evidence_level, embedding)
+          VALUES (:doc_id, :idx, :text, :pos, :evidence, :emb);
+        """), {
+            "doc_id": doc_id,
+            "idx": i,
+            "text": txt,
+            "pos": pos,
+            "evidence": None,
+            "emb": vec,
+        })
+
+def main():
+    with engine.begin() as conn:
+        for d in DEMO_DOCS:
+            doc_id = upsert_document(conn, d)
+            insert_chunks(conn, doc_id, d["chunks"])
+        conn.execute(text("ANALYZE;"))
+    print("✅ Seeded demo documents and chunks with REAL 768-dim embeddings.")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+echo "==> 4) Quick reminder: your DB column must be VECTOR(768) (it is) — now reseed."
+cat <<'EOF'
+NEXT:
+1) Let Replit reinstall dependencies (requirements.txt changed).
+2) Re-seed demo data with REAL embeddings:
+     python ingestion/seed_demo.py
+3) Run API:
+     uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+4) Test /ask again — retrieval quality will be much better.
+EOF

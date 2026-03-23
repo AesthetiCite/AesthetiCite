@@ -1,0 +1,32 @@
+All 6 gaps closed. Here's the complete integration guide:
+
+Integration checklist
+Gap 1 — Doctor homepage (clinic-home.tsx)
+Drop into client/src/pages/clinic-home.tsx. No other changes needed — App.tsx already routes "/" to it.
+What a doctor sees when they open the app: greeting, 4 primary action cards (Search / Safety Check / Emergency / Session Report), quick protocol shortcuts, all secondary tools in a grid.
+
+Gap 2+3 — Emergency page (emergency.tsx)
+Drop into client/src/pages/emergency.tsx. Already routed in the new App.tsx.
+Dark-themed full emergency protocol screen. Live timer starts when a protocol loads. Sidebar for selecting the protocol, full structured output on the right. Supports URL deep-linking: /emergency?protocol=vascular_occlusion — so you can link directly from anywhere.
+
+Gap 3 — Updated header (ask-header-patch.tsx)
+Paste the JSX block into ask.tsx, replacing the existing <div className="flex items-center gap-2"> nav block in the header. Adds: red Emergency button always visible, Safety Check promoted to outlined blue button, Case Log in More dropdown + mobile sheet, Emergency in mobile sheet at top.
+
+Gap 4 — Case log routing (App.tsx)
+Drop in the new App.tsx — it's the full file. Three new routes added: / → ClinicHomePage, /emergency → EmergencyPage, /case-log → CaseLogPage.
+
+Gap 5 — Neuromodulator resistance wiring (wiring-patch.py)
+Two steps in complication_protocol_engine.py: add NEUROMODULATOR_RESISTANCE_KEYWORDS to your protocol matcher dict, then add the full protocol data (from the previous session's neuromodulator_and_prescan_additions.py) to your PROTOCOLS dict. The keyword list covers 20+ trigger phrases including "not working", "wearing off", "pseudo-resistance", "switch toxin".
+Also add to server/routes.ts:
+tsapp.post("/api/complications/prescan-briefing", (req, res) =>
+  proxyToFastAPI(req, res, "/api/complications/prescan-briefing"));
+
+Gap 6 — Pre-Scan Briefing tab (prescan-briefing-tab.tsx)
+In pre-procedure-safety.tsx:
+
+Change activeTab type to include "prescan"
+Add the state variables from the file comments
+Add the third tab button to the header tabs row
+Add <PreScanBriefingTab ... /> after the differential tab block
+
+The tab shows: structures to identify, Doppler settings, safe injection windows, abort criteria, junior injector note, and evidence base — all region-specific

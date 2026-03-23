@@ -1,0 +1,196 @@
+================================================================================
+UNICORN FEATURES — PATCH FILE
+Apply these additions to integrate all 8 unicorn-inspired features.
+================================================================================
+
+
+================================================================================
+PATCH 1 — client/src/App.tsx
+================================================================================
+
+ADD these imports near existing page imports:
+
+    import RiskIntelligencePage from "@/pages/risk-intelligence";
+    import ComplicationMonitorPage from "@/pages/complication-monitor";
+    import OrgAnalyticsPage from "@/pages/org-analytics";
+
+ADD these routes inside <Switch>, before <Route component={NotFound}>:
+
+    <Route path="/risk-intelligence">
+      {() => <ProtectedRoute component={RiskIntelligencePage} />}
+    </Route>
+    <Route path="/complication-monitor">
+      {() => <ProtectedRoute component={ComplicationMonitorPage} />}
+    </Route>
+    <Route path="/org-analytics">
+      {() => <ProtectedRoute component={OrgAnalyticsPage} />}
+    </Route>
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD inside registerRoutes() with the other proxy blocks:
+
+    // ── Risk Intelligence (Shift-inspired) ───────────────────────────────
+    app.post("/api/risk/scores/compute",         (req, res) => proxyToFastAPI(req, res, "/api/risk/scores/compute"));
+    app.get("/api/risk/scores",                  (req, res) => proxyToFastAPI(req, res, "/api/risk/scores"));
+    app.get("/api/risk/scores/:name",            (req, res) => proxyToFastAPI(req, res, `/api/risk/scores/${encodeURIComponent(req.params.name)}`));
+    app.get("/api/risk/alerts",                  (req, res) => proxyToFastAPI(req, res, "/api/risk/alerts"));
+    app.post("/api/risk/alerts/:id/dismiss",     (req, res) => proxyToFastAPI(req, res, `/api/risk/alerts/${req.params.id}/dismiss`));
+    app.post("/api/risk/detect-patterns",        (req, res) => proxyToFastAPI(req, res, "/api/risk/detect-patterns"));
+    app.get("/api/risk/heatmap",                 (req, res) => proxyToFastAPI(req, res, "/api/risk/heatmap"));
+
+    // ── Complication Monitor (DentalMonitoring-inspired) ─────────────────
+    app.post("/api/monitor/cases",               (req, res) => proxyToFastAPI(req, res, "/api/monitor/cases"));
+    app.get("/api/monitor/cases",                (req, res) => proxyToFastAPI(req, res, "/api/monitor/cases"));
+    app.get("/api/monitor/cases/:id",            (req, res) => proxyToFastAPI(req, res, `/api/monitor/cases/${req.params.id}`));
+    app.patch("/api/monitor/cases/:id/status",   (req, res) => proxyToFastAPI(req, res, `/api/monitor/cases/${req.params.id}/status`));
+
+    // Photo upload (multipart — use multer like /api/visual/upload)
+    app.post("/api/monitor/cases/:id/submit", upload.single("file"), async (req, res) => {
+      try {
+        const formData = new FormData();
+        if (req.file) {
+          formData.append("file", req.file.buffer, {
+            filename: req.file.originalname || "photo.jpg",
+            contentType: req.file.mimetype,
+          });
+        }
+        formData.append("clinic_id", req.body.clinic_id || "");
+        formData.append("notes", req.body.notes || "");
+        const response = await fetch(
+          `${PYTHON_API_BASE}/api/monitor/cases/${req.params.id}/submit`,
+          {
+            method: "POST",
+            headers: {
+              ...formData.getHeaders(),
+              ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+            },
+            body: formData as unknown as BodyInit,
+          }
+        );
+        const data = await response.json();
+        res.status(response.status).json(data);
+      } catch (error) {
+        res.status(502).json({ detail: "Monitor submit unavailable" });
+      }
+    });
+
+    // ── Org Analytics (Pigment + Contentsquare-inspired) ─────────────────
+    app.post("/api/analytics/events",                       (req, res) => proxyToFastAPI(req, res, "/api/analytics/events"));
+    app.get("/api/analytics/session-heatmap",               (req, res) => proxyToFastAPI(req, res, "/api/analytics/session-heatmap"));
+    app.get("/api/analytics/answer-quality",                (req, res) => proxyToFastAPI(req, res, "/api/analytics/answer-quality"));
+    app.get("/api/analytics/org-overview/:org_id",         (req, res) => proxyToFastAPI(req, res, `/api/analytics/org-overview/${req.params.org_id}`));
+    app.get("/api/analytics/clinic-benchmark",              (req, res) => proxyToFastAPI(req, res, "/api/analytics/clinic-benchmark"));
+
+    // ── LLM Provider (Mistral-inspired) ──────────────────────────────────
+    app.get("/api/llm/providers",                (req, res) => proxyToFastAPI(req, res, "/api/llm/providers"));
+    app.get("/api/llm/config/:org_id",           (req, res) => proxyToFastAPI(req, res, `/api/llm/config/${req.params.org_id}`));
+    app.post("/api/llm/config/:org_id",          (req, res) => proxyToFastAPI(req, res, `/api/llm/config/${req.params.org_id}`));
+    app.post("/api/llm/test",                    (req, res) => proxyToFastAPI(req, res, "/api/llm/test"));
+
+
+================================================================================
+PATCH 3 — app/main.py
+================================================================================
+
+ADD these imports near the other router imports:
+
+    from app.api.risk_intelligence import router as risk_router
+    from app.api.complication_monitor import router as monitor_router
+    from app.api.org_analytics import router as org_analytics_router
+    from app.api.llm_provider import router as llm_provider_router
+    from app.db.intelligence_migrations import run_intelligence_migrations
+
+ADD the router registrations (alongside other include_router calls):
+
+    app.include_router(risk_router)
+    app.include_router(monitor_router)
+    app.include_router(org_analytics_router)
+    app.include_router(llm_provider_router)
+
+ADD migration run in the startup handler:
+
+    @app.on_event("startup")
+    async def _startup():
+        # ... existing startup code ...
+        run_intelligence_migrations()
+        # ... existing pool init ...
+
+
+================================================================================
+OPTIONAL: Add navigation links in the existing sidebar/nav
+================================================================================
+
+In client/src/pages/ask.tsx or your nav component, add links:
+
+    { path: "/risk-intelligence",    label: "Risk Intelligence",     icon: Shield }
+    { path: "/complication-monitor", label: "Complication Monitor",  icon: Camera }
+    { path: "/network-safety-workspace", label: "Safety Workspace", icon: ShieldAlert }
+    { path: "/org-analytics",        label: "Org Analytics",         icon: Network }
+
+
+================================================================================
+OPTIONAL: Clinician event tracking — add to answer components
+================================================================================
+
+To power the session heatmap (Contentsquare feature), instrument existing
+answer components by calling the /api/analytics/events endpoint:
+
+    // When a clinician copies an answer section:
+    fetch("/api/analytics/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        clinic_id: selectedClinic.clinic_id,
+        session_id: sessionId,           // uuid per page load
+        event_type: "copy",
+        answer_section: "immediate_actions",   // or "evidence", "dose_guidance", etc.
+        query_id: queryId,
+      }),
+    });
+
+Suggested instrumentation points:
+  - Copy button click           → event_type: "copy"
+  - Print button click          → event_type: "print"
+  - Bookmark/save click         → event_type: "save"
+  - Citation card expand        → event_type: "expand", answer_section: "evidence"
+  - Evidence card visible 3s+   → event_type: "view", answer_section: "evidence"
+  - Protocol step visible 3s+   → event_type: "view", answer_section: step name
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+NEW FILES:
+  app/db/intelligence_migrations.py     — 5 new PostgreSQL tables
+  app/api/risk_intelligence.py          — Shift-inspired: risk scoring + pattern detection + alerts
+  app/api/complication_monitor.py       — DentalMonitoring-inspired: async photo AI screening
+  app/api/llm_provider.py               — Mistral-inspired: per-org LLM provider abstraction
+  app/api/org_analytics.py              — Pigment + Contentsquare: org analytics + session heatmap
+  client/src/pages/risk-intelligence.tsx        — Practitioner risk dashboard UI
+  client/src/pages/complication-monitor.tsx     — Photo monitor + AI screening UI
+  client/src/pages/org-analytics.tsx            — Org analytics + session heatmap + LLM config UI
+
+PATCH (3 files, additions only):
+  client/src/App.tsx        — 3 new routes
+  server/routes.ts          — 20 new proxy routes (including multipart for photo upload)
+  app/main.py               — 4 new routers + migration call
+
+
+================================================================================
+FEATURE → UNICORN MAPPING
+================================================================================
+
+  risk_intelligence.py       → Shift Technology  (AI risk scoring per entity)
+  complication_monitor.py    → DentalMonitoring   (async photo-based clinical monitoring)
+  llm_provider.py            → Mistral AI         (provider abstraction, on-premise, GDPR)
+  org_analytics.py           → Pigment            (cross-entity comparative analytics)
+  org_analytics.py           → Contentsquare      (session interaction heatmap)
+  network_workspace.py       → Doctolib           (multi-clinic, booking-adjacent safety check)
+  network_workspace.py       → Pennylane          (org/cabinet model, multi-site deployment)
+  network_workspace.py       → Alan               (B2B clinic plan, care pathway continuity)
+================================================================================

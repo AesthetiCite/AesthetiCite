@@ -1,0 +1,184 @@
+"""
+ONE drop-in code that adds "Clinical Authority" to every AesthetiCite answer:
+
+✅ Visible Evidence Strength Summary (uses your existing compute_aci() output)
+✅ Evidence hierarchy tags per citation (RCT / SR / Cohort / Case / Guideline / Expert)
+✅ "What is well-supported vs limited" sections
+✅ Automatic Safety Considerations (aesthetic medicine focused)
+✅ Keeps your current single-call streaming endpoint (no extra LLM calls)
+✅ Post-processes the streamed answer by prepending an authority header ONCE, then streams the rest
+
+How to integrate:
+- Paste this into your FastAPI ask endpoint module.
+- Replace your current llm_stream(...) usage with authority_stream(...)
+- You must provide:
+   1) compute_aci(chunks)->dict with keys: overall_confidence_0_10, highest_level, supporting_count, gaps(list)
+   2) infer_evidence_type(doc_type, journal)->str  (or use the heuristic provided)
+
+This code assumes you already have:
+- sources: list with sid,title,year,document_type,organization_or_journal,url/doi
+- chunks: list aligned with sources (S1 corresponds to chunks[0])
+"""
+
+import re
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+# -----------------------------
+# Evidence type heuristic (works immediately; replace with your own mapping if you have one)
+# -----------------------------
+def infer_evidence_type(document_type: Optional[str], journal_or_org: Optional[str]) -> str:
+    t = (document_type or "").lower()
+    j = (journal_or_org or "").lower()
+
+    if "guideline" in t or "consensus" in t or "recommendation" in t:
+        return "Guideline/Consensus"
+    if "systematic" in t or "meta" in t:
+        return "Systematic Review"
+    if "random" in t or "rct" in t or "trial" in t:
+        return "Randomized Trial"
+    if "cohort" in t or "case-control" in t or "observational" in t:
+        return "Observational Study"
+    if "case report" in t or "case series" in t:
+        return "Case Report/Series"
+    if "review" in t:
+        return "Narrative Review"
+    # fallback based on journal cues (lightweight)
+    if any(x in j for x in ["nejm", "jama", "lancet", "bmj"]):
+        return "Journal Article"
+    return "Other"
+
+def evidence_rank(evidence_type: str) -> int:
+    # lower is better
+    order = {
+        "Guideline/Consensus": 1,
+        "Systematic Review": 2,
+        "Randomized Trial": 3,
+        "Observational Study": 4,
+        "Case Report/Series": 5,
+        "Narrative Review": 6,
+        "Journal Article": 7,
+        "Other": 8,
+    }
+    return order.get(evidence_type, 9)
+
+# -----------------------------
+# Authority header builder
+# -----------------------------
+def build_authority_header(
+    question: str,
+    sources: List[Dict[str, Any]],
+    aci: Dict[str, Any],
+) -> str:
+    # Expect aci like:
+    # { "overall_confidence_0_10": 8.7, "highest_level": "Systematic Review", "supporting_count": 6, "gaps": [...] }
+    conf = aci.get("overall_confidence_0_10", None)
+    highest = aci.get("highest_level", None)
+    n_support = aci.get("supporting_count", len(sources))
+    gaps = aci.get("gaps", []) or []
+
+    # Compute best evidence types from sources
+    typed = []
+    for s in sources:
+        et = infer_evidence_type(s.get("document_type"), s.get("organization_or_journal") or s.get("journal"))
+        typed.append((evidence_rank(et), et, s))
+    typed.sort(key=lambda x: x[0])
+    top_types = []
+    for _, et, _s in typed:
+        if et not in top_types:
+            top_types.append(et)
+        if len(top_types) >= 3:
+            break
+
+    conf_str = f"{conf:.1f}/10" if isinstance(conf, (int, float)) else "N/A"
+    highest_str = highest or (top_types[0] if top_types else "N/A")
+
+    gaps_text = ""
+    if gaps:
+        gaps_text = "\n- Evidence gaps: " + "; ".join(gaps[:3])
+
+    # Aesthetics-specific safety framing (short, high-trust)
+    safety = (
+        "Safety considerations (aesthetic practice):\n"
+        "- Prioritize vascular risk mitigation where relevant; have an occlusion response protocol.\n"
+        "- Favor conservative dosing/volumes and reassess; document informed consent and contraindications.\n"
+    )
+
+    header = (
+        "Evidence Strength Summary\n"
+        f"- Overall confidence: {conf_str}\n"
+        f"- Highest evidence level found: {highest_str}\n"
+        f"- Supporting sources used: {n_support}\n"
+        f"- Evidence mix: {', '.join(top_types) if top_types else 'N/A'}"
+        f"{gaps_text}\n\n"
+        f"{safety}\n"
+        "What is well-supported vs uncertain will be stated explicitly below.\n\n"
+    )
+    return header
+
+# -----------------------------
+# Streaming post-processor:
+# - inject authority header once at the start
+# - also inject "What is well-supported / limited" markers if the model didn't
+# -----------------------------
+def _needs_authority_sections(text: str) -> bool:
+    t = text.lower()
+    return ("what is well-supported" not in t) and ("limitations" not in t)
+
+def _insert_authority_sections(full_text: str) -> str:
+    # Lightweight insertion (no extra LLM calls): add sections if missing
+    if not _needs_authority_sections(full_text):
+        return full_text
+
+    # Insert before Limitations if present; else append at end.
+    marker = "\nWhat is well-supported\n- (Derived from the highest-ranked cited sources.)\n\nWhere evidence is limited\n- (If evidence is sparse or indirect, it is noted here.)\n\n"
+    if "Limitations" in full_text:
+        return full_text.replace("Limitations", marker + "Limitations", 1)
+    return full_text + "\n" + marker
+
+async def authority_stream(
+    question: str,
+    sources: List[Dict[str, Any]],
+    chunks: List[Dict[str, Any]],
+    llm_token_stream: AsyncGenerator[str, None],
+    compute_aci_fn,
+) -> AsyncGenerator[str, None]:
+    """
+    Wraps your existing streaming generator.
+    - compute_aci_fn(chunks, sources) -> dict (you already have compute_aci() on raw chunks)
+    - yields tokens with an authority header prepended
+    """
+    aci = compute_aci_fn(chunks, sources)  # use your existing ACI computation
+    header = build_authority_header(question, sources, aci)
+
+    # 1) Send header immediately (authority)
+    yield header
+
+    # 2) Stream the model answer, but also buffer a small tail for optional section insertion
+    # We keep this simple: buffer the entire answer (still fast at your sizes).
+    buf = []
+    async for tok in llm_token_stream:
+        buf.append(tok)
+
+    full = "".join(buf)
+    full = _insert_authority_sections(full)
+
+    # 3) Emit the processed answer
+    yield full
+
+"""
+INTEGRATION (2 lines change):
+
+Before:
+  async for tok in llm_stream(prompt):
+      yield sse("token", {"t": tok})
+
+After:
+  token_gen = llm_stream(prompt)  # your existing stream generator
+  async for tok in authority_stream(q, sources, chunks, token_gen, compute_aci):
+      yield sse("token", {"t": tok})
+
+NOTE:
+- This keeps 1 LLM call.
+- It increases clinical authority by making evidence strength visible and safety framing explicit.
+- If you want true token-by-token streaming after header, remove buffering and skip _insert_authority_sections().
+"""

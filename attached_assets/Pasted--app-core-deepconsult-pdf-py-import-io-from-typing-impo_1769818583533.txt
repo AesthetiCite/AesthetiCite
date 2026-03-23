@@ -1,0 +1,203 @@
+# app/core/deepconsult_pdf.py
+
+import io
+from typing import List, Optional, Dict, Any
+
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
+
+def build_deepconsult_pdf_bytes(
+    *,
+    title: str,
+    question: str,
+    meta: Dict[str, Any],
+    disagreement: Optional[Dict[str, Any]],
+    analysis_text: str,
+    evidence_rows: List[Dict[str, Any]],
+    citations: List[Dict[str, Any]],
+) -> bytes:
+    """
+    Citation-grade PDF export for DeepConsult.
+    Expects analysis_text in your 1..7 section format (plain text).
+    evidence_rows should contain: title/year/type/key_findings/quality or snippet.
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=LETTER,
+        leftMargin=0.85 * inch,
+        rightMargin=0.85 * inch,
+        topMargin=0.85 * inch,
+        bottomMargin=0.85 * inch,
+        title=title,
+        author="AesthetiCite"
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="H1",
+        parent=styles["Heading1"],
+        fontName="Times-Bold",
+        fontSize=16,
+        leading=20,
+        spaceAfter=10
+    ))
+    styles.add(ParagraphStyle(
+        name="H2",
+        parent=styles["Heading2"],
+        fontName="Times-Bold",
+        fontSize=12,
+        leading=16,
+        spaceBefore=10,
+        spaceAfter=6
+    ))
+    styles.add(ParagraphStyle(
+        name="Body",
+        parent=styles["BodyText"],
+        fontName="Times-Roman",
+        fontSize=11,
+        leading=14
+    ))
+    styles.add(ParagraphStyle(
+        name="MonoSmall",
+        parent=styles["BodyText"],
+        fontName="Courier",
+        fontSize=9,
+        leading=11
+    ))
+
+    story = []
+
+    # Title
+    story.append(Paragraph(title, styles["H1"]))
+    story.append(Paragraph(f"<b>Research question:</b> {escape_xml(question)}", styles["Body"]))
+    story.append(Spacer(1, 10))
+
+    # Meta box
+    meta_table = [
+        ["Model", str(meta.get("model", "")), "Sources Used", str(meta.get("sources_used", meta.get("sources", "")))],
+        ["Guidelines/PI", str(meta.get("guidelines_pi", meta.get("guidelines", ""))), "Elapsed", str(meta.get("elapsed", meta.get("elapsed_s", "")))],
+    ]
+    t = Table(meta_table, colWidths=[1.3*inch, 2.7*inch, 1.3*inch, 2.0*inch])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+        ("BOX", (0,0), (-1,-1), 0.7, colors.black),
+        ("INNERGRID", (0,0), (-1,-1), 0.3, colors.black),
+        ("FONTNAME", (0,0), (-1,-1), "Times-Roman"),
+        ("FONTSIZE", (0,0), (-1,-1), 10),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 10))
+
+    # Disagreement box (optional)
+    if disagreement:
+        conflict_found = disagreement.get("conflict_found")
+        conflict_score = disagreement.get("conflict_score")
+        topics = ", ".join(disagreement.get("topics") or [])
+        interpretation = disagreement.get("interpretation") or ""
+
+        dis_table = [
+            ["Disagreement", "Found" if conflict_found else "Not found",
+             "Score", str(conflict_score)],
+            ["Topics", topics[:1200], "Interpretation", interpretation[:400]],
+        ]
+        dt = Table(dis_table, colWidths=[1.3*inch, 2.7*inch, 1.3*inch, 2.0*inch])
+        dt.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#F2F2F2")),
+            ("BOX", (0,0), (-1,-1), 0.7, colors.black),
+            ("INNERGRID", (0,0), (-1,-1), 0.3, colors.black),
+            ("FONTNAME", (0,0), (-1,-1), "Times-Roman"),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ]))
+        story.append(dt)
+        story.append(Spacer(1, 14))
+
+    # Evidence Summary Table (render from evidence_rows)
+    story.append(Paragraph("Evidence Summary Table", styles["H2"]))
+    header = ["Study", "Year", "Type", "Key Finding", "Quality"]
+    rows = [header]
+
+    for r in (evidence_rows or [])[:12]:
+        rows.append([
+            escape_xml((r.get("title") or "")[:60]),
+            str(r.get("year") or ""),
+            (r.get("type") or "").upper(),
+            escape_xml((r.get("key_finding") or r.get("key_findings") or r.get("snippet") or "")[:180]),
+            str(r.get("quality") or "")
+        ])
+
+    et = Table(rows, colWidths=[2.0*inch, 0.6*inch, 0.9*inch, 2.8*inch, 0.6*inch])
+    et.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#EDEDED")),
+        ("FONTNAME", (0,0), (-1,0), "Times-Bold"),
+        ("FONTSIZE", (0,0), (-1,0), 10),
+        ("FONTNAME", (0,1), (-1,-1), "Times-Roman"),
+        ("FONTSIZE", (0,1), (-1,-1), 9),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("GRID", (0,0), (-1,-1), 0.25, colors.black),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.whitesmoke]),
+    ]))
+    story.append(et)
+    story.append(Spacer(1, 12))
+
+    # Analysis (sections 1..7)
+    story.append(Paragraph("DeepConsult Analysis", styles["H2"]))
+    story.extend(render_sections_as_paragraphs(analysis_text, styles))
+
+    # References
+    story.append(PageBreak())
+    story.append(Paragraph("References", styles["H2"]))
+    for i, c in enumerate((citations or [])[:30], start=1):
+        yr = c.get("year") or ""
+        st = c.get("source_type") or ""
+        doi = c.get("doi") or ""
+        url = c.get("url") or ""
+        ref = f"[{i}] {escape_xml(c.get('title') or 'Untitled')} ({yr}). {escape_xml(st)}. {escape_xml(doi)} {escape_xml(url)}"
+        story.append(Paragraph(ref, styles["Body"]))
+        story.append(Spacer(1, 4))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def render_sections_as_paragraphs(text: str, styles) -> List:
+    """
+    Converts your numbered headings into PDF-friendly paragraphs:
+      '1. Research Question' etc.
+    """
+    blocks = []
+    lines = (text or "").splitlines()
+    buf = []
+    current_heading = None
+
+    def flush():
+        nonlocal buf
+        if buf:
+            blocks.append(Paragraph(escape_xml("\n".join(buf)).replace("\n", "<br/>"), styles["Body"]))
+            blocks.append(Spacer(1, 10))
+            buf = []
+
+    heading_re = re.compile(r"^\s*(\d+)\.\s+(.+)\s*$")
+
+    for line in lines:
+        m = heading_re.match(line.strip())
+        if m:
+            flush()
+            heading = f"{m.group(1)}. {m.group(2)}"
+            blocks.append(Paragraph(escape_xml(heading), styles["H2"]))
+        else:
+            buf.append(line)
+    flush()
+    return blocks
+
+
+def escape_xml(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

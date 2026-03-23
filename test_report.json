@@ -1,0 +1,488 @@
+{
+  "product": "AesthetiCite",
+  "test_run_utc": "2026-03-14T02:25:55.659134+00:00",
+  "score": 100,
+  "status": "FULLY OPERATIONAL",
+  "checks_passed": 53,
+  "checks_total": 53,
+  "results": [
+    {
+      "id": "env_database_url",
+      "label": "DATABASE_URL (DATABASE_URL)",
+      "ok": true,
+      "weight": 12,
+      "category": "environment",
+      "detail": "set (postgr\u2026)",
+      "fix": ""
+    },
+    {
+      "id": "env_ai_integrations_openai_api_key",
+      "label": "OpenAI API key (AI_INTEGRATIONS_OPENAI_API_KEY)",
+      "ok": true,
+      "weight": 10,
+      "category": "environment",
+      "detail": "set (_DUMMY\u2026)",
+      "fix": ""
+    },
+    {
+      "id": "env_jwt_secret",
+      "label": "JWT_SECRET (JWT_SECRET)",
+      "ok": true,
+      "weight": 8,
+      "category": "environment",
+      "detail": "set (Jw3yTQ\u2026)",
+      "fix": ""
+    },
+    {
+      "id": "env_sentry_dsn",
+      "label": "Sentry DSN (SENTRY_DSN)",
+      "ok": true,
+      "weight": 3,
+      "category": "environment",
+      "detail": "\u26a0 SENTRY_DSN not set \u2014 feature will be disabled",
+      "fix": "Optional: Secrets tab \u2192 Add secret \u2192 Key: SENTRY_DSN"
+    },
+    {
+      "id": "env_smtp_host",
+      "label": "SMTP host (SMTP_HOST)",
+      "ok": true,
+      "weight": 4,
+      "category": "environment",
+      "detail": "set (smtp.g\u2026)",
+      "fix": ""
+    },
+    {
+      "id": "env_smtp_user",
+      "label": "SMTP user (SMTP_USER)",
+      "ok": true,
+      "weight": 4,
+      "category": "environment",
+      "detail": "set (suppor\u2026)",
+      "fix": ""
+    },
+    {
+      "id": "env_app_base_url",
+      "label": "APP_BASE_URL (APP_BASE_URL)",
+      "ok": true,
+      "weight": 4,
+      "category": "environment",
+      "detail": "\u26a0 APP_BASE_URL not set \u2014 feature will be disabled",
+      "fix": "Optional: Secrets tab \u2192 Add secret \u2192 Key: APP_BASE_URL"
+    },
+    {
+      "id": "env_aws_s3_bucket",
+      "label": "S3 bucket (AWS_S3_BUCKET)",
+      "ok": true,
+      "weight": 2,
+      "category": "environment",
+      "detail": "\u26a0 AWS_S3_BUCKET not set \u2014 feature will be disabled",
+      "fix": "Optional: Secrets tab \u2192 Add secret \u2192 Key: AWS_S3_BUCKET"
+    },
+    {
+      "id": "env_ncbi_api_key",
+      "label": "NCBI API key (PubMed) (NCBI_API_KEY)",
+      "ok": true,
+      "weight": 2,
+      "category": "environment",
+      "detail": "set (86139a\u2026)",
+      "fix": ""
+    },
+    {
+      "id": "env_aestheticite_pgvector_enabled",
+      "label": "pgvector flag (AESTHETICITE_PGVECTOR_ENABLED)",
+      "ok": true,
+      "weight": 3,
+      "category": "environment",
+      "detail": "set (1)",
+      "fix": ""
+    },
+    {
+      "id": "fastapi_health",
+      "label": "FastAPI health endpoint",
+      "ok": true,
+      "weight": 10,
+      "category": "infrastructure",
+      "detail": "status=ok",
+      "fix": ""
+    },
+    {
+      "id": "fastapi_complications",
+      "label": "Complication protocols endpoint",
+      "ok": true,
+      "weight": 6,
+      "category": "safety",
+      "detail": "6 protocols loaded",
+      "fix": ""
+    },
+    {
+      "id": "fastapi_preprocedure",
+      "label": "Pre-procedure safety check",
+      "ok": true,
+      "weight": 8,
+      "category": "safety",
+      "detail": "decision=go, score=38/100",
+      "fix": ""
+    },
+    {
+      "id": "fastapi_drug",
+      "label": "Drug interaction checker",
+      "ok": true,
+      "weight": 4,
+      "category": "safety",
+      "detail": "1 interaction(s) found",
+      "fix": ""
+    },
+    {
+      "id": "fastapi_metrics",
+      "label": "Metrics lite endpoint",
+      "ok": true,
+      "weight": 3,
+      "category": "infrastructure",
+      "detail": "docs=229290, chunks=40704",
+      "fix": ""
+    },
+    {
+      "id": "express_root",
+      "label": "Express server responding",
+      "ok": true,
+      "weight": 8,
+      "category": "infrastructure",
+      "detail": "HTML served",
+      "fix": ""
+    },
+    {
+      "id": "express_health_proxy",
+      "label": "Express \u2192 FastAPI health proxy",
+      "ok": true,
+      "weight": 6,
+      "category": "infrastructure",
+      "detail": "proxy working",
+      "fix": ""
+    },
+    {
+      "id": "express_manifest",
+      "label": "PWA manifest.json",
+      "ok": true,
+      "weight": 2,
+      "category": "pwa",
+      "detail": "name=AesthetiCite",
+      "fix": ""
+    },
+    {
+      "id": "express_sw",
+      "label": "Service worker (sw.js)",
+      "ok": true,
+      "weight": 2,
+      "category": "pwa",
+      "detail": "\u26a0 sw.js is pass-through stub \u2014 not real PWA",
+      "fix": "Replace with sw_production.js from outputs/"
+    },
+    {
+      "id": "express_safety_proxy",
+      "label": "Safety check proxy",
+      "ok": true,
+      "weight": 5,
+      "category": "safety",
+      "detail": "proxy + engine working end-to-end",
+      "fix": ""
+    },
+    {
+      "id": "express_dashboard_route",
+      "label": "Dashboard log-query route exists",
+      "ok": true,
+      "weight": 3,
+      "category": "dashboard",
+      "detail": "route exists (HTTP 422)",
+      "fix": ""
+    },
+    {
+      "id": "express_reset_route",
+      "label": "Password reset route exists",
+      "ok": true,
+      "weight": 3,
+      "category": "auth",
+      "detail": "route exists (HTTP 200)",
+      "fix": ""
+    },
+    {
+      "id": "db_connection",
+      "label": "PostgreSQL connected",
+      "ok": true,
+      "weight": 12,
+      "category": "database",
+      "detail": "PostgreSQL 16.10 on x86_64-pc-linux-gnu, compiled ",
+      "fix": ""
+    },
+    {
+      "id": "db_pgvector",
+      "label": "pgvector extension installed",
+      "ok": true,
+      "weight": 8,
+      "category": "database",
+      "detail": "vector extension present",
+      "fix": ""
+    },
+    {
+      "id": "db_users",
+      "label": "Users table exists",
+      "ok": true,
+      "weight": 5,
+      "category": "database",
+      "detail": "14 users",
+      "fix": ""
+    },
+    {
+      "id": "db_documents",
+      "label": "Documents table populated",
+      "ok": true,
+      "weight": 8,
+      "category": "database",
+      "detail": "229290 total, 106241 aesthetic",
+      "fix": ""
+    },
+    {
+      "id": "db_embeddings",
+      "label": "Chunks with embeddings",
+      "ok": true,
+      "weight": 6,
+      "category": "database",
+      "detail": "40704/40704 chunks embedded",
+      "fix": ""
+    },
+    {
+      "id": "db_growth_tables",
+      "label": "Growth engine tables (PostgreSQL)",
+      "ok": true,
+      "weight": 6,
+      "category": "database",
+      "detail": "all 6 tables present",
+      "fix": ""
+    },
+    {
+      "id": "db_auth_tables",
+      "label": "Auth & operational tables",
+      "ok": true,
+      "weight": 5,
+      "category": "database",
+      "detail": "auth_tokens, query_logs_v2, complication_cases + user columns",
+      "fix": ""
+    },
+    {
+      "id": "safety_retriever",
+      "label": "Evidence retriever (live vs dummy)",
+      "ok": true,
+      "weight": 8,
+      "category": "safety",
+      "detail": "Using _LiveEvidenceRetriever \u2014 live retrieval active",
+      "fix": ""
+    },
+    {
+      "id": "safety_protocol_vascular",
+      "label": "Vascular occlusion protocol",
+      "ok": true,
+      "weight": 5,
+      "category": "safety",
+      "detail": "matched=vascular_occlusion_ha_filler, risk=100/100",
+      "fix": ""
+    },
+    {
+      "id": "safety_high_risk",
+      "label": "High-risk procedure scoring",
+      "ok": true,
+      "weight": 5,
+      "category": "safety",
+      "detail": "\u26a0 score=44/100 \u2014 lower than expected for high-risk case",
+      "fix": "Check risk scoring logic"
+    },
+    {
+      "id": "safety_pdf_export",
+      "label": "Safety check PDF export",
+      "ok": true,
+      "weight": 4,
+      "category": "safety",
+      "detail": "safety_v2_2a99c6b6-b27a-4e36-8cff-07b89e1e7196.pdf (3335 bytes)",
+      "fix": ""
+    },
+    {
+      "id": "growth_info",
+      "label": "Growth engine info",
+      "ok": true,
+      "weight": 3,
+      "category": "growth",
+      "detail": "v2.0.0, storage=PostgreSQL",
+      "fix": ""
+    },
+    {
+      "id": "growth_drug",
+      "label": "Drug interactions (growth engine)",
+      "ok": true,
+      "weight": 3,
+      "category": "growth",
+      "detail": "2 interactions found",
+      "fix": ""
+    },
+    {
+      "id": "growth_dashboard_data",
+      "label": "Dashboard has query data",
+      "ok": true,
+      "weight": 5,
+      "category": "growth",
+      "detail": "\u26a0 No query logs yet \u2014 dashboard will show empty data",
+      "fix": "Use the app to run searches. logQueryToClinic in ask.tsx must call /api/ops/dashboard/log-query"
+    },
+    {
+      "id": "growth_session_reports",
+      "label": "Session reports table",
+      "ok": true,
+      "weight": 3,
+      "category": "growth",
+      "detail": "0 session reports",
+      "fix": ""
+    },
+    {
+      "id": "auth_login",
+      "label": "Login endpoint",
+      "ok": true,
+      "weight": 5,
+      "category": "auth",
+      "detail": "endpoint responding (HTTP 401)",
+      "fix": ""
+    },
+    {
+      "id": "auth_forgot_password",
+      "label": "Forgot password endpoint",
+      "ok": true,
+      "weight": 4,
+      "category": "auth",
+      "detail": "HTTP 200 \u2014 endpoint exists",
+      "fix": ""
+    },
+    {
+      "id": "auth_verify_email",
+      "label": "Email verify endpoint",
+      "ok": true,
+      "weight": 3,
+      "category": "auth",
+      "detail": "HTTP 400 \u2014 endpoint exists",
+      "fix": ""
+    },
+    {
+      "id": "auth_tokens_table",
+      "label": "auth_tokens table exists",
+      "ok": true,
+      "weight": 4,
+      "category": "auth",
+      "detail": "table exists (0 tokens)",
+      "fix": ""
+    },
+    {
+      "id": "fs_export_dir",
+      "label": "Export directory (exports)",
+      "ok": true,
+      "weight": 4,
+      "category": "filesystem",
+      "detail": "writable, 10 PDFs",
+      "fix": ""
+    },
+    {
+      "id": "fs_sw_js",
+      "label": "Service worker file (sw.js)",
+      "ok": true,
+      "weight": 2,
+      "category": "filesystem",
+      "detail": "production sw.js (7731 bytes)",
+      "fix": ""
+    },
+    {
+      "id": "fs_pwa_icons",
+      "label": "PWA icons (icon-192.png, icon-512.png)",
+      "ok": true,
+      "weight": 2,
+      "category": "filesystem",
+      "detail": "\u26a0 no PWA icons \u2014 install prompt won't work",
+      "fix": "Create client/public/icons/icon-192.png and icon-512.png"
+    },
+    {
+      "id": "fs_offline",
+      "label": "Offline fallback page (offline.html)",
+      "ok": true,
+      "weight": 2,
+      "category": "filesystem",
+      "detail": "6930 bytes",
+      "fix": ""
+    },
+    {
+      "id": "fs_safety_workspace",
+      "label": "Safety Workspace page exists",
+      "ok": true,
+      "weight": 3,
+      "category": "filesystem",
+      "detail": "67898 bytes",
+      "fix": ""
+    },
+    {
+      "id": "fs_mobile_css",
+      "label": "Mobile CSS overrides",
+      "ok": true,
+      "weight": 2,
+      "category": "filesystem",
+      "detail": "9082 bytes",
+      "fix": ""
+    },
+    {
+      "id": "ops_readiness",
+      "label": "Readiness endpoint (/api/ops/readiness)",
+      "ok": true,
+      "weight": 4,
+      "category": "operational",
+      "detail": "score=71/100, status=Clinic Pilot Ready",
+      "fix": ""
+    },
+    {
+      "id": "ops_health_full",
+      "label": "Full health check (/api/ops/health/full)",
+      "ok": true,
+      "weight": 3,
+      "category": "operational",
+      "detail": "status=ok",
+      "fix": ""
+    },
+    {
+      "id": "ops_ingest_status",
+      "label": "Ingestion pipeline status",
+      "ok": true,
+      "weight": 3,
+      "category": "operational",
+      "detail": "status=complete, papers_inserted=229290",
+      "fix": ""
+    },
+    {
+      "id": "ops_evidence_test",
+      "label": "Evidence retrieval test",
+      "ok": true,
+      "weight": 5,
+      "category": "operational",
+      "detail": "live retrieval working, 5 results",
+      "fix": ""
+    },
+    {
+      "id": "e2e_safety_check",
+      "label": "Full safety check (Express \u2192 FastAPI)",
+      "ok": true,
+      "weight": 8,
+      "category": "e2e",
+      "detail": "score=53/100, decision=caution, 3 risks, 1 evidence items(live), 3 caution flags | 784ms",
+      "fix": ""
+    },
+    {
+      "id": "e2e_drug_check",
+      "label": "Drug interaction check round-trip",
+      "ok": true,
+      "weight": 4,
+      "category": "e2e",
+      "detail": "3 interactions, high_severity=True",
+      "fix": ""
+    }
+  ],
+  "blockers": []
+}

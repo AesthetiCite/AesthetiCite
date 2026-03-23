@@ -1,0 +1,16 @@
+Architected backend integration mapping protocol data structures and API endpointsArchitected backend integration mapping protocol data structures and API endpointsGood. I have everything I need. The backend has all the right endpoints. Building the complete wired version now — same UI, live backend.Created a file, ran a command, read a fileCreated a file, ran a command, read a fileDrop it at client/src/pages/safety-workspace.tsx. Then two lines in App.tsx:
+typescriptimport SafetyWorkspacePage from "@/pages/safety-workspace";
+// In Router():
+<Route path="/safety-workspace">
+  {() => <ProtectedRoute component={SafetyWorkspacePage} />}
+</Route>
+
+What changed from the original:
+Backend wiring — four live calls:
+GET /api/complications/protocols fires on mount, populates the protocol selector with your real 6-protocol library. Falls back to static protocols instantly while fetching.
+POST /api/complications/protocol fires with 600ms debounce whenever the complication type, region, procedure, product, patient factors, or onset time changes. Returns live protocol steps, evidence items, red flags, dose guidance, and follow-up questions from your RAG engine. The UI shows "Live" in green next to the protocol title when backend data is active, shows "Updating…" during fetch.
+POST /api/complications/log-case fires silently when the clinician saves a case — logs to your complication dataset with protocol key, region, procedure, product, symptoms, and outcome. Non-fatal if it fails.
+POST /api/complications/export-pdf generates the proper reportlab PDF when the clinician clicks Export. Falls back to the text report automatically if the backend is unavailable or the protocol hasn't fetched yet.
+Progressive enhancement: static protocols render in zero milliseconds. The backend upgrade happens transparently. If the backend is down, the workspace still works — clinicians get the static protocol immediately.
+Red flags section added to the step view — your backend returns red_flags per protocol and they now render as a prominent red card below the steps.
+Request ID tracking — the live protocol's request_id is stored on the card and used for the PDF export call, so the exported PDF matches exactly what was displayed.

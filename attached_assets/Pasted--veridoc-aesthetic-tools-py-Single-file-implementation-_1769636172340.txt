@@ -1,0 +1,729 @@
+"""
+veridoc_aesthetic_tools.py
+
+Single-file, implementation-ready “tool server” module for VeriDoc (FastAPI).
+Provides deterministic tools useful in aesthetic medicine:
+- Local anesthetic safety (lidocaine/articaine/bupivacaine/ropivacaine) max dose calculator
+- Epinephrine concentration helper (common dilutions) + max epinephrine dose guidance
+- Acetaminophen safety check (adult)
+- Botulinum toxin dilution helper (units per mL, units per 0.1 mL)
+- Vascular occlusion emergency checklist (non-dosing, action checklist)
+- HSV prophylaxis suggestion (evidence-sensitive; can refuse if no regimen configured)
+- Simple contraindication/risk flagger (pregnancy, anticoagulants, isotretinoin, etc.)
+- Optional local interaction checker (RxNorm-like normalized string keys; plug in your dataset)
+
+Design goals:
+- Deterministic outputs (no LLM)
+- Safety-first: hard bounds + warnings + structured outputs
+- Evidence hooks: each tool returns "evidence" placeholders you can bind to your citation system
+  (e.g., local doc ids for SPC/labeling/guidelines). If evidence is missing, tool can refuse.
+
+How to use:
+- Include `router` in your FastAPI app: `app.include_router(router, prefix="/api")`
+- Call POST /api/tools/execute with {"name": "...", "args": {...}}
+- Or call the tool functions directly from your orchestrator.
+
+IMPORTANT: This module is not medical advice; it provides calculators/checklists
+intended for clinician decision support with local evidence bindings.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Optional, List, Tuple, Union
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, validator
+
+
+router = APIRouter(tags=["veridoc-tools"])
+
+
+# -----------------------------------------------------------------------------
+# Shared response shapes
+# -----------------------------------------------------------------------------
+
+class ToolStatus(str, Enum):
+    ok = "ok"
+    refuse = "refuse"
+    error = "error"
+
+
+class EvidenceItem(BaseModel):
+    """
+    You should map these IDs to your RAG corpus records and render as strict citations.
+    Keep these deterministic; do NOT fabricate citations.
+    """
+    source_id: str = Field(..., description="Internal evidence id or corpus doc id")
+    label: str = Field(..., description="Short label, e.g., 'Lidocaine SmPC' / 'AHA Anaphylaxis guidance'")
+    note: Optional[str] = Field(None, description="Optional note about relevance")
+
+
+class ToolResult(BaseModel):
+    status: ToolStatus
+    name: str
+    output: Dict[str, Any] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+    refusals: List[str] = Field(default_factory=list)
+    evidence: List[EvidenceItem] = Field(default_factory=list)
+
+
+class ToolCall(BaseModel):
+    name: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+
+
+# -----------------------------------------------------------------------------
+# Utility: safe rounding
+# -----------------------------------------------------------------------------
+
+def _round(x: float, nd: int = 2) -> float:
+    try:
+        return float(round(float(x), nd))
+    except Exception:
+        return x  # type: ignore
+
+
+def _require(condition: bool, message: str, *, name: str) -> None:
+    if not condition:
+        raise HTTPException(status_code=422, detail=f"{name}: {message}")
+
+
+# -----------------------------------------------------------------------------
+# Tool: Local anesthetic maximum dose calculator (Aesthetic medicine)
+# -----------------------------------------------------------------------------
+
+class LocalAnestheticAgent(str, Enum):
+    lidocaine = "lidocaine"
+    articaine = "articaine"
+    bupivacaine = "bupivacaine"
+    ropivacaine = "ropivacaine"
+
+
+@dataclass(frozen=True)
+class LocalAnestheticRule:
+    # mg/kg and absolute max mg
+    mg_per_kg_no_epi: float
+    max_mg_no_epi: float
+    mg_per_kg_with_epi: float
+    max_mg_with_epi: float
+    # typical concentrations used in clinic (mg/mL); used to convert mg -> mL
+    common_mg_per_ml: Tuple[float, ...]
+    # evidence ids: must exist in your corpus if you want strict citations
+    evidence_ids: Tuple[str, ...]
+
+
+# NOTE: These are conservative defaults often used in clinical references.
+# You MUST bind these to your local evidence (SmPC/labeling/guidelines) and validate for your jurisdiction.
+LOCAL_ANESTHETIC_RULES: Dict[LocalAnestheticAgent, LocalAnestheticRule] = {
+    LocalAnestheticAgent.lidocaine: LocalAnestheticRule(
+        mg_per_kg_no_epi=4.5,
+        max_mg_no_epi=300.0,
+        mg_per_kg_with_epi=7.0,
+        max_mg_with_epi=500.0,
+        common_mg_per_ml=(10.0, 20.0),  # 1% = 10 mg/mL, 2% = 20 mg/mL
+        evidence_ids=("EVID_LIDO_SMPC", "EVID_LOCAL_ANESTH_SAFETY"),
+    ),
+    LocalAnestheticAgent.articaine: LocalAnestheticRule(
+        mg_per_kg_no_epi=7.0,
+        max_mg_no_epi=500.0,
+        mg_per_kg_with_epi=7.0,
+        max_mg_with_epi=500.0,
+        common_mg_per_ml=(40.0,),  # 4% = 40 mg/mL
+        evidence_ids=("EVID_ARTI_SMPC",),
+    ),
+    LocalAnestheticAgent.bupivacaine: LocalAnestheticRule(
+        mg_per_kg_no_epi=2.0,
+        max_mg_no_epi=175.0,
+        mg_per_kg_with_epi=3.0,
+        max_mg_with_epi=225.0,
+        common_mg_per_ml=(2.5, 5.0),  # 0.25% = 2.5 mg/mL, 0.5% = 5 mg/mL
+        evidence_ids=("EVID_BUPI_SMPC",),
+    ),
+    LocalAnestheticAgent.ropivacaine: LocalAnestheticRule(
+        mg_per_kg_no_epi=3.0,
+        max_mg_no_epi=200.0,
+        mg_per_kg_with_epi=3.0,
+        max_mg_with_epi=200.0,
+        common_mg_per_ml=(2.0, 5.0, 7.5, 10.0),  # varies by concentration
+        evidence_ids=("EVID_ROPI_SMPC",),
+    ),
+}
+
+
+class LocalAnestheticDoseArgs(BaseModel):
+    agent: LocalAnestheticAgent
+    weight_kg: float = Field(..., gt=0, le=300)
+    with_epinephrine: bool = False
+    concentration_mg_per_ml: Optional[float] = Field(
+        None,
+        description="If omitted, tool returns a table for common concentrations."
+    )
+    # Optional safety modifiers
+    hepatic_impairment: bool = False
+    cardiac_disease: bool = False
+    elderly: bool = False
+    pregnancy: bool = False
+
+    @validator("weight_kg")
+    def _reasonable_weight(cls, v: float) -> float:
+        if v < 20:
+            # still possible but unusual for aesthetic med
+            return v
+        return v
+
+
+def tool_local_anesthetic_max_dose(args: LocalAnestheticDoseArgs) -> ToolResult:
+    name = "local_anesthetic_max_dose"
+    rule = LOCAL_ANESTHETIC_RULES[args.agent]
+
+    mg_per_kg = rule.mg_per_kg_with_epi if args.with_epinephrine else rule.mg_per_kg_no_epi
+    cap_mg = rule.max_mg_with_epi if args.with_epinephrine else rule.max_mg_no_epi
+
+    # Conservative reduction factors for higher-risk scenarios.
+    # These are NOT a substitute for clinical judgment; they bias safer limits.
+    reduction = 1.0
+    risk_flags = []
+    if args.hepatic_impairment:
+        reduction *= 0.7
+        risk_flags.append("hepatic_impairment")
+    if args.cardiac_disease:
+        reduction *= 0.8
+        risk_flags.append("cardiac_disease")
+    if args.elderly:
+        reduction *= 0.85
+        risk_flags.append("elderly")
+    if args.pregnancy:
+        # Keep conservative; evidence varies by agent/context.
+        reduction *= 0.85
+        risk_flags.append("pregnancy")
+
+    calc_mg = mg_per_kg * args.weight_kg
+    max_mg = min(calc_mg, cap_mg) * reduction
+
+    warnings: List[str] = []
+    if reduction < 1.0:
+        warnings.append(
+            f"Conservative reduction applied ({int((1-reduction)*100)}%): {', '.join(risk_flags)}."
+        )
+    warnings.append("Always aspirate, dose incrementally, and monitor for LAST (local anesthetic systemic toxicity).")
+    warnings.append("If symptoms suggest LAST, follow your institutional lipid emulsion protocol and escalate care.")
+
+    output: Dict[str, Any] = {
+        "agent": args.agent.value,
+        "with_epinephrine": args.with_epinephrine,
+        "weight_kg": _round(args.weight_kg, 2),
+        "mg_per_kg_reference": mg_per_kg,
+        "absolute_cap_mg_reference": cap_mg,
+        "computed_mg_before_cap": _round(calc_mg, 2),
+        "max_recommended_total_mg": _round(max_mg, 2),
+        "notes": [
+            "This is a safety-oriented calculator; bind local labeling/guidelines in evidence.",
+        ],
+    }
+
+    # Convert to volume if concentration given; else provide table for common.
+    if args.concentration_mg_per_ml is not None:
+        _require(args.concentration_mg_per_ml > 0, "concentration_mg_per_ml must be > 0", name=name)
+        max_ml = max_mg / args.concentration_mg_per_ml
+        output["concentration_mg_per_ml"] = args.concentration_mg_per_ml
+        output["max_volume_ml"] = _round(max_ml, 2)
+    else:
+        table = []
+        for c in rule.common_mg_per_ml:
+            table.append(
+                {
+                    "concentration_mg_per_ml": c,
+                    "max_volume_ml": _round(max_mg / c, 2),
+                }
+            )
+        output["volume_table_common_concentrations"] = table
+
+    evidence = [EvidenceItem(source_id=eid, label="Local anesthetic dosing reference") for eid in rule.evidence_ids]
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: Epinephrine helper (concentration & maximum dose guidance)
+# -----------------------------------------------------------------------------
+
+class EpinephrineArgs(BaseModel):
+    # "1:100,000" style or mg/mL
+    dilution: Optional[str] = Field(None, description="Examples: '1:100000', '1:200000'")
+    concentration_mg_per_ml: Optional[float] = Field(None, gt=0, description="If known, provide mg/mL")
+    planned_volume_ml: Optional[float] = Field(None, gt=0, description="If provided, tool computes total epinephrine dose")
+    context: str = Field("local_anesthetic_admix", description="e.g. local_anesthetic_admix, anaphylaxis")
+
+def _parse_dilution(d: str) -> Optional[float]:
+    d = d.strip().lower().replace(" ", "")
+    if d.startswith("1:"):
+        try:
+            denom = float(d.split(":")[1].replace(",", ""))
+            # 1:1000 == 1 mg/mL (by convention), so mg/mL = 1/denom * 1000
+            # Because 1:1000 means 1 g in 1000 mL? Clinical convention: 1:1000 = 1 mg/mL.
+            # We'll implement standard clinical convention:
+            # 1:1000 => 1 mg/mL; 1:10000 => 0.1 mg/mL; 1:100000 => 0.01 mg/mL.
+            return 1.0 / (denom / 1000.0)
+        except Exception:
+            return None
+    return None
+
+def tool_epinephrine_helper(args: EpinephrineArgs) -> ToolResult:
+    name = "epinephrine_helper"
+    warnings: List[str] = []
+    evidence: List[EvidenceItem] = [
+        EvidenceItem(source_id="EVID_EPI_LABELING", label="Epinephrine labeling / dilution conventions"),
+        EvidenceItem(source_id="EVID_ANAPHYLAXIS_GUIDANCE", label="Anaphylaxis emergency guidance"),
+    ]
+
+    mg_per_ml = args.concentration_mg_per_ml
+    if mg_per_ml is None and args.dilution:
+        mg_per_ml = _parse_dilution(args.dilution)
+
+    if mg_per_ml is None:
+        return ToolResult(
+            status=ToolStatus.refuse,
+            name=name,
+            refusals=["Provide dilution (e.g., 1:100000) or concentration_mg_per_ml to compute dose safely."],
+            evidence=evidence,
+        )
+
+    output: Dict[str, Any] = {
+        "context": args.context,
+        "concentration_mg_per_ml": _round(mg_per_ml, 6),
+        "concentration_mcg_per_ml": _round(mg_per_ml * 1000.0, 2),
+        "common_dilutions_reference": [
+            {"dilution": "1:1000", "mg_per_ml": 1.0, "mcg_per_ml": 1000.0},
+            {"dilution": "1:10000", "mg_per_ml": 0.1, "mcg_per_ml": 100.0},
+            {"dilution": "1:100000", "mg_per_ml": 0.01, "mcg_per_ml": 10.0},
+            {"dilution": "1:200000", "mg_per_ml": 0.005, "mcg_per_ml": 5.0},
+        ],
+        "max_epinephrine_dose_guidance_mg": {
+            "healthy_adult_commonly_cited": 0.2,
+            "cardiac_disease_commonly_cited": 0.04,
+        },
+        "notes": [
+            "Maximum epinephrine doses depend on clinical context; bind local guidelines/labeling.",
+        ],
+    }
+
+    if args.planned_volume_ml is not None:
+        total_mg = mg_per_ml * args.planned_volume_ml
+        total_mcg = total_mg * 1000.0
+        output["planned_volume_ml"] = _round(args.planned_volume_ml, 2)
+        output["total_epinephrine_mg"] = _round(total_mg, 4)
+        output["total_epinephrine_mcg"] = _round(total_mcg, 1)
+
+        if total_mg > 0.2:
+            warnings.append("Planned epinephrine amount exceeds 0.2 mg (commonly cited healthy adult threshold). Re-check.")
+        if total_mg > 0.04:
+            warnings.append("If cardiac disease is present, commonly cited max is 0.04 mg; consider heightened caution.")
+    else:
+        warnings.append("Add planned_volume_ml to compute total epinephrine dose.")
+
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: Acetaminophen (paracetamol) adult safety check
+# -----------------------------------------------------------------------------
+
+class AcetaminophenArgs(BaseModel):
+    weight_kg: Optional[float] = Field(None, gt=0, le=300)
+    total_daily_mg: float = Field(..., gt=0)
+    chronic_alcohol_use: bool = False
+    liver_disease: bool = False
+    fasting_or_malnourished: bool = False
+
+def tool_acetaminophen_safety(args: AcetaminophenArgs) -> ToolResult:
+    name = "acetaminophen_safety"
+    evidence = [
+        EvidenceItem(source_id="EVID_ACET_LABELING", label="Acetaminophen labeling / safety guidance"),
+    ]
+
+    warnings: List[str] = []
+    # Conservative thresholds; you can tune to your policy.
+    standard_max = 4000.0
+    conservative_max = 3000.0
+
+    high_risk = args.chronic_alcohol_use or args.liver_disease or args.fasting_or_malnourished
+    max_allowed = conservative_max if high_risk else standard_max
+
+    status = "within_limit" if args.total_daily_mg <= max_allowed else "exceeds_limit"
+    output = {
+        "total_daily_mg": _round(args.total_daily_mg, 0),
+        "high_risk_factors": {
+            "chronic_alcohol_use": args.chronic_alcohol_use,
+            "liver_disease": args.liver_disease,
+            "fasting_or_malnourished": args.fasting_or_malnourished,
+        },
+        "max_daily_mg_applied": max_allowed,
+        "status": status,
+        "notes": [
+            "Include all sources of acetaminophen (combo cold/flu products).",
+        ],
+    }
+
+    if high_risk:
+        warnings.append("High-risk factors present: conservative daily maximum applied.")
+    if args.total_daily_mg > max_allowed:
+        warnings.append("Daily total exceeds applied maximum; consider alternative analgesia or dose reduction.")
+    if args.total_daily_mg > 6000:
+        warnings.append("Markedly elevated daily dose; assess urgently for toxicity risk depending on timing/context.")
+
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: Botulinum toxin dilution helper (units per mL)
+# -----------------------------------------------------------------------------
+
+class ToxinBrand(str, Enum):
+    onabotulinumtoxinA = "onabotulinumtoxinA"      # Botox
+    incobotulinumtoxinA = "incobotulinumtoxinA"    # Xeomin
+    abobotulinumtoxinA = "abobotulinumtoxinA"      # Dysport
+    prabotulinumtoxinA = "prabotulinumtoxinA"      # Jeuveau
+    daxibotulinumtoxinA = "daxibotulinumtoxinA"    # Daxxify
+
+
+class ToxinDilutionArgs(BaseModel):
+    brand: ToxinBrand
+    vial_units: float = Field(..., gt=0, description="Units per vial (as labeled)")
+    diluent_ml: float = Field(..., gt=0, description="Diluent volume added (mL)")
+    report_units_per_0_1ml: bool = True
+
+def tool_toxin_dilution(args: ToxinDilutionArgs) -> ToolResult:
+    name = "toxin_dilution"
+    evidence = [
+        EvidenceItem(source_id="EVID_TOXIN_LABELING", label="Botulinum toxin labeling / reconstitution"),
+    ]
+    units_per_ml = args.vial_units / args.diluent_ml
+    output = {
+        "brand": args.brand.value,
+        "vial_units": args.vial_units,
+        "diluent_ml": args.diluent_ml,
+        "units_per_ml": _round(units_per_ml, 3),
+    }
+    if args.report_units_per_0_1ml:
+        output["units_per_0_1ml"] = _round(units_per_ml * 0.1, 3)
+
+    warnings = [
+        "Units are product-specific and NOT interchangeable across brands.",
+        "Follow labeling for storage, stability, and technique.",
+    ]
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: Vascular occlusion emergency checklist (filler)
+# -----------------------------------------------------------------------------
+
+class VascularOcclusionArgs(BaseModel):
+    suspected: bool = True
+    area: Optional[str] = Field(None, description="e.g. nose, nasolabial fold, glabella, lips")
+    visual_symptoms_present: bool = True
+    pain_out_of_proportion: bool = True
+
+def tool_vascular_occlusion_checklist(args: VascularOcclusionArgs) -> ToolResult:
+    name = "vascular_occlusion_checklist"
+    evidence = [
+        EvidenceItem(source_id="EVID_Filler_VO_Guideline", label="Dermal filler vascular occlusion guideline"),
+    ]
+
+    if not args.suspected:
+        return ToolResult(
+            status=ToolStatus.refuse,
+            name=name,
+            refusals=["Checklist is intended for suspected occlusion; set suspected=true if clinically relevant."],
+            evidence=evidence,
+        )
+
+    output = {
+        "area": args.area,
+        "red_flags": {
+            "visual_symptoms_present": args.visual_symptoms_present,
+            "pain_out_of_proportion": args.pain_out_of_proportion,
+        },
+        "immediate_actions_checklist": [
+            "STOP injection immediately.",
+            "Assess capillary refill, skin color changes (blanching/livedo), pain, and vision symptoms.",
+            "If any visual symptoms: treat as emergency and arrange urgent ophthalmology/ED per protocol.",
+            "Consider warm compresses and gentle massage per protocol (avoid delaying definitive measures).",
+            "Prepare hyaluronidase protocol if HA filler suspected; follow locally approved dosing/technique.",
+            "Escalate care if progression or uncertainty; document time of onset and steps taken.",
+        ],
+        "documentation_prompts": [
+            "Record product, lot, amount injected, site(s), time(s), symptoms onset, photos if appropriate.",
+            "Record who was contacted (ED/ophthalmology) and timing.",
+        ],
+        "notes": [
+            "This tool intentionally avoids numeric dosing. Bind your local protocol as evidence for dosing specifics.",
+        ],
+    }
+
+    warnings = [
+        "Time-critical complication: follow your clinic’s emergency protocol and local guidelines.",
+        "If ocular symptoms occur, do not delay emergency escalation.",
+    ]
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: HSV prophylaxis suggestion (only if you configure regimens w/ evidence)
+# -----------------------------------------------------------------------------
+
+class HSVProphylaxisArgs(BaseModel):
+    procedure: str = Field(..., description="e.g., laser_resurfacing, deep_peel, lip_filler")
+    history_of_hsv: bool = True
+    immunosuppressed: bool = False
+    regimens_enabled: bool = Field(
+        False,
+        description="Set true only if your deployment has vetted regimens + evidence sources."
+    )
+
+def tool_hsv_prophylaxis(args: HSVProphylaxisArgs) -> ToolResult:
+    name = "hsv_prophylaxis"
+    evidence = [EvidenceItem(source_id="EVID_HSV_AESTHETIC_GUIDANCE", label="HSV prophylaxis guidance (aesthetic procedures)")]
+
+    if not args.history_of_hsv:
+        return ToolResult(
+            status=ToolStatus.ok,
+            name=name,
+            output={"recommended": False, "reason": "No HSV history indicated; assess clinician judgment and risk factors."},
+            evidence=evidence,
+        )
+
+    if not args.regimens_enabled:
+        return ToolResult(
+            status=ToolStatus.refuse,
+            name=name,
+            refusals=[
+                "HSV prophylaxis regimens are not enabled in this deployment. Enable only after binding vetted dosing protocols with primary evidence."
+            ],
+            evidence=evidence,
+        )
+
+    # Example placeholders — replace with your vetted, evidence-bound regimens.
+    output = {
+        "recommended": True,
+        "procedure": args.procedure,
+        "risk_modifiers": {"immunosuppressed": args.immunosuppressed},
+        "regimen_options": [
+            {
+                "drug": "valacyclovir",
+                "schedule": "CONFIG_REQUIRED",
+                "note": "Bind exact dosing + duration to your local protocol evidence.",
+            },
+            {
+                "drug": "acyclovir",
+                "schedule": "CONFIG_REQUIRED",
+                "note": "Bind exact dosing + duration to your local protocol evidence.",
+            },
+        ],
+    }
+    warnings = [
+        "Use only regimens supported by your local protocol, renal function, and contraindications.",
+    ]
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: Contraindication / risk flagger (aesthetic procedures)
+# -----------------------------------------------------------------------------
+
+class RiskFlagArgs(BaseModel):
+    procedure: str = Field(..., description="e.g., filler, botox, laser, peel, threads")
+    pregnant: bool = False
+    breastfeeding: bool = False
+    anticoagulant_or_antiplatelet: bool = False
+    isotretinoin_within_6_months: bool = False
+    active_infection_at_site: bool = False
+    history_keloid: bool = False
+    autoimmune_disease: bool = False
+    immunosuppressed: bool = False
+    uncontrolled_diabetes: bool = False
+    allergy_lidocaine: bool = False
+    allergy_hyaluronidase: bool = False
+
+def tool_aesthetic_risk_flags(args: RiskFlagArgs) -> ToolResult:
+    name = "aesthetic_risk_flags"
+    evidence = [
+        EvidenceItem(source_id="EVID_AESTHETIC_CONTRAINDICATIONS", label="Aesthetic procedure contraindications guidance"),
+    ]
+
+    flags = []
+    cautions = []
+    if args.active_infection_at_site:
+        flags.append("Active infection at treatment site (generally defer until resolved).")
+    if args.pregnant:
+        cautions.append("Pregnancy: many elective aesthetic procedures are deferred; consult local policy.")
+    if args.breastfeeding:
+        cautions.append("Breastfeeding: assess product/procedure-specific guidance; consider deferral for elective care.")
+    if args.anticoagulant_or_antiplatelet:
+        cautions.append("Anticoagulant/antiplatelet use: increased bruising/hematoma risk; plan technique and aftercare.")
+    if args.isotretinoin_within_6_months:
+        cautions.append("Recent isotretinoin: procedure-specific wound-healing/scarring considerations; follow evidence/policy.")
+    if args.history_keloid:
+        cautions.append("History of keloid/hypertrophic scarring: increased risk with energy devices/peels/threads.")
+    if args.autoimmune_disease:
+        cautions.append("Autoimmune disease: consider flare risk and product-specific considerations; follow guidance.")
+    if args.immunosuppressed:
+        cautions.append("Immunosuppression: infection risk higher; ensure asepsis and consider deferral/coordination.")
+    if args.uncontrolled_diabetes:
+        cautions.append("Uncontrolled diabetes: wound healing/infection risk; consider optimization before elective procedures.")
+    if args.allergy_lidocaine:
+        flags.append("Reported lidocaine allergy: verify type/severity; consider alternatives and allergy guidance.")
+    if args.allergy_hyaluronidase and "filler" in args.procedure.lower():
+        cautions.append("Hyaluronidase allergy: emergency planning for HA filler complications must be addressed.")
+
+    output = {
+        "procedure": args.procedure,
+        "hard_stop_flags": flags,
+        "cautions": cautions,
+        "summary": {
+            "hard_stop": len(flags) > 0,
+            "caution": len(cautions) > 0,
+        }
+    }
+
+    warnings = []
+    if len(flags) == 0 and len(cautions) == 0:
+        warnings.append("No risks flagged from provided inputs; this is not a full pre-procedure assessment.")
+    else:
+        warnings.append("This tool flags common risks; bind definitive contraindications to your local evidence and labeling.")
+
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Tool: Local drug interaction checker (plug-in dataset)
+# -----------------------------------------------------------------------------
+
+# Minimal placeholder dataset. Replace with your licensed/validated interactions table.
+# Key: (drug_a, drug_b) normalized lower-case, sorted tuple.
+INTERACTIONS_DB: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("warfarin", "trimethoprim-sulfamethoxazole"): {
+        "severity": "major",
+        "mechanism": "increased anticoagulant effect",
+        "action": "avoid_or_monitor_inr_closely",
+        "evidence_ids": ("EVID_INTERACTION_DB",),
+    },
+    ("isotretinoin", "tetracycline"): {
+        "severity": "major",
+        "mechanism": "increased intracranial pressure risk",
+        "action": "avoid_combination",
+        "evidence_ids": ("EVID_INTERACTION_DB",),
+    },
+}
+
+
+class InteractionCheckArgs(BaseModel):
+    drugs: List[str] = Field(..., min_items=2, max_items=20)
+
+def _norm_drug(s: str) -> str:
+    return s.strip().lower()
+
+def tool_interaction_check(args: InteractionCheckArgs) -> ToolResult:
+    name = "interaction_check"
+    evidence = [EvidenceItem(source_id="EVID_INTERACTION_DB", label="Local interaction dataset (configured)")]
+
+    drugs = [_norm_drug(d) for d in args.drugs if d and d.strip()]
+    if len(drugs) < 2:
+        return ToolResult(status=ToolStatus.refuse, name=name, refusals=["Provide at least two drug names."], evidence=evidence)
+
+    found = []
+    for i in range(len(drugs)):
+        for j in range(i + 1, len(drugs)):
+            a, b = drugs[i], drugs[j]
+            key = tuple(sorted((a, b)))
+            if key in INTERACTIONS_DB:
+                rec = INTERACTIONS_DB[key]
+                found.append({
+                    "drug_a": key[0],
+                    "drug_b": key[1],
+                    "severity": rec["severity"],
+                    "mechanism": rec["mechanism"],
+                    "recommended_action": rec["action"],
+                })
+
+    output = {
+        "drugs_normalized": drugs,
+        "interactions_found": found,
+        "notes": [
+            "This checker is only as complete as the configured dataset.",
+            "Always consider patient-specific factors and local guidance.",
+        ],
+    }
+
+    warnings = []
+    if not found:
+        warnings.append("No interactions found in the configured dataset; absence of evidence is not evidence of absence.")
+
+    return ToolResult(status=ToolStatus.ok, name=name, output=output, warnings=warnings, evidence=evidence)
+
+
+# -----------------------------------------------------------------------------
+# Registry + execution endpoint
+# -----------------------------------------------------------------------------
+
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools = {
+            "local_anesthetic_max_dose": (LocalAnestheticDoseArgs, tool_local_anesthetic_max_dose),
+            "epinephrine_helper": (EpinephrineArgs, tool_epinephrine_helper),
+            "acetaminophen_safety": (AcetaminophenArgs, tool_acetaminophen_safety),
+            "toxin_dilution": (ToxinDilutionArgs, tool_toxin_dilution),
+            "vascular_occlusion_checklist": (VascularOcclusionArgs, tool_vascular_occlusion_checklist),
+            "hsv_prophylaxis": (HSVProphylaxisArgs, tool_hsv_prophylaxis),
+            "aesthetic_risk_flags": (RiskFlagArgs, tool_aesthetic_risk_flags),
+            "interaction_check": (InteractionCheckArgs, tool_interaction_check),
+        }
+
+    def list_tools(self) -> List[Dict[str, Any]]:
+        out = []
+        for name, (schema, fn) in self._tools.items():
+            out.append({"name": name, "args_schema": schema.schema()})
+        return out
+
+    def execute(self, call: ToolCall) -> ToolResult:
+        if call.name not in self._tools:
+            return ToolResult(
+                status=ToolStatus.refuse,
+                name=call.name,
+                refusals=[f"Unknown tool: {call.name}"],
+                evidence=[],
+            )
+        schema, fn = self._tools[call.name]
+        try:
+            parsed = schema(**call.args)
+            return fn(parsed)
+        except HTTPException as e:
+            return ToolResult(status=ToolStatus.error, name=call.name, output={}, warnings=[], refusals=[str(e.detail)], evidence=[])
+        except Exception as e:
+            return ToolResult(status=ToolStatus.error, name=call.name, output={}, warnings=[], refusals=[repr(e)], evidence=[])
+
+
+REGISTRY = ToolRegistry()
+
+
+@router.get("/tools")
+def list_tools() -> Dict[str, Any]:
+    return {"tools": REGISTRY.list_tools()}
+
+
+@router.post("/tools/execute", response_model=ToolResult)
+def execute_tool(call: ToolCall) -> ToolResult:
+    return REGISTRY.execute(call)
+
+
+# -----------------------------------------------------------------------------
+# Optional: direct callable mapping for your orchestrator (without HTTP)
+# -----------------------------------------------------------------------------
+
+def veridoc_execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convenience for calling tools from your agent/orchestrator without routing HTTP.
+    """
+    res = REGISTRY.execute(ToolCall(name=name, args=args))
+    return res.dict()

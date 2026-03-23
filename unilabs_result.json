@@ -1,0 +1,848 @@
+{
+  "report_title": "AesthetiCite Gold Benchmark Report",
+  "report_subtitle": "Unilabs France Pilot Evaluation",
+  "generated_at": "2026-02-14T15:46:45.335623+00:00",
+  "engine_version": "VeriDoc v2",
+  "mode": "fast",
+  "total_wall_time_s": 84.3,
+  "summary": {
+    "total_questions": 40,
+    "questions_en": 30,
+    "questions_fr": 10,
+    "overall_score": 89.2,
+    "grade": "A",
+    "citation_rate": 97.5,
+    "aci": {
+      "avg_aci_all_including_zeros": 8.66,
+      "avg_aci_scored_nonzero_only": 8.88,
+      "median_aci_scored": 9.2,
+      "aci_coverage_pct": 97.5,
+      "n_zero_aci": 1
+    },
+    "avg_aci": 8.88,
+    "median_aci": 9.2,
+    "aci_std": 1.16,
+    "tool_triggering_rate": 37.5,
+    "protocol_activation_rate_safety": 56.2,
+    "error_rate": 0.0,
+    "avg_latency_s": 88.18,
+    "p95_latency_s": 94.53
+  },
+  "aci_distribution": {
+    "high_confidence": {
+      "count": 35,
+      "range": "7.0-10.0"
+    },
+    "moderate_confidence": {
+      "count": 4,
+      "range": "4.0-6.9"
+    },
+    "low_confidence": {
+      "count": 0,
+      "range": "0.1-3.9"
+    },
+    "no_score": {
+      "count": 1
+    }
+  },
+  "language_performance": {
+    "english": {
+      "questions": 30,
+      "citation_rate": 100.0,
+      "aci": {
+        "avg_aci_all_including_zeros": 8.86,
+        "avg_aci_scored_nonzero_only": 8.86,
+        "median_aci_scored": 9.2,
+        "aci_coverage_pct": 100.0,
+        "n_zero_aci": 0
+      }
+    },
+    "french": {
+      "questions": 10,
+      "citation_rate": 90.0,
+      "aci": {
+        "avg_aci_all_including_zeros": 8.03,
+        "avg_aci_scored_nonzero_only": 8.92,
+        "median_aci_scored": 9.2,
+        "aci_coverage_pct": 90.0,
+        "n_zero_aci": 1
+      }
+    }
+  },
+  "category_breakdown": {
+    "safety": {
+      "label": "Complication Safety",
+      "questions": 16,
+      "citation_rate": 93.8,
+      "avg_aci": 8.46,
+      "tools_triggered": 9,
+      "protocols_triggered": 9
+    },
+    "complications": {
+      "label": "Complication Management",
+      "questions": 1,
+      "citation_rate": 100.0,
+      "avg_aci": 9.2,
+      "tools_triggered": 1,
+      "protocols_triggered": 1
+    },
+    "dosing": {
+      "label": "Dosing & Dilution",
+      "questions": 3,
+      "citation_rate": 100.0,
+      "avg_aci": 7.17,
+      "tools_triggered": 0,
+      "protocols_triggered": 0
+    },
+    "technique": {
+      "label": "Injection Technique",
+      "questions": 2,
+      "citation_rate": 100.0,
+      "avg_aci": 9.55,
+      "tools_triggered": 0,
+      "protocols_triggered": 0
+    },
+    "devices": {
+      "label": "Energy Devices & Laser",
+      "questions": 8,
+      "citation_rate": 100.0,
+      "avg_aci": 9.15,
+      "tools_triggered": 5,
+      "protocols_triggered": 0
+    },
+    "regulatory": {
+      "label": "Regulatory Alignment",
+      "questions": 5,
+      "citation_rate": 100.0,
+      "avg_aci": 8.02,
+      "tools_triggered": 0,
+      "protocols_triggered": 0
+    },
+    "platform": {
+      "label": "Platform Intelligence",
+      "questions": 5,
+      "citation_rate": 100.0,
+      "avg_aci": 9.56,
+      "tools_triggered": 0,
+      "protocols_triggered": 0
+    }
+  },
+  "differentiators_vs_generic_ai": {
+    "aestheticite": {
+      "citation_rate": 97.5,
+      "avg_aci": 8.88,
+      "safety_protocol_activation": 56.2,
+      "inline_clinical_tools": true,
+      "aesthetic_chunk_tagging": true,
+      "complication_first_logic": true,
+      "french_language_support": true,
+      "aesthetic_confidence_index": true
+    },
+    "generic_medical_ai": {
+      "citation_rate": "~40-60% (no domain-specific retrieval)",
+      "avg_aci": "N/A (no confidence scoring)",
+      "safety_protocol_activation": "N/A (no complication protocol)",
+      "inline_clinical_tools": false,
+      "aesthetic_chunk_tagging": false,
+      "complication_first_logic": false,
+      "french_language_support": "Partial",
+      "aesthetic_confidence_index": false
+    }
+  },
+  "pilot_kpi_mapping": {
+    "clinical_usefulness": {
+      "metric": "Citation Rate + ACI Score",
+      "value": "97.5% cited, ACI 8.88/10 (scored), 8.66/10 (all), coverage 97.5%",
+      "assessment": "Strong"
+    },
+    "safety_first_behavior": {
+      "metric": "Complication Protocol Activation on Safety Questions",
+      "value": "56.2% (9/16 safety questions)",
+      "assessment": "Moderate"
+    },
+    "aesthetic_precision": {
+      "metric": "Inline Tool Triggering",
+      "value": "37.5% (15/40 questions)",
+      "assessment": "Active"
+    },
+    "french_readiness": {
+      "metric": "French Question Performance",
+      "value": "10 questions, 90.0% cited, ACI 8.92/10 (scored), coverage 90.0%",
+      "assessment": "Ready"
+    }
+  },
+  "results_en": [
+    {
+      "index": 0,
+      "query": "What are the early signs of vascular compromise during HA filler injection and what should be done immediately?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.2,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 88.91,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nEarly signs of vascular compromise during hyaluronic acid (HA) filler injections include blanching of the skin and poor capillary refill. Monitoring for vision changes is crucial due to the risk of severe complications, such as permanent blindness, associated with vascular occl"
+    },
+    {
+      "index": 1,
+      "query": "Tear trough filler: what safety considerations and risk mitigation are emphasized in the literature?",
+      "language": "en",
+      "category": "safety",
+      "aci": 8.4,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 90.76,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nTear trough fillers are commonly used in aesthetic medicine to address under-eye hollows, but they carry risks that necessitate careful management. Safety considerations include the use of cannulas, which have been shown to reduce the incidence of bruising and vascular occlusio"
+    },
+    {
+      "index": 2,
+      "query": "Glabellar injections: what makes this zone higher risk and what precautions are recommended?",
+      "language": "en",
+      "category": "safety",
+      "aci": 8.4,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 89.56,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nGlabellar injections are associated with a higher risk of complications, including severe adverse events such as blindness and acute diplopia. These risks are particularly pronounced due to the anatomical considerations of the area, including proximity to critical vascular stru"
+    },
+    {
+      "index": 3,
+      "query": "How should suspected ocular symptoms after filler injection be handled according to consensus guidance?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.0,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 89.08,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nSuspected ocular symptoms following filler injection require immediate attention and a structured response. Patient education on recognizing early signs of complications, including ocular issues, is crucial for minimizing risks associated with dermal filler procedures. Given th"
+    },
+    {
+      "index": 4,
+      "query": "What does consensus guidance emphasize about protocol-driven response to filler vascular events?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.1,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "High",
+      "latency_s": 90.88,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nConsensus guidance emphasizes the importance of early recognition and prompt intervention for vascular occlusion following dermal filler injections. Immediate diagnosis and action are crucial to mitigate the adverse effects associated with these complications. Recommendations f"
+    },
+    {
+      "index": 5,
+      "query": "How should a clinic structure an emergency response for suspected HA filler vascular compromise?",
+      "language": "en",
+      "category": "safety",
+      "aci": 8.2,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 89.08,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nClinics administering hyaluronic acid (HA) fillers must be prepared for potential vascular compromise, which can lead to ischemic skin necrosis. Immediate recognition of such complications is crucial for effective management. A structured emergency response protocol should incl"
+    },
+    {
+      "index": 6,
+      "query": "What does the evidence say about the role of hyaluronidase in HA filler complications?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.2,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 91.12,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nHyaluronidase is recognized as the preferred treatment for managing complications associated with hyaluronic acid (HA) fillers. Effective management of these complications is crucial in aesthetic medicine, particularly given the potential for serious adverse events such as vasc"
+    },
+    {
+      "index": 7,
+      "query": "When should an injector stop the procedure and escalate based on perfusion changes?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 85.83,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nInjectors should be vigilant for signs of perfusion changes during aesthetic procedures, as these can indicate potential complications such as vascular occlusion. If perfusion changes are observed, the injector should stop the procedure immediately and assess the situation. Esc"
+    },
+    {
+      "index": 8,
+      "query": "What are common complication patterns after dermal fillers and how are they generally approached?",
+      "language": "en",
+      "category": "complications",
+      "aci": 9.2,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 92.46,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nComplications after dermal filler injections can include vascular occlusion, which may lead to serious issues such as skin necrosis and visual impairment. Common sites for these complications are the frontal, eyebrow, and nose areas, where facial embolism can occur. It is cruci"
+    },
+    {
+      "index": 9,
+      "query": "How should complication risk be communicated to patients in high-risk injection zones?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.7,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 93.55,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nComplication risks associated with soft tissue filler injections are significant, particularly in high-risk injection zones such as the terminal branches of the ophthalmic artery, where severe outcomes like blindness can occur. The rising popularity of dermal fillers has led to"
+    },
+    {
+      "index": 10,
+      "query": "How do common BoNT-A dilution practices vary and what should be considered when selecting a dilution strategy?",
+      "language": "en",
+      "category": "dosing",
+      "aci": 5.9,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 88.27,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nCommon practices for the dilution of Botulinum Toxin Type A (BoNT-A) can vary significantly due to the lack of standardized protocols. This variability can lead to inconsistent outcomes in aesthetic procedures, emphasizing the importance of establishing guidelines for dilution "
+    },
+    {
+      "index": 11,
+      "query": "If a 100U vial is reconstituted with 2.5 mL, what is the concentration in U/mL and U per 0.1 mL?",
+      "language": "en",
+      "category": "dosing",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 10,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 87.1,
+      "status": "ok",
+      "answer_preview": "Best-effort FAST answer: I'm short on time budget to fully ground multiple claims. Here are the most relevant sources retrieved; re-run in DeepConsult for a safety-grade synthesis."
+    },
+    {
+      "index": 12,
+      "query": "What are typical factors that influence BoNT-A injection technique by facial region?",
+      "language": "en",
+      "category": "technique",
+      "aci": 9.3,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 89.71,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nBotulinum toxin (BoNT-A) injection techniques can vary significantly depending on the facial region due to anatomical differences and the need for precision in application. In the upper facial region, ultrasound guidance may enhance accuracy, while in the lower face, the techni"
+    },
+    {
+      "index": 13,
+      "query": "What does systematic evidence summarize about BoNT-A aesthetic outcomes across regions?",
+      "language": "en",
+      "category": "technique",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 86.66,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nSystematic evidence on the aesthetic outcomes of BoNT-A (Botulinum Toxin Type A) indicates that it is effective for reducing the appearance of wrinkles and fine lines across various facial regions. The treatment is widely used in areas such as the forehead, glabellar lines, and"
+    },
+    {
+      "index": 14,
+      "query": "What cautions should be taken when generalizing dosing patterns across products and techniques?",
+      "language": "en",
+      "category": "dosing",
+      "aci": 5.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 91.77,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nWhen considering dosing patterns for aesthetic products, particularly botulinum toxin type A, it is essential to recognize that these patterns can differ significantly between various formulations. Previous consensus publications have provided guidelines that highlight these va"
+    },
+    {
+      "index": 15,
+      "query": "Laser treatments in Fitzpatrick IV-VI: what risk mitigation is commonly recommended to reduce PIH?",
+      "language": "en",
+      "category": "devices",
+      "aci": 8.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "fitzpatrick_laser_adjustment"
+      ],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 94.53,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nIndividuals with Fitzpatrick skin types IV-VI are at a higher risk for post-inflammatory hyperpigmentation (PIH) following laser treatments. This risk is exacerbated by factors such as excess sun exposure. To mitigate the risk of PIH, it is commonly recommended that patients av"
+    },
+    {
+      "index": 16,
+      "query": "What does review-level evidence emphasize about conservative device parameter selection in higher Fitzpatrick types?",
+      "language": "en",
+      "category": "devices",
+      "aci": 7.7,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 88.79,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nReview-level evidence emphasizes the importance of conservative device parameter selection for patients with higher Fitzpatrick skin types (IV and above). This approach is crucial due to the increased risk of epidermal damage and serious complications, such as burns, associated"
+    },
+    {
+      "index": 17,
+      "query": "How should test spots and photoprotection be used to reduce pigmentary risk after laser procedures?",
+      "language": "en",
+      "category": "devices",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "fitzpatrick_laser_adjustment"
+      ],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 88.35,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nThe use of test spots and photoprotection is essential in minimizing pigmentary risks following laser procedures. Test spots help assess individual skin responses to laser treatment, allowing for tailored approaches that reduce adverse effects. Photoprotection, including the us"
+    },
+    {
+      "index": 18,
+      "query": "What are general considerations for balancing efficacy vs safety in energy-based devices?",
+      "language": "en",
+      "category": "devices",
+      "aci": 7.7,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 88.7,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nEnergy-based devices, such as hybrid fractional lasers and sequential monopolar-bipolar radiofrequency systems, are designed to balance efficacy and safety in aesthetic treatments. These technologies utilize a combination of ablative and non-ablative methods to rejuvenate the s"
+    },
+    {
+      "index": 19,
+      "query": "What does the literature emphasize about post-procedure care for pigmentary risk reduction?",
+      "language": "en",
+      "category": "devices",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 85.58,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nThe literature emphasizes the importance of post-procedure care in reducing the risk of pigmentary complications following aesthetic treatments. Proper management can significantly mitigate the likelihood of hyperpigmentation and other pigmentary disorders. Adhering to recommen"
+    },
+    {
+      "index": 20,
+      "query": "How should clinicians think about on-label vs off-label use in aesthetic medicine when communicating risk?",
+      "language": "en",
+      "category": "regulatory",
+      "aci": 8.9,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 87.35,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nClinicians should prioritize on-label use of aesthetic treatments, as these applications are backed by robust safety and efficacy data from clinical studies. When discussing treatment options with patients, it is essential to communicate the evidence supporting both on-label an"
+    },
+    {
+      "index": 21,
+      "query": "What does a cautious evidence-based answer include when regulatory alignment is unclear?",
+      "language": "en",
+      "category": "regulatory",
+      "aci": 8.9,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 73.39,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nWhen regulatory alignment is unclear, it is crucial to approach clinical decision-making with caution. Evidence synthesis can improve precision but may lead to misleading conclusions if it aggregates ineffective or unsafe dosing regimens. The variability in production protocols"
+    },
+    {
+      "index": 22,
+      "query": "How should CE vs FDA language be handled in a clinical summary without overclaiming?",
+      "language": "en",
+      "category": "regulatory",
+      "aci": 6.0,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 85.8,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nClinical summaries should clearly outline the specific indications for use as approved by the FDA to ensure accurate communication regarding aesthetic treatments. This approach is exemplified by the licensing of onabotulinumtoxinA, which was based on rigorous randomized control"
+    },
+    {
+      "index": 23,
+      "query": "What should be avoided in an evidence-grounded answer about product indications?",
+      "language": "en",
+      "category": "regulatory",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "High",
+      "latency_s": 89.83,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nClear aligner therapy has defined indications and limitations that have been evaluated by a panel of international orthodontic experts. Additionally, aesthetic procedures such as botulinum toxin and dermal fillers carry potential adverse effects, emphasizing the necessity for p"
+    },
+    {
+      "index": 24,
+      "query": "How should AesthetiCite structure an answer differently from a general medical AI tool in aesthetic medicine?",
+      "language": "en",
+      "category": "platform",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 95.04,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nAesthetiCite structures its responses by focusing on evidence-based claims specific to aesthetic medicine, ensuring that the information is precise and relevant. Unlike general medical AI tools, AesthetiCite emphasizes validated scales for objective assessments, the use of mach"
+    },
+    {
+      "index": 25,
+      "query": "What is the role of complication-first logic in aesthetic decision support tools?",
+      "language": "en",
+      "category": "platform",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 84.58,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nThere are no supported claims regarding the role of complication-first logic in aesthetic decision support tools. As such, the current understanding of this concept remains unclear and lacks evidence-based backing.\n\n2) What the evidence says  \n- No evidence is available regardi"
+    },
+    {
+      "index": 26,
+      "query": "How should an evidence engine avoid hallucinating dosing values in high-stakes aesthetic scenarios?",
+      "language": "en",
+      "category": "platform",
+      "aci": 9.6,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 92.59,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nTo avoid hallucinating dosing values in high-stakes aesthetic scenarios, evidence engines must prioritize the synthesis of reliable and standardized dosing regimens. The integration of ineffective or unsafe dosing information can mislead practitioners and compromise patient saf"
+    },
+    {
+      "index": 27,
+      "query": "What should an Aesthetic Confidence Index communicate to clinicians?",
+      "language": "en",
+      "category": "platform",
+      "aci": 9.4,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 89.51,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nThe Aesthetic Confidence Index should serve as a valuable tool for clinicians by incorporating findings from large-scale studies on aesthetic procedures. Clinicians must consider factors such as age and thread count, which are significant predictors of patient dissatisfaction f"
+    },
+    {
+      "index": 28,
+      "query": "What elements should be always present in high-risk injectable answers?",
+      "language": "en",
+      "category": "safety",
+      "aci": 9.3,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Moderate",
+      "latency_s": 89.17,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nHigh-risk injectable procedures necessitate a comprehensive patient assessment to identify contraindications and optimize patient factors. Informed consent regarding the risks, including potential ocular or neurological complications, is essential. Emergency protocols must be e"
+    },
+    {
+      "index": 29,
+      "query": "Patient with Fitzpatrick III considering laser resurfacing: what safety considerations should be discussed?",
+      "language": "en",
+      "category": "devices",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "fitzpatrick_laser_adjustment"
+      ],
+      "has_protocol": false,
+      "evidence_grade": "Low",
+      "latency_s": 88.72,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nFor a patient with Fitzpatrick III skin considering laser resurfacing, it is essential to discuss potential safety considerations. Fitzpatrick III skin is characterized by a medium skin tone that tans easily and may burn moderately. Patients in this category may have a higher r"
+    }
+  ],
+  "results_fr": [
+    {
+      "index": 0,
+      "query": "Quels sont les signes pr\u00e9coces de compromis vasculaire lors d'une injection d'acide hyaluronique et quelle conduite \u00e0 tenir imm\u00e9diate ?",
+      "language": "fr",
+      "category": "safety",
+      "aci": 7.6,
+      "has_citations": true,
+      "n_refs": 3,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 86.24,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.24, supported_claims_ratio=0.00\n\nTry refining the query (examples):\n- compromis vasculaire injection d'acide hyaluronique complication guideline consensus\n- compromis vasculaire in"
+    },
+    {
+      "index": 1,
+      "query": "Injection de toxine botulique au niveau de la glabelle : quels sont les risques sp\u00e9cifiques et les pr\u00e9cautions recommand\u00e9es ?",
+      "language": "fr",
+      "category": "safety",
+      "aci": 0.0,
+      "has_citations": false,
+      "n_refs": 0,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 79.49,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.00, supported_claims_ratio=0.00\n\nTry refining the query (examples):\n- toxine botulique glabelle risques pr\u00e9cautions safety guideline consensus\n- toxine botulique glabelle risques p"
+    },
+    {
+      "index": 2,
+      "query": "Comment g\u00e9rer une suspicion d'occlusion vasculaire apr\u00e8s injection de filler selon les recommandations de consensus ?",
+      "language": "fr",
+      "category": "safety",
+      "aci": 9.1,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 92.42,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nVascular occlusion is a rare but serious complication that can occur following hyaluronic acid filler injections, with an incidence rate of approximately 0.05-0.01%. Timely diagnosis and intervention are essential to minimize tissue damage and prevent long-term consequences. Hi"
+    },
+    {
+      "index": 3,
+      "query": "Quelles sont les pr\u00e9cautions de s\u00e9curit\u00e9 pour les injections de comblement au niveau du sillon nasog\u00e9nien ?",
+      "language": "fr",
+      "category": "safety",
+      "aci": 9.7,
+      "has_citations": true,
+      "n_refs": 9,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 86.78,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.53, supported_claims_ratio=0.20\n\nTry refining the query (examples):\n- injections de comblement sillon nasog\u00e9nien safety guideline consensus\n- injections de comblement sillon nasog\u00e9"
+    },
+    {
+      "index": 4,
+      "query": "Quel est le r\u00f4le de la hyaluronidase dans la prise en charge des complications des fillers \u00e0 base d'acide hyaluronique ?",
+      "language": "fr",
+      "category": "safety",
+      "aci": 8.8,
+      "has_citations": true,
+      "n_refs": 12,
+      "n_tools": 1,
+      "tool_names": [
+        "hyaluronidase_helper"
+      ],
+      "has_protocol": true,
+      "evidence_grade": "Moderate",
+      "latency_s": 91.37,
+      "status": "ok",
+      "answer_preview": "1) Clinical Summary  \nHyaluronidase is an enzyme that plays a crucial role in managing complications associated with hyaluronic acid (HA) fillers. It effectively degrades hyaluronic acid, making it essential for addressing issues such as overfilling and vascular occlusions. The use of hyaluronidase "
+    },
+    {
+      "index": 5,
+      "query": "Traitements laser chez les phototypes IV-VI : quelles strat\u00e9gies pour minimiser le risque d'hyperpigmentation post-inflammatoire ?",
+      "language": "fr",
+      "category": "devices",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 10,
+      "n_tools": 1,
+      "tool_names": [
+        "fitzpatrick_laser_adjustment"
+      ],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 86.95,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.33, supported_claims_ratio=0.30\n\nTry refining the query (examples):\n- laser treatments phototypes IV-VI post-inflammatory hyperpigmentation treatment guideline consensus\n- laser tr"
+    },
+    {
+      "index": 6,
+      "query": "Comment un outil d'aide \u00e0 la d\u00e9cision clinique en m\u00e9decine esth\u00e9tique doit-il aborder les complications en priorit\u00e9 ?",
+      "language": "fr",
+      "category": "platform",
+      "aci": 9.2,
+      "has_citations": true,
+      "n_refs": 6,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 83.96,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.47, supported_claims_ratio=0.00\n\nTry refining the query (examples):\n- outil d'aide \u00e0 la d\u00e9cision clinique m\u00e9decine esth\u00e9tique complications complication guideline consensus\n- outil"
+    },
+    {
+      "index": 7,
+      "query": "Quelles sont les consid\u00e9rations r\u00e9glementaires (marquage CE vs FDA) \u00e0 prendre en compte dans un r\u00e9sum\u00e9 clinique ?",
+      "language": "fr",
+      "category": "regulatory",
+      "aci": 6.5,
+      "has_citations": true,
+      "n_refs": 3,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 82.47,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.22, supported_claims_ratio=0.00\n\nTry refining the query (examples):\n- marquage CE FDA r\u00e9sum\u00e9 clinique other guideline consensus\n- marquage CE FDA r\u00e9sum\u00e9 clinique IFU instructions f"
+    },
+    {
+      "index": 8,
+      "query": "Patient de phototype III envisageant un resurfa\u00e7age laser : quels points de s\u00e9curit\u00e9 discuter en consultation ?",
+      "language": "fr",
+      "category": "devices",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 10,
+      "n_tools": 1,
+      "tool_names": [
+        "fitzpatrick_laser_adjustment"
+      ],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 86.7,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.44, supported_claims_ratio=0.00\n\nTry refining the query (examples):\n- resurfa\u00e7age laser phototype III safety guideline consensus\n- resurfa\u00e7age laser phototype III IFU instructions "
+    },
+    {
+      "index": 9,
+      "query": "Quels \u00e9l\u00e9ments doivent toujours figurer dans une r\u00e9ponse evidence-based concernant les injectables \u00e0 haut risque ?",
+      "language": "fr",
+      "category": "safety",
+      "aci": 9.8,
+      "has_citations": true,
+      "n_refs": 9,
+      "n_tools": 0,
+      "tool_names": [],
+      "has_protocol": false,
+      "evidence_grade": "Insufficient",
+      "latency_s": 84.17,
+      "status": "ok",
+      "answer_preview": "I couldn't find enough direct, high-confidence evidence in the retrieved sources to answer safely.\n\nSignals: coverage=0.59, supported_claims_ratio=0.00\n\nTry refining the query (examples):\n- injectables high-risk guideline guideline consensus\n- injectables high-risk IFU instructions for use\n- injecta"
+    }
+  ]
+}

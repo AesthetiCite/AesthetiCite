@@ -1,0 +1,124 @@
+# --- ADD near other imports (top of file) ---
+import re  # already imported in your file; keep as-is
+
+# --- ADD near other helpers (e.g., under build_single_call_prompt / llm helpers) ---
+CITATION_RE = re.compile(r"\[S\d+\]")
+
+def validate_citations(answer: str) -> bool:
+    """
+    Enterprise-grade minimum:
+    - At least one [S#] citation exists somewhere
+    - Every bullet under 'Key Evidence-Based Points' includes at least one [S#]
+    """
+    if not CITATION_RE.search(answer or ""):
+        return False
+
+    # Validate bullets inside Key Evidence-Based Points section (if present)
+    m = re.search(r"Key Evidence-Based Points(.*?)(Safety Considerations|Limitations / Uncertainty|Suggested Follow-up Questions|$)",
+                  answer, flags=re.S)
+    if m:
+        block = m.group(1)
+        bullets = re.findall(r"^\s*-\s+(.*)$", block, flags=re.M)
+        for b in bullets:
+            if not CITATION_RE.search(b):
+                return False
+    return True
+
+def citation_density(answer: str) -> float:
+    """
+    Simple, explainable metric:
+    density = #citations / #bullets (Key Evidence-Based Points bullets if present, else all bullets)
+    """
+    if not answer:
+        return 0.0
+    cite_n = len(CITATION_RE.findall(answer))
+    # Prefer bullets in Key Evidence-Based Points
+    m = re.search(r"Key Evidence-Based Points(.*?)(Safety Considerations|Limitations / Uncertainty|Suggested Follow-up Questions|$)",
+                  answer, flags=re.S)
+    if m:
+        bullets = re.findall(r"^\s*-\s+.*$", m.group(1), flags=re.M)
+    else:
+        bullets = re.findall(r"^\s*-\s+.*$", answer, flags=re.M)
+    b_n = len(bullets)
+    return (cite_n / b_n) if b_n else 0.0
+
+def evidence_rerank_inplace(enriched_sources: List[Dict[str, Any]]) -> None:
+    """
+    Stronger evidence first, then newer.
+    evidence_rank: 1 (best) ... 8 (weakest)
+    year: higher is newer
+    """
+    enriched_sources.sort(
+        key=lambda s: (
+            int(s.get("evidence_rank") or 9),
+            -int(s.get("year") or 0),
+        )
+    )
+
+# --- MODIFY inside /ask/stream gen() AFTER you build "enriched" sources ---
+# Existing code builds `enriched` list already. After that loop, insert:
+
+        # Re-rank sources: stronger evidence first, then newer
+        evidence_rerank_inplace(enriched)
+
+        # Authority header with transparency about evidence gaps
+        aci = compute_aci_lightweight(enriched)
+
+        # Minimum high-level evidence transparency (Guideline/Systematic/RCT)
+        has_high_level = any((s.get("evidence_rank") or 9) <= 3 for s in enriched)
+        if not has_high_level:
+            (aci.setdefault("gaps", [])).append(
+                "No guideline, systematic review, or randomized trial identified in top retrieved results"
+            )
+
+        header = build_authority_header(enriched, aci)
+
+        # immediate UI
+        yield sse("sources", {"sources": enriched, "ms": int((t_r1 - t0) * 1000)})
+
+# --- MODIFY near the end of gen(): AFTER streaming finishes and before add_message() ---
+# Replace your current end segment with this (keep your timings intact):
+
+        t1 = time.perf_counter()
+        answer_text = "".join(buf).strip()
+
+        # Hard citation enforcement (enterprise-grade)
+        if not validate_citations(answer_text):
+            answer_text = (
+                "Clinical Summary\n"
+                "Evidence insufficient based on retrieved sources.\n\n"
+                "Key Evidence-Based Points\n"
+                "- Evidence insufficient based on retrieved sources. [S1]\n\n"
+                "Safety Considerations\n"
+                "If this topic involves vascular risk (e.g., fillers), use conservative technique and follow an occlusion response protocol.\n\n"
+                "Limitations / Uncertainty\n"
+                "Retrieved sources do not adequately support a grounded response at the requested specificity.\n\n"
+                "Suggested Follow-up Questions\n"
+                "- Can you narrow the question to a specific indication, product, and patient profile?\n"
+                "- Should we restrict retrieval to guidelines/systematic reviews only?\n"
+                "- Do you want dosing/technique omitted unless directly supported by retrieved sources?\n"
+            )
+
+        # Citation density metric (for enterprise credibility)
+        cd = citation_density(answer_text)
+
+        await add_message(cid, "assistant", answer_text)
+
+        yield sse("meta", {
+            "retrieval_ms": int((t_r1 - t_r0) * 1000),
+            "compose_first_token_ms": first_tok_ms,
+            "compose_total_ms": int((t1 - t_c0) * 1000),
+            "total_ms": int((t1 - t0) * 1000),
+            "model": COMPOSE_MODEL,
+            "citation_density": round(cd, 2),
+            "caps": {
+                "k": body.k,
+                "chunk_char_cap": CHUNK_CHAR_CAP,
+                "max_sources_to_llm": MAX_SOURCES_TO_LLM,
+                "compose_max_tokens": COMPOSE_MAX_TOKENS,
+                "compose_temp": COMPOSE_TEMP,
+                "memory_max_turns": MEMORY_MAX_TURNS,
+                "memory_max_chars": MEMORY_MAX_CHARS,
+            }
+        })
+        yield sse("done", {"ok": True})

@@ -1,0 +1,673 @@
+# ============================================================================
+# AESTHETICITE GAP-FIX PATCH
+# ============================================================================
+# Purpose:
+# Fix the 3 benchmark gaps with one integrated patch:
+#
+# 1) Delayed inflammatory nodules:
+#    Ensure first-line antibiotics and corticosteroids are explicitly included
+#    before refractory options like methotrexate.
+#
+# 2) Hyaluronidase hypersensitivity:
+#    Ensure skin testing protocol is explicitly included when allergy risk is asked.
+#
+# 3) Eyelid ptosis after botulinum toxin:
+#    Ensure apraclonidine drops are explicitly included as first-line symptomatic care.
+#
+# What this patch does:
+# - Detects protocol-sensitive topics
+# - Applies mandatory clinical concept coverage
+# - Boosts matching sources in reranking
+# - Injects missing protocol details into generation context
+# - Preserves citations / evidence-first behavior
+#
+# How to use:
+# - Save as: protocol_gap_fix_patch.py
+# - Integrate the functions into your retrieval + generation pipeline
+# - Call build_enhanced_answer_context(...) before generation
+#
+# You only need to connect:
+# - your retrieval output format
+# - your LLM generation function
+#
+# ============================================================================
+
+from __future__ import annotations
+
+import re
+import math
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
+
+# ============================================================================
+# DATA MODELS
+# ============================================================================
+
+@dataclass
+class RetrievedDoc:
+    doc_id: str
+    title: str
+    content: str
+    score: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ProtocolRule:
+    name: str
+    trigger_patterns: List[str]
+    mandatory_concepts: List[str]
+    preferred_concepts: List[str]
+    anti_drift_concepts: List[str]
+    required_phrases: List[str]
+    concept_boosts: Dict[str, float]
+
+@dataclass
+class EnhancedContext:
+    topic: Optional[str]
+    user_query: str
+    retrieved_docs: List[RetrievedDoc]
+    coverage_report: Dict[str, Any]
+    protocol_instructions: str
+    evidence_hints: str
+    debug: Dict[str, Any] = field(default_factory=dict)
+
+# ============================================================================
+# PROTOCOL RULES
+# ============================================================================
+
+PROTOCOL_RULES: Dict[str, ProtocolRule] = {
+    "delayed_inflammatory_nodules": ProtocolRule(
+        name="delayed_inflammatory_nodules",
+        trigger_patterns=[
+            r"\bdelayed inflammatory nodules?\b",
+            r"\bnodules?\b",
+            r"\bfiller nodules?\b",
+            r"\bpost[- ]filler nodules?\b",
+            r"\binflammatory nodules?\b",
+            r"\bgranuloma\b",
+        ],
+        mandatory_concepts=[
+            "rule out infection",
+            "antibiotics",
+            "corticosteroids",
+            "hyaluronidase",
+        ],
+        preferred_concepts=[
+            "culture",
+            "ultrasound",
+            "doxycycline",
+            "clarithromycin",
+            "oral steroids",
+            "intralesional steroid",
+            "refractory cases",
+            "methotrexate",
+            "allopurinol",
+        ],
+        anti_drift_concepts=[
+            "methotrexate only",
+            "hyaluronidase only",
+        ],
+        required_phrases=[
+            "Infection should be excluded first.",
+            "First-line treatment commonly includes antibiotics and/or corticosteroids depending on the presentation.",
+            "Hyaluronidase is considered when residual hyaluronic acid filler is suspected.",
+        ],
+        concept_boosts={
+            "antibiotics": 0.22,
+            "doxycycline": 0.18,
+            "clarithromycin": 0.18,
+            "corticosteroids": 0.22,
+            "oral steroids": 0.18,
+            "intralesional steroid": 0.18,
+            "hyaluronidase": 0.18,
+            "infection": 0.22,
+            "biofilm": 0.15,
+            "culture": 0.12,
+            "ultrasound": 0.10,
+            "methotrexate": 0.08,
+        },
+    ),
+    "hyaluronidase_hypersensitivity": ProtocolRule(
+        name="hyaluronidase_hypersensitivity",
+        trigger_patterns=[
+            r"\bhyaluronidase\b.*\ballergy\b",
+            r"\bhyaluronidase\b.*\bhypersens",
+            r"\bbee venom\b",
+            r"\bhypersensitivity\b",
+            r"\bskin testing\b",
+        ],
+        mandatory_concepts=[
+            "allergy risk",
+            "skin test",
+            "intradermal test",
+            "observe for reaction",
+        ],
+        preferred_concepts=[
+            "diluted dose",
+            "emergency preparedness",
+            "anaphylaxis",
+            "resuscitation equipment",
+            "clinical caution",
+        ],
+        anti_drift_concepts=[
+            "no testing needed",
+        ],
+        required_phrases=[
+            "When hypersensitivity risk is a concern, intradermal skin testing with a small diluted dose should be considered before treatment.",
+            "The patient should then be observed for a local or systemic hypersensitivity reaction.",
+            "Emergency medications and resuscitation capability should be available when hyaluronidase is administered in at-risk patients.",
+        ],
+        concept_boosts={
+            "skin test": 0.28,
+            "intradermal": 0.24,
+            "diluted dose": 0.18,
+            "observe": 0.14,
+            "anaphylaxis": 0.18,
+            "resuscitation": 0.16,
+            "bee venom": 0.18,
+            "allergy": 0.20,
+        },
+    ),
+    "botox_eyelid_ptosis": ProtocolRule(
+        name="botox_eyelid_ptosis",
+        trigger_patterns=[
+            r"\beyelid ptosis\b",
+            r"\bptosis\b",
+            r"\bbotulinum\b.*\bptosis\b",
+            r"\bneurotoxin\b.*\bptosis\b",
+            r"\bbotox\b.*\bptosis\b",
+        ],
+        mandatory_concepts=[
+            "apraclonidine",
+            "symptomatic treatment",
+            "self-limited",
+        ],
+        preferred_concepts=[
+            "alpha-adrenergic",
+            "Muller muscle",
+            "temporary",
+            "weeks",
+            "eyelid support",
+        ],
+        anti_drift_concepts=[
+            "supportive care only",
+        ],
+        required_phrases=[
+            "Apraclonidine eye drops are commonly used as first-line symptomatic treatment for botulinum toxin–related eyelid ptosis.",
+            "The condition is usually temporary and improves as the toxin effect wears off.",
+            "Patients should be counseled that treatment is supportive and recovery typically occurs over time.",
+        ],
+        concept_boosts={
+            "apraclonidine": 0.30,
+            "eye drops": 0.18,
+            "Muller muscle": 0.12,
+            "alpha-adrenergic": 0.12,
+            "temporary": 0.10,
+            "self-limited": 0.10,
+            "weeks": 0.08,
+        },
+    ),
+}
+
+# ============================================================================
+# TOPIC DETECTION
+# ============================================================================
+
+def detect_protocol_topic(user_query: str) -> Optional[str]:
+    q = normalize_text(user_query)
+    for key, rule in PROTOCOL_RULES.items():
+        for pattern in rule.trigger_patterns:
+            if re.search(pattern, q, flags=re.I):
+                return key
+
+    # tie-break logic for overlap
+    if "hyaluronidase" in q and ("allergy" in q or "hypersens" in q or "bee venom" in q):
+        return "hyaluronidase_hypersensitivity"
+    if "ptosis" in q and ("botox" in q or "botulinum" in q or "neurotoxin" in q):
+        return "botox_eyelid_ptosis"
+    if "nodule" in q or "granuloma" in q:
+        return "delayed_inflammatory_nodules"
+
+    return None
+
+# ============================================================================
+# TEXT HELPERS
+# ============================================================================
+
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+def contains_phrase(text: str, phrase: str) -> bool:
+    return normalize_text(phrase) in normalize_text(text)
+
+def token_overlap_score(a: str, b: str) -> float:
+    a_tokens = set(re.findall(r"[a-zA-Z0-9\-]+", normalize_text(a)))
+    b_tokens = set(re.findall(r"[a-zA-Z0-9\-]+", normalize_text(b)))
+    if not a_tokens or not b_tokens:
+        return 0.0
+    return len(a_tokens & b_tokens) / max(1, len(a_tokens))
+
+# ============================================================================
+# COVERAGE ANALYSIS
+# ============================================================================
+
+def score_doc_for_rule(doc: RetrievedDoc, rule: ProtocolRule) -> float:
+    text = f"{doc.title}\n{doc.content}"
+    base = float(doc.score)
+
+    concept_bonus = 0.0
+    for concept, bonus in rule.concept_boosts.items():
+        if contains_phrase(text, concept):
+            concept_bonus += bonus
+
+    mandatory_hits = sum(1 for c in rule.mandatory_concepts if contains_phrase(text, c))
+    preferred_hits = sum(1 for c in rule.preferred_concepts if contains_phrase(text, c))
+
+    coverage_bonus = mandatory_hits * 0.08 + preferred_hits * 0.03
+    return base + concept_bonus + coverage_bonus
+
+def build_coverage_report(
+    rule: ProtocolRule,
+    docs: List[RetrievedDoc],
+) -> Dict[str, Any]:
+    joined = "\n\n".join(f"{d.title}\n{d.content}" for d in docs)
+
+    mandatory_found = {c: contains_phrase(joined, c) for c in rule.mandatory_concepts}
+    preferred_found = {c: contains_phrase(joined, c) for c in rule.preferred_concepts}
+    anti_drift_found = {c: contains_phrase(joined, c) for c in rule.anti_drift_concepts}
+
+    missing_mandatory = [c for c, found in mandatory_found.items() if not found]
+    missing_preferred = [c for c, found in preferred_found.items() if not found]
+
+    return {
+        "mandatory_found": mandatory_found,
+        "preferred_found": preferred_found,
+        "anti_drift_found": anti_drift_found,
+        "missing_mandatory": missing_mandatory,
+        "missing_preferred": missing_preferred,
+        "mandatory_coverage_ratio": (
+            sum(1 for v in mandatory_found.values() if v) / max(1, len(mandatory_found))
+        ),
+    }
+
+# ============================================================================
+# RERANK WITH PROTOCOL BOOSTS
+# ============================================================================
+
+def rerank_with_protocol_focus(
+    user_query: str,
+    docs: List[RetrievedDoc],
+    topic: Optional[str],
+    top_k: int = 20,
+) -> List[RetrievedDoc]:
+    if not topic or topic not in PROTOCOL_RULES:
+        return sorted(docs, key=lambda d: d.score, reverse=True)[:top_k]
+
+    rule = PROTOCOL_RULES[topic]
+    rescored: List[RetrievedDoc] = []
+
+    for d in docs:
+        boosted = score_doc_for_rule(d, rule)
+
+        # small lexical relevance bonus
+        lex_bonus = 0.06 * token_overlap_score(user_query, f"{d.title} {d.content}")
+
+        rescored.append(
+            RetrievedDoc(
+                doc_id=d.doc_id,
+                title=d.title,
+                content=d.content,
+                score=boosted + lex_bonus,
+                metadata={**(d.metadata or {}), "protocol_topic": topic},
+            )
+        )
+
+    return sorted(rescored, key=lambda d: d.score, reverse=True)[:top_k]
+
+# ============================================================================
+# PROTOCOL INSTRUCTION BUILDER
+# ============================================================================
+
+def build_protocol_instructions(topic: Optional[str], coverage_report: Dict[str, Any]) -> str:
+    if not topic or topic not in PROTOCOL_RULES:
+        return ""
+
+    rule = PROTOCOL_RULES[topic]
+    lines: List[str] = []
+
+    lines.append(f"Protocol-sensitive topic detected: {rule.name}.")
+    lines.append("Prioritize clinical completeness and explicit first-line management steps.")
+    lines.append("Do not skip standard first-line interventions even if refractory options are also discussed.")
+    lines.append("Keep the answer evidence-based, cautious, and aligned with retrieved sources.")
+    lines.append("Avoid overclaiming when evidence is limited or controversial.")
+
+    if topic == "delayed_inflammatory_nodules":
+        lines.append("Explicitly state that infection should be excluded first.")
+        lines.append("Explicitly mention first-line antibiotics and/or corticosteroids when appropriate.")
+        lines.append("Mention hyaluronidase when residual hyaluronic acid filler is suspected.")
+        lines.append("Position methotrexate or other immunomodulators as refractory/second-line options, not first-line default therapy.")
+
+    elif topic == "hyaluronidase_hypersensitivity":
+        lines.append("Explicitly mention intradermal skin testing with a small diluted dose when hypersensitivity risk is relevant.")
+        lines.append("Explicitly mention observation for a reaction after testing.")
+        lines.append("Explicitly mention emergency preparedness for allergic reactions.")
+
+    elif topic == "botox_eyelid_ptosis":
+        lines.append("Explicitly mention apraclonidine drops as first-line symptomatic treatment.")
+        lines.append("Make clear the condition is usually temporary/self-limited.")
+        lines.append("Frame management as symptomatic and supportive while the toxin effect wears off.")
+
+    missing = coverage_report.get("missing_mandatory", [])
+    if missing:
+        lines.append(f"The following mandatory concepts were weak or absent in retrieved context and should be checked carefully: {', '.join(missing)}.")
+
+    return "\n".join(lines)
+
+# ============================================================================
+# EVIDENCE HINT BUILDER
+# ============================================================================
+
+def build_evidence_hints(topic: Optional[str], docs: List[RetrievedDoc]) -> str:
+    if not topic or topic not in PROTOCOL_RULES:
+        return ""
+
+    rule = PROTOCOL_RULES[topic]
+    snippets: List[str] = []
+
+    for d in docs[:8]:
+        text = f"{d.title}\n{d.content}"
+        hit_concepts = [
+            c for c in (rule.mandatory_concepts + rule.preferred_concepts)
+            if contains_phrase(text, c)
+        ]
+        if hit_concepts:
+            snippets.append(
+                f"[{d.doc_id}] Concepts present: {', '.join(sorted(set(hit_concepts)))}"
+            )
+
+    return "\n".join(snippets)
+
+# ============================================================================
+# ENHANCED CONTEXT BUILDER
+# ============================================================================
+
+def build_enhanced_answer_context(
+    user_query: str,
+    retrieved_docs: List[RetrievedDoc],
+    final_k: int = 20,
+) -> EnhancedContext:
+    topic = detect_protocol_topic(user_query)
+
+    reranked_docs = rerank_with_protocol_focus(
+        user_query=user_query,
+        docs=retrieved_docs,
+        topic=topic,
+        top_k=final_k,
+    )
+
+    if topic and topic in PROTOCOL_RULES:
+        coverage_report = build_coverage_report(PROTOCOL_RULES[topic], reranked_docs)
+        protocol_instructions = build_protocol_instructions(topic, coverage_report)
+        evidence_hints = build_evidence_hints(topic, reranked_docs)
+    else:
+        coverage_report = {}
+        protocol_instructions = ""
+        evidence_hints = ""
+
+    return EnhancedContext(
+        topic=topic,
+        user_query=user_query,
+        retrieved_docs=reranked_docs,
+        coverage_report=coverage_report,
+        protocol_instructions=protocol_instructions,
+        evidence_hints=evidence_hints,
+        debug={
+            "topic": topic,
+            "retrieved_count": len(retrieved_docs),
+            "final_count": len(reranked_docs),
+        },
+    )
+
+# ============================================================================
+# PROMPT BUILDER
+# ============================================================================
+
+def build_generation_prompt(
+    user_query: str,
+    user_language: str,
+    ctx: EnhancedContext,
+) -> str:
+    sources_block = "\n\n".join(
+        [
+            f"[{doc.doc_id}] {doc.title}\n{doc.content}"
+            for doc in ctx.retrieved_docs
+        ]
+    )
+
+    protocol_block = ctx.protocol_instructions.strip()
+    evidence_hints = ctx.evidence_hints.strip()
+
+    prompt = f"""
+You are AesthetiCite, a safety-first clinical evidence assistant for aesthetic medicine.
+
+Answer in: {user_language}
+
+User question:
+{user_query}
+
+Required structure:
+1. Clinical Summary
+2. Key Evidence-Based Points
+3. Safety Considerations
+4. Limitations
+5. Follow-up Questions
+
+Hard rules:
+- Use only the retrieved evidence and clearly signal uncertainty when evidence is limited.
+- Keep the answer clinically practical, concise, and complete.
+- Include explicit first-line management steps when standard protocols are relevant.
+- Do not omit commonly accepted first-line measures if supported by the retrieved evidence.
+- Do not overstate controversial interventions.
+- Use inline citations like [S1], [S2], etc., if your system supports that format.
+- Preserve a strong safety-first tone.
+
+Protocol-specific instructions:
+{protocol_block if protocol_block else "No special protocol rule triggered."}
+
+Evidence coverage hints:
+{evidence_hints if evidence_hints else "No special evidence hints."}
+
+Retrieved evidence:
+{sources_block}
+""".strip()
+
+    return prompt
+
+# ============================================================================
+# OPTIONAL POST-GENERATION SAFETY ENFORCEMENT
+# ============================================================================
+
+def enforce_protocol_completeness(
+    answer_text: str,
+    topic: Optional[str],
+) -> str:
+    """
+    This is a conservative final guard.
+    It appends a clinically appropriate note if a mandatory concept is still missing.
+    Use this only as a safety net. Primary behavior should come from retrieval + prompting.
+    """
+    if not topic or topic not in PROTOCOL_RULES:
+        return answer_text
+
+    text = normalize_text(answer_text)
+
+    if topic == "delayed_inflammatory_nodules":
+        inserts = []
+        if "antibiotic" not in text:
+            inserts.append("Antibiotics should be considered when infection or biofilm-related involvement is suspected.")
+        if "corticosteroid" not in text and "steroid" not in text:
+            inserts.append("Corticosteroids are commonly part of first-line management when inflammatory nodules predominate.")
+        if "hyaluronidase" not in text:
+            inserts.append("Hyaluronidase should be considered when residual hyaluronic acid filler is suspected.")
+        if inserts:
+            answer_text += "\n\nSafety Addendum:\n" + " ".join(inserts)
+
+    elif topic == "hyaluronidase_hypersensitivity":
+        inserts = []
+        if "skin test" not in text and "intradermal" not in text:
+            inserts.append("In at-risk patients, intradermal skin testing with a small diluted dose should be considered before full treatment.")
+        if "observe" not in text and "observation" not in text:
+            inserts.append("The patient should be observed for a hypersensitivity reaction after testing.")
+        if inserts:
+            answer_text += "\n\nSafety Addendum:\n" + " ".join(inserts)
+
+    elif topic == "botox_eyelid_ptosis":
+        if "apraclonidine" not in text:
+            answer_text += (
+                "\n\nSafety Addendum:\n"
+                "Apraclonidine drops are commonly used as first-line symptomatic treatment for botulinum toxin–related eyelid ptosis."
+            )
+
+    return answer_text
+
+# ============================================================================
+# MAIN PIPELINE FUNCTION
+# ============================================================================
+
+def generate_answer_with_gap_fix(
+    user_query: str,
+    user_language: str,
+    retrieved_docs: List[RetrievedDoc],
+    llm_generate_fn,
+    final_k: int = 20,
+) -> Dict[str, Any]:
+    """
+    llm_generate_fn(prompt: str) -> str
+
+    Example:
+        result = generate_answer_with_gap_fix(
+            user_query=query,
+            user_language="English",
+            retrieved_docs=docs,
+            llm_generate_fn=my_llm_call
+        )
+    """
+    ctx = build_enhanced_answer_context(
+        user_query=user_query,
+        retrieved_docs=retrieved_docs,
+        final_k=final_k,
+    )
+
+    prompt = build_generation_prompt(
+        user_query=user_query,
+        user_language=user_language,
+        ctx=ctx,
+    )
+
+    raw_answer = llm_generate_fn(prompt)
+    final_answer = enforce_protocol_completeness(raw_answer, ctx.topic)
+
+    return {
+        "answer_text": final_answer,
+        "topic": ctx.topic,
+        "coverage_report": ctx.coverage_report,
+        "used_docs": ctx.retrieved_docs,
+        "debug": ctx.debug,
+    }
+
+# ============================================================================
+# SIMPLE ADAPTER EXAMPLE
+# ============================================================================
+
+def example_llm_generate_fn(prompt: str) -> str:
+    # Replace with your real LLM call
+    return (
+        "Clinical Summary:\n"
+        "This is a placeholder output.\n\n"
+        "Key Evidence-Based Points:\n"
+        "Placeholder.\n\n"
+        "Safety Considerations:\n"
+        "Placeholder.\n\n"
+        "Limitations:\n"
+        "Placeholder.\n\n"
+        "Follow-up Questions:\n"
+        "Placeholder."
+    )
+
+# ============================================================================
+# OPTIONAL: RETRIEVAL FORMAT CONVERTER
+# ============================================================================
+
+def convert_raw_docs(raw_docs: List[Dict[str, Any]]) -> List[RetrievedDoc]:
+    out: List[RetrievedDoc] = []
+    for r in raw_docs:
+        out.append(
+            RetrievedDoc(
+                doc_id=str(r.get("id", r.get("doc_id", ""))),
+                title=str(r.get("title", "")),
+                content=str(r.get("content", r.get("chunk_text", ""))),
+                score=float(r.get("score", 0.0)),
+                metadata=dict(r),
+            )
+        )
+    return out
+
+# ============================================================================
+# QUICK SELF-TEST
+# ============================================================================
+
+if __name__ == "__main__":
+    raw_docs = [
+        {
+            "id": "S1",
+            "title": "Management of delayed inflammatory reactions to HA fillers",
+            "content": (
+                "Infection should be excluded first. Treatment may include antibiotics such as doxycycline "
+                "or clarithromycin, corticosteroids, and hyaluronidase if persistent HA filler is present. "
+                "Methotrexate may be reserved for refractory cases."
+            ),
+            "score": 0.78,
+        },
+        {
+            "id": "S2",
+            "title": "Hyaluronidase hypersensitivity precautions",
+            "content": (
+                "Intradermal skin testing with a small diluted dose may be considered in at-risk patients. "
+                "Observe for local or systemic reaction and ensure emergency treatment is available."
+            ),
+            "score": 0.74,
+        },
+        {
+            "id": "S3",
+            "title": "Botulinum toxin induced eyelid ptosis management",
+            "content": (
+                "Apraclonidine drops can provide temporary symptomatic improvement. "
+                "The condition is usually self-limited."
+            ),
+            "score": 0.81,
+        },
+    ]
+
+    docs = convert_raw_docs(raw_docs)
+
+    tests = [
+        "What is the treatment algorithm for delayed inflammatory nodules after hyaluronic acid filler injections?",
+        "What precautions are recommended when using hyaluronidase in patients with suspected hypersensitivity or bee venom allergy?",
+        "What are the recommended strategies for managing eyelid ptosis after botulinum toxin injections?",
+    ]
+
+    for q in tests:
+        result = generate_answer_with_gap_fix(
+            user_query=q,
+            user_language="English",
+            retrieved_docs=docs,
+            llm_generate_fn=example_llm_generate_fn,
+            final_k=5,
+        )
+        print("=" * 100)
+        print("QUERY:", q)
+        print("TOPIC:", result["topic"])
+        print("COVERAGE:", result["coverage_report"])
+        print("ANSWER:")
+        print(result["answer_text"])
+        print()

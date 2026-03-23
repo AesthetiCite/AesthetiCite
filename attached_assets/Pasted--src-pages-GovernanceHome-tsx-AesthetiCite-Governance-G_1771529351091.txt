@@ -1,0 +1,434 @@
+// src/pages/GovernanceHome.tsx
+// AesthetiCite — Governance-Grade Homepage Blueprint (OpenEvidence-like minimalism, but "governance infrastructure" positioning)
+// Drop into Vite + React 18 + TS + Tailwind. Route "/" -> <GovernanceHome />
+// Notes: No gradients. Neutral palette. Calm, institutional tone. Screenshot-first (structured output, not chat bubbles).
+
+import React from "react";
+
+type Feature = { title: string; desc: string };
+type Step = { title: string; desc: string };
+
+const features: Feature[] = [
+  {
+    title: "Evidence Strength Summary (always visible)",
+    desc: "Confidence score (0–10), highest evidence level, evidence mix, and explicit evidence gaps — shown before the answer.",
+  },
+  {
+    title: "Strict citation discipline",
+    desc: "No citation → no claim. Every factual statement is tied to an inline source marker.",
+  },
+  {
+    title: "Governance-first structure",
+    desc: "Answers are formatted as a clinical governance note: key points, safety, limitations, and follow-up questions.",
+  },
+  {
+    title: "Audit-friendly continuity",
+    desc: "Persistent conversation history and exportable usage reporting for structured pilot evaluation.",
+  },
+];
+
+const pilotSteps: Step[] = [
+  { title: "Week 1", desc: "Set up 5 seats, align governance objectives, and define clinic-specific evaluation metrics." },
+  { title: "Weeks 2–7", desc: "Live usage with weekly metrics. Governance review at day 30 to refine workflows." },
+  { title: "Week 8", desc: "Final evaluation report: usage, evidence mix, recurrent themes, and governance recommendations." },
+];
+
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700">
+      {children}
+    </span>
+  );
+}
+
+function SectionTitle({ eyebrow, title, desc }: { eyebrow?: string; title: string; desc?: string }) {
+  return (
+    <div className="max-w-3xl">
+      {eyebrow ? <div className="text-xs font-semibold tracking-widest text-slate-500 uppercase">{eyebrow}</div> : null}
+      <h2 className="mt-2 text-2xl font-semibold text-slate-900 md:text-3xl">{title}</h2>
+      {desc ? <p className="mt-3 text-base leading-7 text-slate-600">{desc}</p> : null}
+    </div>
+  );
+}
+
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="text-sm font-semibold text-slate-900">{title}</div>
+      <div className="mt-2 text-sm leading-6 text-slate-600">{children}</div>
+    </div>
+  );
+}
+
+function Divider() {
+  return <div className="my-12 h-px w-full bg-slate-200" />;
+}
+
+export default function GovernanceHome() {
+  return (
+    <div className="min-h-screen bg-white text-slate-900">
+      {/* Top Bar */}
+      <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            {/* Replace with your logo */}
+            <div className="grid h-9 w-9 place-items-center rounded-xl border border-slate-200 bg-white text-sm font-semibold">
+              AC
+            </div>
+            <div className="leading-tight">
+              <div className="text-sm font-semibold">AesthetiCite</div>
+              <div className="text-xs text-slate-500">Clinical Evidence Governance</div>
+            </div>
+          </div>
+
+          <nav className="hidden items-center gap-6 md:flex">
+            <a className="text-sm text-slate-600 hover:text-slate-900" href="#governance">
+              Governance
+            </a>
+            <a className="text-sm text-slate-600 hover:text-slate-900" href="#output">
+              Output
+            </a>
+            <a className="text-sm text-slate-600 hover:text-slate-900" href="#pilot">
+              Pilot
+            </a>
+            <a className="text-sm text-slate-600 hover:text-slate-900" href="#trust">
+              Trust
+            </a>
+          </nav>
+
+          <div className="flex items-center gap-2">
+            <a
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              href="/governance-overview.pdf"
+            >
+              Download overview
+            </a>
+            <a
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+              href="#request"
+            >
+              Request pilot
+            </a>
+          </div>
+        </div>
+      </header>
+
+      {/* HERO */}
+      <main>
+        <section className="mx-auto max-w-6xl px-4 py-12 md:py-16">
+          <div className="flex flex-col gap-8 md:flex-row md:items-center md:justify-between">
+            <div className="max-w-2xl">
+              <div className="flex flex-wrap gap-2">
+                <Badge>Built for aesthetic clinic networks</Badge>
+                <Badge>Evidence traceability</Badge>
+                <Badge>Conservative output</Badge>
+              </div>
+
+              <h1 className="mt-5 text-3xl font-semibold tracking-tight text-slate-900 md:text-5xl">
+                Clinical evidence governance for aesthetic medicine
+              </h1>
+
+              <p className="mt-5 text-base leading-7 text-slate-600 md:text-lg">
+                AesthetiCite standardizes evidence interpretation across multi-site practices with strict citation
+                discipline, visible evidence strength, and conservative safety framing — designed to reinforce clinical
+                documentation and governance workflows.
+              </p>
+
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <a
+                  href="#request"
+                  className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Request a 60-day governance pilot
+                </a>
+                <a
+                  href="#output"
+                  className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  See structured output
+                </a>
+              </div>
+
+              <p className="mt-4 text-xs leading-5 text-slate-500">
+                Educational decision support. Not a substitute for clinical judgment. No patient-identifiable data
+                required.
+              </p>
+            </div>
+
+            {/* HERO "Screenshot" block: must look like a report, not a chat bubble */}
+            <div className="w-full md:w-[420px]">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700">Evidence Strength Summary</div>
+                  <div className="text-xs text-slate-500">Sample</div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[11px] text-slate-500">Confidence</div>
+                    <div className="mt-1 text-lg font-semibold">8.6 / 10</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[11px] text-slate-500">Highest level</div>
+                    <div className="mt-1 text-sm font-semibold">Guideline / Consensus</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[11px] text-slate-500">Sources used</div>
+                    <div className="mt-1 text-lg font-semibold">12</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[11px] text-slate-500">Evidence mix</div>
+                    <div className="mt-1 text-sm font-semibold">Guidelines • SR • RCT</div>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-slate-200 p-3">
+                  <div className="text-[11px] font-semibold text-slate-700">Evidence gaps</div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    Limited high-quality comparative data for specific off-label technique variants.
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-slate-200 p-3">
+                  <div className="text-[11px] font-semibold text-slate-700">Key points (excerpt)</div>
+                  <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                    <li className="leading-6">
+                      • Conservative technique and clear risk screening are emphasized in consensus guidance.{" "}
+                      <span className="font-mono text-xs text-slate-500">[S1][S3]</span>
+                    </li>
+                    <li className="leading-6">
+                      • Uncertainty is stated explicitly when evidence is limited.{" "}
+                      <span className="font-mono text-xs text-slate-500">[S2]</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
+                  <div>Inline citations</div>
+                  <div className="font-mono">No cite → no claim</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <Divider />
+
+          {/* GOVERNANCE VALUE */}
+          <section id="governance" className="py-2">
+            <SectionTitle
+              eyebrow="Governance"
+              title="Designed for standardization, auditability, and conservative clinical support"
+              desc="Aesthetics is high-stakes and reputation-sensitive. Governance requires traceability, controlled language, and consistent documentation norms across sites."
+            />
+
+            <div className="mt-8 grid gap-4 md:grid-cols-2">
+              <Card title="Standardize evidence interpretation across sites">
+                Reduce variability by enforcing structured output, visible evidence strength, and conservative uncertainty handling.
+              </Card>
+              <Card title="Reduce medico-legal exposure through traceability">
+                Keep claims tied to citations. Make gaps explicit. Support documentation consistency and governance review.
+              </Card>
+              <Card title="Reinforce complication readiness">
+                Safety framing is default. When vascular risk exists, output prioritizes conservative guidance and protocol readiness.
+              </Card>
+              <Card title="Support training and supervision">
+                Useful for junior injectors under senior oversight by providing structured, evidence-linked points and limitations.
+              </Card>
+            </div>
+          </section>
+
+          <Divider />
+
+          {/* STRUCTURED OUTPUT */}
+          <section id="output" className="py-2">
+            <SectionTitle
+              eyebrow="Structured output"
+              title="It should read like a governance note — not a chat conversation"
+              desc="The first screen should communicate evidence strength, what is well-supported, and what remains uncertain — before any detailed discussion."
+            />
+
+            <div className="mt-8 grid gap-4 lg:grid-cols-3">
+              <Card title="Clinical Summary">
+                2–3 lines only. Conservative language. No overclaiming.
+              </Card>
+              <Card title="Key Evidence-Based Points">
+                Bullet points ending with multi-source citations.
+              </Card>
+              <Card title="Safety + Limitations">
+                Safety is explicit. Evidence gaps are stated plainly.
+              </Card>
+            </div>
+
+            <div className="mt-8 rounded-2xl border border-slate-200 bg-slate-50 p-6">
+              <div className="text-sm font-semibold text-slate-900">Website screenshot guidance (important)</div>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
+                <li>• Show a structured report-style output (like above), not chat bubbles.</li>
+                <li>• Include visible: confidence, highest evidence level, evidence gaps, and citations.</li>
+                <li>• Avoid “AI-powered” headlines. Lead with governance and risk framing.</li>
+              </ul>
+            </div>
+          </section>
+
+          <Divider />
+
+          {/* PILOT */}
+          <section id="pilot" className="py-2">
+            <SectionTitle
+              eyebrow="Pilot"
+              title="60-day governance pilot for clinic networks"
+              desc="Designed to be measurable and low-friction: multi-seat access, usage analytics, and a structured evaluation report."
+            />
+
+            <div className="mt-8 grid gap-4 md:grid-cols-3">
+              {pilotSteps.map((s) => (
+                <div key={s.title} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="text-xs font-semibold tracking-widest text-slate-500 uppercase">{s.title}</div>
+                  <div className="mt-2 text-sm leading-6 text-slate-600">{s.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-8 grid gap-4 md:grid-cols-2">
+              <Card title="Included">
+                <ul className="mt-1 list-disc pl-5">
+                  <li>5 clinical seats</li>
+                  <li>Evidence mix and citation-density analytics</li>
+                  <li>Mid-point governance review (day 30)</li>
+                  <li>Final evaluation report (day 60)</li>
+                </ul>
+              </Card>
+              <Card title="Pilot outcomes">
+                <ul className="mt-1 list-disc pl-5">
+                  <li>Measurable adoption (questions per clinician)</li>
+                  <li>Topics map (what clinicians actually need)</li>
+                  <li>Governance recommendations</li>
+                  <li>Case study pathway (with permission)</li>
+                </ul>
+              </Card>
+            </div>
+          </section>
+
+          <Divider />
+
+          {/* TRUST */}
+          <section id="trust" className="py-2">
+            <SectionTitle
+              eyebrow="Trust"
+              title="Conservative by design"
+              desc="Healthcare governance rewards restraint. AesthetiCite is designed to prioritize traceability and explicit limitations."
+            />
+
+            <div className="mt-8 grid gap-4 md:grid-cols-2">
+              <Card title="Clinical responsibility">
+                Educational decision support. Not a substitute for clinician judgment. Output reflects retrieved sources only.
+              </Card>
+              <Card title="Data handling (website copy)">
+                No patient-identifiable data required. Conversations may be stored for continuity and audit review within the organization.
+              </Card>
+              <Card title="Citation integrity">
+                No cite → no claim. If evidence is insufficient, the system states “Evidence insufficient” rather than guessing.
+              </Card>
+              <Card title="Institutional reporting">
+                Usage metrics, evidence-type distribution, and exportable pilot reporting support governance evaluation.
+              </Card>
+            </div>
+          </section>
+
+          <Divider />
+
+          {/* REQUEST PILOT */}
+          <section id="request" className="py-2">
+            <SectionTitle
+              eyebrow="Request pilot"
+              title="Request a governance pilot for your clinic network"
+              desc="Short discovery call first. We align on governance objectives and confirm suitability for a controlled evaluation."
+            />
+
+            <div className="mt-8 grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="text-sm font-semibold text-slate-900">Contact</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Use a direct email to the Medical Director / Clinical Governance Lead.
+                  Keep it discovery-oriented and governance-framed.
+                </p>
+
+                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold text-slate-700">Email snippet (copy-ready)</div>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">
+                    Hello Dr [Name],<br />
+                    I’m reaching out regarding a governance-oriented evidence support platform designed for multi-site
+                    aesthetic clinics. It provides conservative, citation-disciplined outputs with visible evidence
+                    strength and explicit limitations to support documentation consistency across sites.<br />
+                    Would you be open to a brief 15-minute call to understand how your group standardizes evidence-based
+                    practice and complication readiness?<br />
+                    Kind regards,<br />
+                    Youssef Lidary
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="text-sm font-semibold text-slate-900">Pilot assets</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  For enterprise perception, always provide a formal overview PDF before the demo.
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <a
+                    href="/governance-overview.pdf"
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Governance Overview (PDF)
+                  </a>
+                  <a
+                    href="/pilot-structure.pdf"
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    60-Day Pilot Structure (PDF)
+                  </a>
+                  <a
+                    href="/security-privacy.pdf"
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Data Handling & Privacy (PDF)
+                  </a>
+                </div>
+
+                <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold text-slate-700">What to avoid on the website</div>
+                  <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                    <li>• “Cutting-edge AI”, “best model”, “superior to…”</li>
+                    <li>• Technical stack details on the homepage</li>
+                    <li>• Chat-bubble screenshots</li>
+                    <li>• Overpromising outcomes</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Footer */}
+          <footer className="mt-16 border-t border-slate-200 py-10">
+            <div className="mx-auto max-w-6xl px-4">
+              <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                <div className="text-sm text-slate-600">
+                  © {new Date().getFullYear()} AesthetiCite — Clinical Evidence Governance
+                </div>
+                <div className="flex gap-4 text-sm">
+                  <a className="text-slate-600 hover:text-slate-900" href="/terms">
+                    Terms
+                  </a>
+                  <a className="text-slate-600 hover:text-slate-900" href="/privacy">
+                    Privacy
+                  </a>
+                  <a className="text-slate-600 hover:text-slate-900" href="/contact">
+                    Contact
+                  </a>
+                </div>
+              </div>
+            </div>
+          </footer>
+        </section>
+      </main>
+    </div>
+  );
+}

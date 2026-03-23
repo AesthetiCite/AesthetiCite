@@ -1,0 +1,754 @@
+// PreProcedureSafetyPage.tsx
+//
+// Single-file React page for the AesthetiCite Pre-Procedure Safety UI
+//
+// What it does:
+// - clinician-friendly form for the Pre-Procedure Safety Check
+// - submits to /api/safety/preprocedure-check
+// - displays risk card output
+// - displays top risks, danger zones, mitigation steps, evidence
+// - supports one-click PDF download via /api/safety/preprocedure-check/export-pdf
+//
+// Assumptions:
+// - React + TypeScript
+// - Tailwind CSS available
+// - shadcn/ui available
+// - lucide-react available
+//
+// If your app uses a different API base URL, change API_BASE below.
+
+import React, { useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  FileWarning,
+  Loader2,
+  ShieldAlert,
+  Stethoscope,
+} from "lucide-react";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+
+const API_BASE = "";
+
+type RiskLevel = "low" | "moderate" | "high" | "very_high";
+type DecisionLevel = "go" | "caution" | "high_risk";
+
+type PatientFactors = {
+  prior_filler_in_same_area?: boolean;
+  prior_vascular_event?: boolean;
+  autoimmune_history?: boolean;
+  allergy_history?: boolean;
+  active_infection_near_site?: boolean;
+  anticoagulation?: boolean;
+  vascular_disease?: boolean;
+  smoking?: boolean;
+};
+
+type PreProcedureRequest = {
+  procedure: string;
+  region: string;
+  product_type: string;
+  technique?: string;
+  injector_experience_level?: "junior" | "intermediate" | "senior";
+  patient_factors?: PatientFactors;
+  clinician_id?: string;
+  clinic_id?: string;
+};
+
+type EvidenceItem = {
+  source_id: string;
+  title: string;
+  note: string;
+  citation_text?: string | null;
+  source_type?: string | null;
+  relevance_score?: number | null;
+};
+
+type RiskItem = {
+  complication: string;
+  risk_score: number;
+  risk_level: RiskLevel;
+  why_it_matters: string;
+};
+
+type SafetyAssessment = {
+  overall_risk_score: number;
+  overall_risk_level: RiskLevel;
+  decision: DecisionLevel;
+  rationale: string;
+};
+
+type ProcedureInsight = {
+  procedure_name: string;
+  region: string;
+  likely_plane_or_target?: string | null;
+  danger_zones: string[];
+  technical_notes: string[];
+};
+
+type PreProcedureResponse = {
+  request_id: string;
+  generated_at_utc: string;
+  engine_version: string;
+  knowledge_revision: string;
+  safety_assessment: SafetyAssessment;
+  top_risks: RiskItem[];
+  procedure_insight: ProcedureInsight;
+  mitigation_steps: string[];
+  caution_flags: string[];
+  evidence: EvidenceItem[];
+  disclaimer: string;
+};
+
+const initialPatientFactors: PatientFactors = {
+  prior_filler_in_same_area: false,
+  prior_vascular_event: false,
+  autoimmune_history: false,
+  allergy_history: false,
+  active_infection_near_site: false,
+  anticoagulation: false,
+  vascular_disease: false,
+  smoking: false,
+};
+
+export default function PreProcedureSafetyPage() {
+  const [form, setForm] = useState<PreProcedureRequest>({
+    procedure: "",
+    region: "",
+    product_type: "",
+    technique: "",
+    injector_experience_level: "intermediate",
+    patient_factors: initialPatientFactors,
+    clinician_id: "",
+    clinic_id: "",
+  });
+
+  const [result, setResult] = useState<PreProcedureResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = useMemo(() => {
+    return (
+      form.procedure.trim().length > 1 &&
+      form.region.trim().length > 1 &&
+      form.product_type.trim().length > 1
+    );
+  }, [form]);
+
+  function updateField<K extends keyof PreProcedureRequest>(
+    key: K,
+    value: PreProcedureRequest[K]
+  ) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updatePatientFactor<K extends keyof PatientFactors>(
+    key: K,
+    value: boolean
+  ) {
+    setForm((prev) => ({
+      ...prev,
+      patient_factors: {
+        ...prev.patient_factors,
+        [key]: value,
+      },
+    }));
+  }
+
+  async function handleRunCheck() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const payload: PreProcedureRequest = {
+        procedure: form.procedure.trim(),
+        region: form.region.trim(),
+        product_type: form.product_type.trim(),
+        technique: form.technique?.trim() || undefined,
+        injector_experience_level: form.injector_experience_level,
+        clinician_id: form.clinician_id?.trim() || undefined,
+        clinic_id: form.clinic_id?.trim() || undefined,
+        patient_factors: form.patient_factors,
+      };
+
+      const res = await fetch(`${API_BASE}/api/safety/preprocedure-check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Failed to run safety check.");
+      }
+
+      const data: PreProcedureResponse = await res.json();
+      setResult(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDownloadPdf() {
+    setPdfLoading(true);
+    setError(null);
+
+    try {
+      const payload: PreProcedureRequest = {
+        procedure: form.procedure.trim(),
+        region: form.region.trim(),
+        product_type: form.product_type.trim(),
+        technique: form.technique?.trim() || undefined,
+        injector_experience_level: form.injector_experience_level,
+        clinician_id: form.clinician_id?.trim() || undefined,
+        clinic_id: form.clinic_id?.trim() || undefined,
+        patient_factors: form.patient_factors,
+      };
+
+      const res = await fetch(
+        `${API_BASE}/api/safety/preprocedure-check/export-pdf`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Failed to export PDF.");
+      }
+
+      const data: { request_id: string; filename: string; pdf_path: string } =
+        await res.json();
+
+      // If your backend serves static files, replace this with the public URL.
+      // For now, we attempt direct open if the returned path is web-accessible.
+      window.open(data.pdf_path, "_blank");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PDF export failed.");
+    } finally {
+      setPdfLoading(false);
+    }
+  }
+
+  function decisionBadge(decision: DecisionLevel) {
+    switch (decision) {
+      case "go":
+        return (
+          <Badge className="rounded-full px-3 py-1 text-sm">
+            <CheckCircle2 className="mr-1 h-4 w-4" />
+            GO
+          </Badge>
+        );
+      case "caution":
+        return (
+          <Badge variant="secondary" className="rounded-full px-3 py-1 text-sm">
+            <AlertTriangle className="mr-1 h-4 w-4" />
+            CAUTION
+          </Badge>
+        );
+      case "high_risk":
+        return (
+          <Badge variant="destructive" className="rounded-full px-3 py-1 text-sm">
+            <ShieldAlert className="mr-1 h-4 w-4" />
+            HIGH RISK
+          </Badge>
+        );
+    }
+  }
+
+  function riskColor(level: RiskLevel) {
+    switch (level) {
+      case "low":
+        return "bg-green-50 text-green-700 border-green-200";
+      case "moderate":
+        return "bg-yellow-50 text-yellow-700 border-yellow-200";
+      case "high":
+        return "bg-orange-50 text-orange-700 border-orange-200";
+      case "very_high":
+        return "bg-red-50 text-red-700 border-red-200";
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      <div className="mx-auto max-w-7xl">
+        <div className="mb-8 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">
+              Pre-Procedure Safety Check
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">
+              AesthetiCite safety intelligence for aesthetic procedures.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 rounded-2xl border bg-white px-4 py-2 shadow-sm">
+            <Stethoscope className="h-4 w-4 text-slate-500" />
+            <span className="text-sm text-slate-600">
+              Demo-ready clinic workflow
+            </span>
+          </div>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-[420px_minmax(0,1fr)]">
+          <Card className="rounded-2xl border-0 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-xl">Procedure Input</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="space-y-2">
+                <Label htmlFor="procedure">Procedure</Label>
+                <Input
+                  id="procedure"
+                  placeholder="e.g. nasolabial fold filler"
+                  value={form.procedure}
+                  onChange={(e) => updateField("procedure", e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="region">Region</Label>
+                <Input
+                  id="region"
+                  placeholder="e.g. nasolabial fold"
+                  value={form.region}
+                  onChange={(e) => updateField("region", e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="product">Product Type</Label>
+                <Input
+                  id="product"
+                  placeholder="e.g. hyaluronic acid filler"
+                  value={form.product_type}
+                  onChange={(e) => updateField("product_type", e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="technique">Technique</Label>
+                <Input
+                  id="technique"
+                  placeholder="e.g. needle or cannula"
+                  value={form.technique}
+                  onChange={(e) => updateField("technique", e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="experience">Injector Experience Level</Label>
+                <select
+                  id="experience"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={form.injector_experience_level}
+                  onChange={(e) =>
+                    updateField(
+                      "injector_experience_level",
+                      e.target.value as "junior" | "intermediate" | "senior"
+                    )
+                  }
+                >
+                  <option value="junior">Junior</option>
+                  <option value="intermediate">Intermediate</option>
+                  <option value="senior">Senior</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="clinicianId">Clinician ID</Label>
+                  <Input
+                    id="clinicianId"
+                    placeholder="optional"
+                    value={form.clinician_id}
+                    onChange={(e) => updateField("clinician_id", e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="clinicId">Clinic ID</Label>
+                  <Input
+                    id="clinicId"
+                    placeholder="optional"
+                    value={form.clinic_id}
+                    onChange={(e) => updateField("clinic_id", e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label>Patient Factors</Label>
+                <div className="grid grid-cols-1 gap-3 rounded-2xl border bg-slate-50 p-4">
+                  <FactorRow
+                    label="Prior filler in same area"
+                    checked={!!form.patient_factors?.prior_filler_in_same_area}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("prior_filler_in_same_area", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Prior vascular event"
+                    checked={!!form.patient_factors?.prior_vascular_event}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("prior_vascular_event", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Autoimmune history"
+                    checked={!!form.patient_factors?.autoimmune_history}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("autoimmune_history", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Allergy history"
+                    checked={!!form.patient_factors?.allergy_history}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("allergy_history", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Active infection near site"
+                    checked={!!form.patient_factors?.active_infection_near_site}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("active_infection_near_site", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Anticoagulation"
+                    checked={!!form.patient_factors?.anticoagulation}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("anticoagulation", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Vascular disease"
+                    checked={!!form.patient_factors?.vascular_disease}
+                    onCheckedChange={(v) =>
+                      updatePatientFactor("vascular_disease", v)
+                    }
+                  />
+                  <FactorRow
+                    label="Smoking"
+                    checked={!!form.patient_factors?.smoking}
+                    onCheckedChange={(v) => updatePatientFactor("smoking", v)}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 pt-2 sm:flex-row">
+                <Button
+                  className="flex-1 rounded-xl"
+                  onClick={handleRunCheck}
+                  disabled={!canSubmit || loading}
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Running...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldAlert className="mr-2 h-4 w-4" />
+                      Run Safety Check
+                    </>
+                  )}
+                </Button>
+
+                <Button
+                  variant="outline"
+                  className="flex-1 rounded-xl"
+                  onClick={handleDownloadPdf}
+                  disabled={!canSubmit || pdfLoading}
+                >
+                  {pdfLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Exporting...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="mr-2 h-4 w-4" />
+                      Download PDF
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {error && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <div className="space-y-6">
+            {!result ? (
+              <Card className="rounded-2xl border-0 shadow-sm">
+                <CardContent className="flex min-h-[420px] flex-col items-center justify-center text-center">
+                  <FileWarning className="mb-4 h-12 w-12 text-slate-300" />
+                  <h2 className="text-xl font-medium text-slate-800">
+                    Safety result will appear here
+                  </h2>
+                  <p className="mt-2 max-w-md text-sm text-slate-500">
+                    Enter the procedure details and run the pre-procedure safety
+                    check to see risk scoring, danger zones, mitigation steps,
+                    and evidence.
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <>
+                <Card className="rounded-2xl border-0 shadow-sm">
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <CardTitle className="text-xl">Safety Assessment</CardTitle>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Request ID: {result.request_id}
+                        </p>
+                      </div>
+                      {decisionBadge(result.safety_assessment.decision)}
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <MetricCard
+                        label="Overall Risk Score"
+                        value={`${result.safety_assessment.overall_risk_score}/100`}
+                      />
+                      <MetricCard
+                        label="Risk Level"
+                        value={result.safety_assessment.overall_risk_level.replace("_", " ")}
+                      />
+                      <MetricCard
+                        label="Knowledge Revision"
+                        value={result.knowledge_revision}
+                      />
+                    </div>
+
+                    <div className="mt-5 rounded-2xl border bg-slate-50 p-4">
+                      <p className="text-sm font-medium text-slate-800">Rationale</p>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {result.safety_assessment.rationale}
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-2xl border-0 shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="text-xl">Top Complication Risks</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {result.top_risks.map((risk) => (
+                      <div
+                        key={risk.complication}
+                        className={`rounded-2xl border p-4 ${riskColor(risk.risk_level)}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium capitalize">{risk.complication}</p>
+                            <p className="mt-1 text-sm opacity-80">
+                              {risk.risk_level.replace("_", " ")}
+                            </p>
+                          </div>
+                          <div className="rounded-xl bg-white/70 px-3 py-1 text-sm font-semibold">
+                            {risk.risk_score}/100
+                          </div>
+                        </div>
+                        <p className="mt-3 text-sm">{risk.why_it_matters}</p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                <div className="grid gap-6 xl:grid-cols-2">
+                  <Card className="rounded-2xl border-0 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-xl">Procedure Insight</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <InfoBlock
+                        title="Procedure"
+                        body={result.procedure_insight.procedure_name}
+                      />
+                      <InfoBlock
+                        title="Region"
+                        body={result.procedure_insight.region}
+                      />
+                      {result.procedure_insight.likely_plane_or_target && (
+                        <InfoBlock
+                          title="Likely Plane / Target"
+                          body={result.procedure_insight.likely_plane_or_target}
+                        />
+                      )}
+
+                      <ListBlock
+                        title="Danger Zones"
+                        items={result.procedure_insight.danger_zones}
+                      />
+
+                      <ListBlock
+                        title="Technical Notes"
+                        items={result.procedure_insight.technical_notes}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-2xl border-0 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-xl">Mitigation Steps</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <ListBlock items={result.mitigation_steps} />
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <div className="grid gap-6 xl:grid-cols-2">
+                  <Card className="rounded-2xl border-0 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-xl">Caution Flags</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {result.caution_flags.length > 0 ? (
+                        <ListBlock items={result.caution_flags} />
+                      ) : (
+                        <p className="text-sm text-slate-500">
+                          No additional caution flags triggered.
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-2xl border-0 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-xl">Evidence</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {result.evidence.map((ev) => (
+                        <div key={ev.source_id} className="rounded-2xl border p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="font-medium">
+                              [{ev.source_id}] {ev.title}
+                            </p>
+                            {typeof ev.relevance_score === "number" && (
+                              <Badge variant="secondary">
+                                {Math.round(ev.relevance_score * 100)}%
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="mt-2 text-sm text-slate-600">{ev.note}</p>
+                          {ev.citation_text && (
+                            <Textarea
+                              readOnly
+                              value={ev.citation_text}
+                              className="mt-3 min-h-[90px] resize-none bg-slate-50 text-sm"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <Card className="rounded-2xl border-0 shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="text-xl">Clinical Disclaimer</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-slate-600">{result.disclaimer}</p>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FactorRow({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label className="text-sm font-normal text-slate-700">{label}</Label>
+      <Checkbox
+        checked={checked}
+        onCheckedChange={(v) => onCheckedChange(Boolean(v))}
+      />
+    </div>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border bg-white p-4">
+      <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-2 text-lg font-semibold text-slate-900 capitalize">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function InfoBlock({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-2xl border bg-slate-50 p-4">
+      <p className="text-xs uppercase tracking-wide text-slate-500">{title}</p>
+      <p className="mt-2 text-sm text-slate-700">{body}</p>
+    </div>
+  );
+}
+
+function ListBlock({
+  title,
+  items,
+}: {
+  title?: string;
+  items: string[];
+}) {
+  return (
+    <div>
+      {title && (
+        <p className="mb-3 text-xs uppercase tracking-wide text-slate-500">
+          {title}
+        </p>
+      )}
+      <div className="space-y-2">
+        {items.map((item, idx) => (
+          <div
+            key={`${item}-${idx}`}
+            className="flex items-start gap-3 rounded-xl border bg-slate-50 p-3"
+          >
+            <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
+            <p className="text-sm text-slate-700">{item}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,648 @@
+# ============================================================
+# AESTHETICITE MULTILINGUAL RETRIEVAL FIX - SINGLE PATCH
+# ============================================================
+# What this patch fixes:
+# 1. Automatic language detection
+# 2. Automatic query translation to English for weak languages
+# 3. Dual retrieval for mixed-performing languages
+# 4. Native retrieval fallback to translated retrieval when results are weak
+# 5. Merge + deduplicate + rerank results
+# 6. Final answer stays in the user's original language
+# 7. Better benchmark timing reporting (prevents accidental "4ms" instead of "4.0s")
+#
+# How to use:
+# - Insert this file as: multilingual_retrieval_patch.py
+# - Plug your existing functions into the adapters section below
+# - Then call answer_question_multilingual(...)
+#
+# Required packages:
+# pip install langdetect
+#
+# Optional:
+# pip install googletrans==4.0.0rc1
+# or replace translate_to_english() with your own LLM/API translator
+# ============================================================
+
+from __future__ import annotations
+
+import time
+import math
+import unicodedata
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
+
+try:
+    from langdetect import detect, DetectorFactory
+    DetectorFactory.seed = 0
+except Exception:
+    detect = None
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+WEAK_RETRIEVAL_LANGS = {
+    "ja",  # Japanese
+    "zh",  # Chinese
+    "ru",  # Russian
+    "tr",  # Turkish
+    "bn",  # Bengali
+    "ta",  # Tamil
+}
+
+MIXED_RETRIEVAL_LANGS = {
+    "hi",  # Hindi
+    "it",  # Italian
+    "id",  # Indonesian
+    "ur",  # Urdu
+    "mr",  # Marathi
+}
+
+STRONG_RETRIEVAL_LANGS = {
+    "en", "fr", "es", "de", "pt", "ar", "ko", "th",
+    "te", "pa", "sw", "ha", "fa", "vi"
+}
+
+MIN_RETRIEVED_DOCS = 8
+MIN_TOP_SCORE = 0.35
+MIN_AVG_TOP5_SCORE = 0.28
+DEFAULT_TOP_K = 24
+DEFAULT_FINAL_K = 20
+
+# ============================================================
+# DATA STRUCTURES
+# ============================================================
+
+@dataclass
+class RetrievedDoc:
+    doc_id: str
+    title: str
+    content: str
+    score: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class RetrievalBundle:
+    language: str
+    original_query: str
+    translated_query: Optional[str]
+    native_results: List[RetrievedDoc]
+    translated_results: List[RetrievedDoc]
+    merged_results: List[RetrievedDoc]
+    final_results: List[RetrievedDoc]
+    debug: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class AnswerResult:
+    answer_text: str
+    user_language: str
+    original_query: str
+    translated_query: Optional[str]
+    retrieved_docs: List[RetrievedDoc]
+    timings: Dict[str, float]
+    debug: Dict[str, Any] = field(default_factory=dict)
+
+# ============================================================
+# ADAPTERS - REPLACE THESE WITH YOUR REAL FUNCTIONS
+# ============================================================
+
+def retrieve_multilingual(query: str, k: int = DEFAULT_TOP_K) -> List[RetrievedDoc]:
+    """
+    Replace with your existing retrieval function.
+    It should return RetrievedDoc objects with a numeric score.
+    This function is used for native-language retrieval.
+    """
+    # Example placeholder:
+    return []
+
+def retrieve_english(query: str, k: int = DEFAULT_TOP_K) -> List[RetrievedDoc]:
+    """
+    Replace with your English retrieval function.
+    In many systems this is the same vector DB / same corpus,
+    but queried after translating the user query into English.
+    """
+    # Example placeholder:
+    return []
+
+def rerank_documents(
+    original_query: str,
+    translated_query: Optional[str],
+    docs: List[RetrievedDoc],
+    user_language: str,
+    top_k: int = DEFAULT_FINAL_K,
+) -> List[RetrievedDoc]:
+    """
+    Replace with your reranker if you have one.
+    If you don't, this fallback sorts by score.
+    """
+    query_for_rerank = translated_query or original_query
+
+    def rerank_score(doc: RetrievedDoc) -> float:
+        # You can replace this with cross-encoder scoring.
+        lexical_bonus = lexical_overlap_bonus(query_for_rerank, doc.title + " " + doc.content)
+        return float(doc.score) + lexical_bonus
+
+    ranked = sorted(docs, key=rerank_score, reverse=True)
+    return ranked[:top_k]
+
+def generate_answer(
+    user_query: str,
+    user_language: str,
+    retrieved_docs: List[RetrievedDoc],
+) -> str:
+    """
+    Replace with your LLM generation function.
+    Important rule:
+    - Generate the answer in user_language
+    - Use the English retrieved sources if needed
+    - Keep citations/source IDs as-is
+    """
+    sources_str = "\n".join(
+        f"[S{i+1}] {doc.title} (score={doc.score:.3f})"
+        for i, doc in enumerate(retrieved_docs)
+    )
+
+    # This is just a fallback stub.
+    # Replace with your actual answer-generation prompt + LLM call.
+    return (
+        f"Language: {user_language}\n\n"
+        f"Clinical Summary:\n"
+        f"This is a placeholder answer for: {user_query}\n\n"
+        f"Key Evidence-Based Points:\n"
+        f"- Retrieved {len(retrieved_docs)} sources.\n\n"
+        f"Safety Considerations:\n"
+        f"- Verify evidence quality before clinical use.\n\n"
+        f"Limitations:\n"
+        f"- Placeholder generator must be replaced with your production LLM.\n\n"
+        f"Follow-up Questions:\n"
+        f"- Would you like protocol-specific guidance?\n\n"
+        f"Sources:\n{sources_str}"
+    )
+
+# ============================================================
+# TRANSLATION
+# ============================================================
+
+def translate_to_english(text: str, source_lang: Optional[str] = None) -> str:
+    """
+    Replace this with your preferred translator:
+    - your existing LLM
+    - DeepL API
+    - Google Translate API
+    - Azure Translator
+    This fallback tries googletrans if installed, else returns original text.
+    """
+    try:
+        from googletrans import Translator  # type: ignore
+        translator = Translator()
+        result = translator.translate(text, src=source_lang if source_lang else "auto", dest="en")
+        return result.text.strip()
+    except Exception:
+        # Safe fallback: do not break pipeline
+        return text.strip()
+
+# ============================================================
+# LANGUAGE DETECTION
+# ============================================================
+
+def detect_language(text: str) -> str:
+    """
+    Robust language detection with script hints.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return "en"
+
+    script_guess = detect_script_family(stripped)
+
+    # Strong script-specific short-circuits
+    if script_guess == "CJK":
+        # langdetect can confuse zh/ja/ko on short text, but keep it if possible
+        if detect is not None:
+            try:
+                lang = detect(stripped)
+                if lang in {"zh-cn", "zh-tw"}:
+                    return "zh"
+                if lang in {"ja", "ko", "zh"}:
+                    return lang
+            except Exception:
+                pass
+        return "zh"
+
+    if script_guess == "Arabic":
+        if detect is not None:
+            try:
+                lang = normalize_lang_code(detect(stripped))
+                if lang in {"ar", "fa", "ur"}:
+                    return lang
+            except Exception:
+                pass
+        return "ar"
+
+    if detect is not None:
+        try:
+            return normalize_lang_code(detect(stripped))
+        except Exception:
+            return "en"
+
+    return "en"
+
+def normalize_lang_code(lang: str) -> str:
+    lang = (lang or "").lower().strip()
+    aliases = {
+        "zh-cn": "zh",
+        "zh-tw": "zh",
+        "iw": "he",
+        "in": "id",
+    }
+    return aliases.get(lang, lang)
+
+def detect_script_family(text: str) -> str:
+    families = set()
+
+    for ch in text:
+        if ch.isspace():
+            continue
+        name = unicodedata.name(ch, "")
+        if "CJK" in name or "HIRAGANA" in name or "KATAKANA" in name or "HANGUL" in name:
+            families.add("CJK")
+        elif "ARABIC" in name:
+            families.add("Arabic")
+        elif "CYRILLIC" in name:
+            families.add("Cyrillic")
+        elif "DEVANAGARI" in name:
+            families.add("Devanagari")
+        elif "BENGALI" in name:
+            families.add("Bengali")
+        elif "TAMIL" in name:
+            families.add("Tamil")
+        elif "TELUGU" in name:
+            families.add("Telugu")
+        elif "THAI" in name:
+            families.add("Thai")
+        elif "GURMUKHI" in name:
+            families.add("Gurmukhi")
+        elif "LATIN" in name:
+            families.add("Latin")
+
+    if not families:
+        return "Unknown"
+    if len(families) == 1:
+        return next(iter(families))
+    return "+".join(sorted(families))
+
+# ============================================================
+# RETRIEVAL QUALITY CHECKS
+# ============================================================
+
+def retrieval_is_weak(results: List[RetrievedDoc]) -> bool:
+    if not results:
+        return True
+
+    if len(results) < MIN_RETRIEVED_DOCS:
+        return True
+
+    top_score = safe_float(results[0].score)
+    avg_top5 = sum(safe_float(r.score) for r in results[:5]) / max(1, min(5, len(results)))
+
+    if top_score < MIN_TOP_SCORE:
+        return True
+
+    if avg_top5 < MIN_AVG_TOP5_SCORE:
+        return True
+
+    return False
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+def lexical_overlap_bonus(query: str, text: str) -> float:
+    q_tokens = set(tokenize(query))
+    t_tokens = set(tokenize(text))
+    if not q_tokens or not t_tokens:
+        return 0.0
+    overlap = len(q_tokens & t_tokens) / max(1, len(q_tokens))
+    return 0.08 * overlap
+
+def tokenize(text: str) -> List[str]:
+    cleaned = []
+    for ch in (text or "").lower():
+        if ch.isalnum():
+            cleaned.append(ch)
+        else:
+            cleaned.append(" ")
+    return [tok for tok in "".join(cleaned).split() if tok]
+
+# ============================================================
+# MERGE / DEDUP
+# ============================================================
+
+def merge_and_deduplicate(
+    native_results: List[RetrievedDoc],
+    translated_results: List[RetrievedDoc],
+) -> List[RetrievedDoc]:
+    merged: Dict[str, RetrievedDoc] = {}
+
+    for origin, results in [("native", native_results), ("translated", translated_results)]:
+        for rank, doc in enumerate(results):
+            key = canonical_doc_key(doc)
+            adjusted_score = safe_float(doc.score) + rank_bonus(rank)
+            existing = merged.get(key)
+
+            metadata = dict(doc.metadata or {})
+            metadata["retrieval_origin"] = origin
+            metadata["original_score"] = safe_float(doc.score)
+            metadata["adjusted_score"] = adjusted_score
+
+            candidate = RetrievedDoc(
+                doc_id=doc.doc_id,
+                title=doc.title,
+                content=doc.content,
+                score=adjusted_score,
+                metadata=metadata,
+            )
+
+            if existing is None or candidate.score > existing.score:
+                merged[key] = candidate
+
+    return sorted(merged.values(), key=lambda d: d.score, reverse=True)
+
+def canonical_doc_key(doc: RetrievedDoc) -> str:
+    if doc.doc_id:
+        return f"id::{doc.doc_id}"
+    title = normalize_text_for_key(doc.title)
+    head = normalize_text_for_key(doc.content[:180])
+    return f"title::{title}::head::{head}"
+
+def normalize_text_for_key(text: str) -> str:
+    text = unicodedata.normalize("NFKC", (text or "").strip().lower())
+    return " ".join(text.split())
+
+def rank_bonus(rank: int) -> float:
+    # Small bonus for higher-ranked items
+    return max(0.0, 0.05 - rank * 0.001)
+
+# ============================================================
+# MAIN MULTILINGUAL RETRIEVAL LOGIC
+# ============================================================
+
+def multilingual_retrieve(
+    query: str,
+    lang: Optional[str] = None,
+    k: int = DEFAULT_TOP_K,
+    final_k: int = DEFAULT_FINAL_K,
+) -> RetrievalBundle:
+    language = normalize_lang_code(lang or detect_language(query))
+
+    native_results: List[RetrievedDoc] = []
+    translated_results: List[RetrievedDoc] = []
+    translated_query: Optional[str] = None
+
+    debug: Dict[str, Any] = {
+        "language": language,
+        "query_script": detect_script_family(query),
+        "strategy": None,
+    }
+
+    # Strategy A: always translate weak languages
+    if language in WEAK_RETRIEVAL_LANGS:
+        debug["strategy"] = "translated_only_primary"
+        translated_query = translate_to_english(query, source_lang=language)
+        translated_results = retrieve_english(translated_query, k=k)
+
+    # Strategy B: dual retrieval for mixed languages
+    elif language in MIXED_RETRIEVAL_LANGS:
+        debug["strategy"] = "dual_retrieval"
+        native_results = retrieve_multilingual(query, k=k)
+        translated_query = translate_to_english(query, source_lang=language)
+        translated_results = retrieve_english(translated_query, k=k)
+
+    # Strategy C: native first, then fallback if weak
+    else:
+        debug["strategy"] = "native_then_fallback"
+        native_results = retrieve_multilingual(query, k=k)
+
+        if retrieval_is_weak(native_results):
+            translated_query = translate_to_english(query, source_lang=language)
+            translated_results = retrieve_english(translated_query, k=k)
+            debug["fallback_triggered"] = True
+        else:
+            debug["fallback_triggered"] = False
+
+    merged_results = merge_and_deduplicate(native_results, translated_results)
+    final_results = rerank_documents(
+        original_query=query,
+        translated_query=translated_query,
+        docs=merged_results,
+        user_language=language,
+        top_k=final_k,
+    )
+
+    debug["native_count"] = len(native_results)
+    debug["translated_count"] = len(translated_results)
+    debug["merged_count"] = len(merged_results)
+    debug["final_count"] = len(final_results)
+    debug["native_weak"] = retrieval_is_weak(native_results) if native_results else True
+
+    return RetrievalBundle(
+        language=language,
+        original_query=query,
+        translated_query=translated_query,
+        native_results=native_results,
+        translated_results=translated_results,
+        merged_results=merged_results,
+        final_results=final_results,
+        debug=debug,
+    )
+
+# ============================================================
+# FINAL PIPELINE ENTRYPOINT
+# ============================================================
+
+def answer_question_multilingual(
+    user_query: str,
+    user_language: Optional[str] = None,
+    k: int = DEFAULT_TOP_K,
+    final_k: int = DEFAULT_FINAL_K,
+) -> AnswerResult:
+    t0 = time.perf_counter()
+
+    # 1) Retrieval
+    rt0 = time.perf_counter()
+    bundle = multilingual_retrieve(user_query, lang=user_language, k=k, final_k=final_k)
+    rt1 = time.perf_counter()
+
+    # 2) Generation
+    gt0 = time.perf_counter()
+    answer_text = generate_answer(
+        user_query=user_query,
+        user_language=bundle.language,
+        retrieved_docs=bundle.final_results,
+    )
+    gt1 = time.perf_counter()
+
+    t1 = time.perf_counter()
+
+    timings = {
+        "retrieval_seconds": round(rt1 - rt0, 3),
+        "generation_seconds": round(gt1 - gt0, 3),
+        "total_seconds": round(t1 - t0, 3),
+    }
+
+    return AnswerResult(
+        answer_text=answer_text,
+        user_language=bundle.language,
+        original_query=user_query,
+        translated_query=bundle.translated_query,
+        retrieved_docs=bundle.final_results,
+        timings=timings,
+        debug=bundle.debug,
+    )
+
+# ============================================================
+# BENCHMARK HELPERS
+# ============================================================
+
+def format_duration(seconds: float) -> str:
+    """
+    Prevents accidental 'ms' reporting when values are actually seconds.
+    """
+    if seconds < 0:
+        return "--"
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    return f"{seconds:.1f}s"
+
+def benchmark_one_query(query: str, language: Optional[str] = None) -> Dict[str, Any]:
+    result = answer_question_multilingual(query, user_language=language)
+
+    return {
+        "query": query,
+        "language": result.user_language,
+        "translated_query": result.translated_query,
+        "retrieved_sources": len(result.retrieved_docs),
+        "retrieval_time": format_duration(result.timings["retrieval_seconds"]),
+        "generation_time": format_duration(result.timings["generation_seconds"]),
+        "total_time": format_duration(result.timings["total_seconds"]),
+        "debug": result.debug,
+        "answer_preview": result.answer_text[:400],
+    }
+
+def benchmark_many(queries_by_language: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    for lang, queries in queries_by_language.items():
+        for query in queries:
+            try:
+                row = benchmark_one_query(query, language=lang)
+                rows.append(row)
+            except Exception as exc:
+                rows.append({
+                    "query": query,
+                    "language": lang,
+                    "translated_query": None,
+                    "retrieved_sources": 0,
+                    "retrieval_time": "--",
+                    "generation_time": "--",
+                    "total_time": "--",
+                    "debug": {"error": str(exc)},
+                    "answer_preview": "",
+                })
+
+    return rows
+
+# ============================================================
+# OPTIONAL: QUALITY GATE
+# ============================================================
+
+def answer_with_quality_gate(
+    user_query: str,
+    user_language: Optional[str] = None,
+    min_docs: int = 6,
+) -> AnswerResult:
+    result = answer_question_multilingual(user_query, user_language=user_language)
+
+    if len(result.retrieved_docs) < min_docs:
+        fallback_notice = (
+            "\n\nLimitations:\n"
+            "The available evidence retrieved for this query is limited, so the answer should be interpreted cautiously."
+        )
+        result.answer_text += fallback_notice
+
+    return result
+
+# ============================================================
+# EXAMPLE INTEGRATION NOTES
+# ============================================================
+#
+# 1) If your current system already has:
+#       search_pubmed_like(query)
+#       vector_search(query)
+#       generate_final_answer(prompt)
+#
+#    then wire them here:
+#
+#    def retrieve_multilingual(query, k=24):
+#        raw = vector_search(query, top_k=k)
+#        return [
+#            RetrievedDoc(
+#                doc_id=r["id"],
+#                title=r["title"],
+#                content=r["chunk_text"],
+#                score=r["score"],
+#                metadata=r,
+#            )
+#            for r in raw
+#        ]
+#
+#    def retrieve_english(query, k=24):
+#        raw = vector_search(query, top_k=k)
+#        return [...]
+#
+#    def generate_answer(user_query, user_language, retrieved_docs):
+#        prompt = build_your_existing_prompt(...)
+#        return call_your_llm(prompt)
+#
+#
+# 2) For the failing languages in your benchmark:
+#       ja, zh, ru, tr, bn, ta
+#    this patch translates before retrieval automatically.
+#
+#
+# 3) For the mixed languages:
+#       hi, it, id, ur, mr
+#    this patch runs both native and translated retrieval, then merges them.
+#
+#
+# 4) Final answer language remains the original language.
+#
+#
+# 5) This patch does not require changing your corpus.
+#    It improves results immediately on an English-heavy corpus.
+#
+# ============================================================
+# QUICK SELF-TEST
+# ============================================================
+
+if __name__ == "__main__":
+    # This only tests the control flow.
+    # Replace adapter functions before production use.
+
+    demo_queries = {
+        "en": ["What is the recommended management of hyaluronic acid filler vascular occlusion?"],
+        "fr": ["Quelle est la conduite à tenir devant une occlusion vasculaire après injection d’acide hyaluronique ?"],
+        "ja": ["ヒアルロン酸注入後の血管閉塞の推奨対応は何ですか？"],
+        "tr": ["Hyalüronik asit dolgu sonrası vasküler oklüzyon yönetimi nedir?"],
+        "zh": ["透明质酸填充后血管栓塞的推荐处理是什么？"],
+    }
+
+    rows = benchmark_many(demo_queries)
+    for row in rows:
+        print("=" * 80)
+        for k, v in row.items():
+            if k != "debug":
+                print(f"{k}: {v}")
+        print("debug:", row["debug"])

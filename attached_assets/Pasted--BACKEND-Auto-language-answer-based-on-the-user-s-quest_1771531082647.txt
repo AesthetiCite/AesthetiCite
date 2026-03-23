@@ -1,0 +1,120 @@
+# --- BACKEND: Auto-language answer based on the user's question (French -> French, etc.)
+# Paste into main.py.
+# This does NOT add extra LLM calls. It uses simple heuristics.
+# If you prefer explicit user selection, keep `lang` too; auto-detect is fallback.
+
+# 1) Add near other imports (you already have re, time):
+import unicodedata
+
+# 2) Add near other helpers:
+def detect_lang_from_text(q: str) -> str:
+    """
+    Heuristic language detection (no external libs, no extra LLM calls).
+    Returns: 'fr' | 'en' | 'es' | 'ar'
+    """
+    s = (q or "").strip()
+    if not s:
+        return "en"
+
+    # Arabic script detection
+    for ch in s:
+        if "\u0600" <= ch <= "\u06FF" or "\u0750" <= ch <= "\u077F" or "\u08A0" <= ch <= "\u08FF":
+            return "ar"
+
+    sl = s.lower()
+
+    # French markers
+    fr_markers = [
+        " le ", " la ", " les ", " des ", " du ", " de ", " une ", " un ",
+        "pour ", "avec ", "sans ", "chez ", "dans ", "sur ", "est ", "sont ",
+        "comment ", "pourquoi ", "quand ", "quel ", "quelle ", "quelles ", "quels ",
+        "prise en charge", "recommandation", "contre-indication", "effets indésirables",
+        "injection", "toxine botulinique", "acide hyaluronique"
+    ]
+    fr_hits = sum(1 for m in fr_markers if m in sl)
+
+    # Spanish markers
+    es_markers = [
+        " el ", " la ", " los ", " las ", " de ", " del ", " una ", " un ",
+        "para ", "con ", "sin ", "cómo ", "por qué ", "cuándo ", "qué ",
+        "manejo", "recomendación", "contraindicación", "efectos adversos",
+        "inyección", "toxina botulínica", "ácido hialurónico"
+    ]
+    es_hits = sum(1 for m in es_markers if m in sl)
+
+    if fr_hits >= 2 and fr_hits >= es_hits:
+        return "fr"
+    if es_hits >= 2 and es_hits > fr_hits:
+        return "es"
+    return "en"
+
+def language_label(lang: str) -> str:
+    return {"en": "English", "fr": "French", "es": "Spanish", "ar": "Arabic"}.get(lang, "English")
+
+# 3) Update AskBody to include optional lang override (if you want):
+class AskBody(BaseModel):
+    q: str
+    conversation_id: str
+    k: int = K_DEFAULT
+    lang: Optional[str] = None  # optional explicit override from UI (dropdown)
+
+# 4) Update build_single_call_prompt to accept lang + enforce it:
+def build_single_call_prompt(question: str, conversation_context: str, chunks: List[Dict[str, Any]], lang: str) -> str:
+    compact = []
+    for c in chunks[:MAX_SOURCES_TO_LLM]:
+        compact.append({
+            "sid": c.get("sid"),
+            "t": (c.get("title") or "")[:160],
+            "y": c.get("year"),
+            "id": c.get("doi") or c.get("url"),
+            "x": (c.get("text") or "")[:CHUNK_CHAR_CAP],
+        })
+
+    lang_name = language_label(lang)
+
+    return f"""
+You are AesthetiCite (evidence-grounded clinical assistant for aesthetic medicine).
+
+Conversation context:
+{conversation_context}
+
+Hard rules:
+1) EVERY factual claim MUST include inline citations like [S1][S3]. You may cite multiple sources per claim.
+2) If sources do not support a claim, DO NOT state it. Write "Evidence insufficient".
+3) Do NOT use outside knowledge for factual claims.
+4) Prefer fewer, stronger, cited points over many weak points.
+5) Make uncertainty explicit.
+6) IMPORTANT: Write the entire answer in {lang_name}. Do not mix languages.
+
+Write exactly in this structure:
+Clinical Summary (2–3 lines)
+
+Key Evidence-Based Points
+- Bullet (end with citations like [S1][S3])
+
+Safety Considerations (if applicable)
+
+Limitations / Uncertainty
+
+Suggested Follow-up Questions
+- Question 1
+- Question 2
+- Question 3
+
+User question: {question}
+
+Sources (JSON):
+{json.dumps(compact, ensure_ascii=False)}
+""".strip()
+
+# 5) In /ask/stream, determine the language from the user question (French question => French answer):
+# Find this line:
+#   prompt = build_single_call_prompt(q, ctx, chunks)
+# Replace with:
+#
+#   lang = (body.lang or "").strip().lower() if body.lang else None
+#   if lang not in ("en", "fr", "es", "ar"):
+#       lang = detect_lang_from_text(q)
+#   prompt = build_single_call_prompt(q, ctx, chunks, lang)
+#
+# That’s it. Now if the user asks in French, they get a French answer automatically.

@@ -1,0 +1,316 @@
+# VERIDOC RETRIEVAL + CHUNKING UPGRADE (one code block)
+# - Adds keyword indexes (GIN FTS + trigram)
+# - Implements hybrid retrieval (vector + keyword) with reranking and quality filters
+# - Improves chunking (paragraph-aware) to reduce garbage retrieval
+#
+# After running, restart API and test:
+#   - Ask a question with rare terms ("hyaluronidase", "vascular occlusion", "alae necrosis")
+#   - Compare citations relevance before/after
+
+set -e
+mkdir -p app/rag ingestion
+
+echo "==> 1) Add retrieval settings to config"
+python - <<'PY'
+import pathlib, re
+p = pathlib.Path("app/core/config.py")
+txt = p.read_text()
+
+def ensure(line, after):
+    nonlocal_txt = txt
+
+PY
+PY
+
+# Patch config cleanly (append new settings if missing)
+python - <<'PY'
+import pathlib, re
+p = pathlib.Path("app/core/config.py")
+txt = p.read_text()
+
+add = """
+    # Retrieval tuning (hybrid)
+    RETRIEVE_K_VECTOR: int = 24
+    RETRIEVE_K_KEYWORD: int = 24
+    RERANK_TOP_N: int = 18
+
+    # Prefer recent evidence when available
+    MIN_YEAR_PREFERRED: int = 2014
+
+    # Evidence-type preference (buyer-grade)
+    PREFERRED_DOC_TYPES: str = "guideline,consensus,ifu,review"
+"""
+if "RETRIEVE_K_VECTOR" not in txt:
+    txt = txt.replace("    # Auth\n", add + "\n    # Auth\n")
+p.write_text(txt)
+print("✅ config updated")
+PY
+
+echo "==> 2) Create/Update SQL indexes (FTS + trigram). Run once on your Postgres."
+# This assumes your DB already has tables documents/chunks and pg_trgm extension.
+# Creates:
+# - GIN index on to_tsvector('english', chunks.text) for keyword retrieval
+# - trigram index on chunks.text for fuzzy matching
+cat > tools/veridoc_db_indexes.sql <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Full-text search index (keyword retrieval)
+CREATE INDEX IF NOT EXISTS idx_chunks_fts
+ON chunks
+USING gin (to_tsvector('english', text));
+
+-- Trigram fuzzy index (helps for names/terms)
+CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm
+ON chunks
+USING gin (text gin_trgm_ops);
+
+-- Helpful filter indexes
+CREATE INDEX IF NOT EXISTS idx_documents_status_domain_type_year
+ON documents(status, domain, document_type, year);
+SQL
+
+echo "Run this SQL in your DB (once): tools/veridoc_db_indexes.sql"
+echo "If you have a DB console available, paste it there."
+
+echo "==> 3) Hybrid retriever (vector + keyword + trigram) with filters + reranking"
+cat > app/rag/retriever.py <<'EOF'
+from __future__ import annotations
+from typing import List, Dict, Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from app.core.config import settings
+from app.rag.embedder import embed_text
+
+# 1) Vector search (cosine distance)
+SQL_VECTOR = """
+SELECT
+  d.source_id,
+  d.title,
+  d.year,
+  d.organization_or_journal,
+  d.document_type,
+  d.domain,
+  c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text,
+  (c.embedding <=> :qvec) AS vdist
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND c.embedding IS NOT NULL
+  AND (:domain IS NULL OR d.domain = :domain)
+ORDER BY c.embedding <=> :qvec
+LIMIT :k;
+"""
+
+# 2) Keyword full-text search (fast + precise for rare terms)
+SQL_FTS = """
+SELECT
+  d.source_id,
+  d.title,
+  d.year,
+  d.organization_or_journal,
+  d.document_type,
+  d.domain,
+  c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text,
+  ts_rank_cd(to_tsvector('english', c.text), plainto_tsquery('english', :q)) AS krank
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND (:domain IS NULL OR d.domain = :domain)
+  AND to_tsvector('english', c.text) @@ plainto_tsquery('english', :q)
+ORDER BY krank DESC
+LIMIT :k;
+"""
+
+# 3) Trigram similarity as a fallback for names/phrases
+SQL_TRGM = """
+SELECT
+  d.source_id,
+  d.title,
+  d.year,
+  d.organization_or_journal,
+  d.document_type,
+  d.domain,
+  c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text,
+  similarity(c.text, :q) AS tsim
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND (:domain IS NULL OR d.domain = :domain)
+  AND similarity(c.text, :q) > 0.12
+ORDER BY tsim DESC
+LIMIT :k;
+"""
+
+def _preferred_doc_types():
+    return [x.strip().lower() for x in settings.PREFERRED_DOC_TYPES.split(",") if x.strip()]
+
+def _doc_type_bonus(doc_type: str | None) -> float:
+    dt = (doc_type or "").strip().lower()
+    pref = _preferred_doc_types()
+    if dt in pref:
+        # Strong bonus for guideline/consensus/ifu/review
+        if dt in ("guideline", "consensus", "ifu"):
+            return 0.22
+        return 0.12
+    return 0.0
+
+def _recency_bonus(year: int | None) -> float:
+    if not year:
+        return 0.0
+    if year >= settings.MIN_YEAR_PREFERRED:
+        return 0.08
+    return 0.0
+
+def _truncate_text(t: str) -> str:
+    return t if len(t) <= 8000 else t[:8000]
+
+def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int = 0) -> List[Dict]:
+    """
+    Hybrid retrieval:
+    - vector topK
+    - keyword (FTS) topK
+    - trigram topK
+    Merge and rerank with:
+    - evidence-type preference
+    - recency preference
+    """
+    if not k:
+        # Rerank top N is the final output size; we retrieve more candidates upstream
+        k_final = settings.RERANK_TOP_N
+    else:
+        k_final = k
+
+    k_vec = settings.RETRIEVE_K_VECTOR
+    k_kw = settings.RETRIEVE_K_KEYWORD
+
+    qvec = embed_text(question)
+
+    vec_rows = db.execute(text(SQL_VECTOR), {"qvec": qvec, "domain": domain, "k": int(k_vec)}).mappings().all()
+    fts_rows = db.execute(text(SQL_FTS), {"q": question, "domain": domain, "k": int(k_kw)}).mappings().all()
+    trgm_rows = db.execute(text(SQL_TRGM), {"q": question, "domain": domain, "k": int(max(10, k_kw//2))}).mappings().all()
+
+    # Normalize + merge candidates
+    merged = {}
+    def add_row(r, kind: str):
+        key = (r["source_id"], r.get("page_or_section") or "")
+        if key not in merged:
+            merged[key] = {
+                "source_id": r["source_id"],
+                "title": r["title"],
+                "year": r["year"],
+                "organization_or_journal": r["organization_or_journal"],
+                "page_or_section": r.get("page_or_section"),
+                "evidence_level": r.get("evidence_level"),
+                "document_type": r.get("document_type"),
+                "domain": r.get("domain"),
+                "text": _truncate_text(r.get("text") or ""),
+                "vdist": None,
+                "krank": None,
+                "tsim": None,
+            }
+        if kind == "vec":
+            merged[key]["vdist"] = float(r.get("vdist")) if r.get("vdist") is not None else merged[key]["vdist"]
+        elif kind == "fts":
+            merged[key]["krank"] = float(r.get("krank")) if r.get("krank") is not None else merged[key]["krank"]
+        elif kind == "trgm":
+            merged[key]["tsim"] = float(r.get("tsim")) if r.get("tsim") is not None else merged[key]["tsim"]
+
+    for r in vec_rows: add_row(r, "vec")
+    for r in fts_rows: add_row(r, "fts")
+    for r in trgm_rows: add_row(r, "trgm")
+
+    # Score:
+    # - lower vdist is better (convert to similarity)
+    # - higher krank is better
+    # - higher trigram is better
+    candidates = list(merged.values())
+    for c in candidates:
+        v_sim = 0.0
+        if c["vdist"] is not None:
+            # cosine distance in [0..2]; convert to similarity approx
+            v_sim = max(0.0, 1.0 - min(1.0, c["vdist"]))
+        k_sim = c["krank"] or 0.0
+        t_sim = c["tsim"] or 0.0
+
+        bonus = _doc_type_bonus(c.get("document_type")) + _recency_bonus(c.get("year"))
+        # Weighted mix: FTS dominates for medical terms; vector helps semantic; trigram is minor
+        c["_score"] = (0.55 * k_sim) + (0.35 * v_sim) + (0.10 * t_sim) + bonus
+
+    # Apply quality filters: prefer core doc types when possible
+    pref = _preferred_doc_types()
+    preferred = [c for c in candidates if (c.get("document_type") or "").lower() in pref]
+    if len(preferred) >= 8:
+        candidates = preferred  # keep high-quality set if sufficient
+
+    candidates.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+
+    # Return top final
+    return candidates[:k_final]
+EOF
+
+echo "==> 4) Improve chunking: paragraph-aware chunking with min length"
+cat > ingestion/chunker.py <<'EOF'
+from __future__ import annotations
+from typing import List, Tuple
+from app.core.config import settings
+
+MIN_CHUNK_CHARS = 400  # drop tiny fragments
+
+def _split_paragraphs(text: str) -> List[str]:
+    # Keep paragraph boundaries; remove excess whitespace
+    raw = text.replace("\r", "\n")
+    parts = [p.strip() for p in raw.split("\n\n") if p.strip()]
+    if not parts:
+        # fallback: single block
+        return [" ".join(text.split())]
+    return parts
+
+def chunk_text_with_page(page_no: int, text: str) -> List[Tuple[str, str]]:
+    """
+    Paragraph-aware chunking within a page.
+    Produces fewer junk chunks; keeps p{page}-c{idx} labels.
+    """
+    paras = _split_paragraphs(text)
+    out: List[Tuple[str, str]] = []
+    buf = ""
+
+    size = settings.CHUNK_SIZE_CHARS
+    overlap = settings.CHUNK_OVERLAP_CHARS
+    idx = 0
+
+    def flush():
+        nonlocal buf, idx
+        chunk = " ".join(buf.split()).strip()
+        if len(chunk) >= MIN_CHUNK_CHARS:
+            out.append((f"p{page_no}-c{idx}", chunk))
+            idx += 1
+        buf = ""
+
+    for p in paras:
+        # If adding this paragraph exceeds size, flush first
+        if buf and len(buf) + len(p) + 2 > size:
+            flush()
+            # overlap: carry last overlap chars from previous chunk into next buffer
+            # (simple overlap using suffix of previous chunk)
+            if out and overlap > 0:
+                prev = out[-1][1]
+                buf = prev[-overlap:] + "\n\n" + p
+            else:
+                buf = p
+        else:
+            buf = (buf + "\n\n" + p) if buf else p
+
+    if buf:
+        flush()
+
+    return out
+EOF
+
+echo "==> 5) Done. Next: restart API and re-ingest a couple PDFs to see improved chunk labels and retrieval."
+echo "IMPORTANT: Also run tools/veridoc_db_indexes.sql in your database once."

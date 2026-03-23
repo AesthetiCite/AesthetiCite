@@ -1,0 +1,575 @@
+import { useEffect, useMemo, useState } from "react"
+import {
+  AlertTriangle,
+  ArrowRight,
+  BookOpen,
+  Clock3,
+  FileDown,
+  Search,
+  Shield,
+  Sparkles,
+  Stethoscope,
+  Zap,
+} from "lucide-react"
+
+type Citation = {
+  id: string
+  title: string
+  locator?: string
+  snippet?: string
+}
+
+type QuickResult = {
+  title: string
+  urgency?: "Low" | "Moderate" | "High" | "Emergency"
+  summary: string
+  actions?: string[]
+  monitoring?: string[]
+  patient_message?: string
+  citations?: Citation[]
+}
+
+type FavoriteAction = {
+  id: string
+  label: string
+  payload: Record<string, any>
+}
+
+const DEFAULT_FAVORITES: FavoriteAction[] = [
+  {
+    id: "vascular-occlusion",
+    label: "Vascular occlusion",
+    payload: {
+      mode: "protocol",
+      procedure: "HA filler",
+      region: "Nasolabial fold",
+      symptom: "Blanching and severe pain",
+    },
+  },
+  {
+    id: "vision-loss",
+    label: "Visual symptoms",
+    payload: {
+      mode: "protocol",
+      procedure: "HA filler",
+      region: "Glabella",
+      symptom: "Visual disturbance after injection",
+    },
+  },
+  {
+    id: "hyaluronidase-dose",
+    label: "Hyaluronidase dosing",
+    payload: {
+      mode: "calculator",
+      territory: "Nasolabial fold",
+      product: "HA filler",
+    },
+  },
+  {
+    id: "bruise-edema",
+    label: "Bruising / edema",
+    payload: {
+      mode: "ask",
+      question: "Post-filler bruising and edema management best practice",
+    },
+  },
+]
+
+const DEMO_RESULT: QuickResult = {
+  title: "Suspected Vascular Compromise Protocol",
+  urgency: "Emergency",
+  summary:
+    "Pattern is highly concerning for vascular compromise. Stop treatment immediately, begin reperfusion-focused management, monitor closely, and escalate urgently if visual symptoms are present.",
+  actions: [
+    "Stop injection immediately",
+    "Assess capillary refill, skin color, pain, and livedo pattern",
+    "Massage the area and apply warm compress",
+    "Prepare high-dose pulsed hyaluronidase per protocol",
+    "Document product, region, side, and onset time",
+  ],
+  monitoring: [
+    "Reassess pain and skin color every 15–30 minutes initially",
+    "Repeat capillary refill checks",
+    "Take serial photos for follow-up documentation",
+  ],
+  patient_message:
+    "We have identified signs that need urgent treatment to protect blood flow and the skin. We are starting the emergency protocol now and will monitor you closely.",
+  citations: [
+    {
+      id: "src_1",
+      title: "Consensus guidance on vascular occlusion management",
+      locator: "Page 4",
+      snippet: "Early recognition and immediate treatment are critical to reduce tissue injury.",
+    },
+    {
+      id: "src_2",
+      title: "Review of hyaluronidase use in filler complications",
+      locator: "Page 7",
+      snippet: "Repeated dosing based on clinical response is preferred over delayed intervention.",
+    },
+  ],
+}
+
+function urgencyClasses(level?: QuickResult["urgency"]) {
+  switch (level) {
+    case "Emergency":
+      return "bg-red-50 text-red-700 ring-red-200"
+    case "High":
+      return "bg-orange-50 text-orange-700 ring-orange-200"
+    case "Moderate":
+      return "bg-amber-50 text-amber-700 ring-amber-200"
+    case "Low":
+      return "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    default:
+      return "bg-slate-100 text-slate-700 ring-slate-200"
+  }
+}
+
+function saveRecent(item: string) {
+  const raw = localStorage.getItem("ac_recent_queries")
+  const current: string[] = raw ? JSON.parse(raw) : []
+  const next = [item, ...current.filter((x) => x !== item)].slice(0, 6)
+  localStorage.setItem("ac_recent_queries", JSON.stringify(next))
+}
+
+function useRecentQueries() {
+  const [items, setItems] = useState<string[]>([])
+  const refresh = () => {
+    const raw = localStorage.getItem("ac_recent_queries")
+    setItems(raw ? JSON.parse(raw) : [])
+  }
+  useEffect(() => {
+    refresh()
+  }, [])
+  return { items, refresh }
+}
+
+export default function DailyClinicHomePage() {
+  const [question, setQuestion] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState<QuickResult | null>(DEMO_RESULT)
+  const [favorites] = useState<FavoriteAction[]>(DEFAULT_FAVORITES)
+  const { items: recentQueries, refresh } = useRecentQueries()
+
+  const todayLabel = useMemo(() => {
+    const now = new Date()
+    return now.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    })
+  }, [])
+
+  async function runQuickAction(payload: Record<string, any>, labelForRecent?: string) {
+    setLoading(true)
+    try {
+      const endpoint =
+        payload.mode === "protocol"
+          ? "/api/safety/v2/protocol"
+          : payload.mode === "calculator"
+          ? "/api/safety/v2/hyaluronidase-calc"
+          : "/api/safety/v2/ask"
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+
+      const data = await res.json()
+
+      const mapped: QuickResult = {
+        title: data.protocol_title || data.title || labelForRecent || "Clinical Result",
+        urgency: data.urgency,
+        summary: data.summary || data.answer || data.result || "No summary returned.",
+        actions: data.immediate_actions || data.actions || data.treatment || [],
+        monitoring: data.monitoring || data.followup || [],
+        patient_message: data.patient_message,
+        citations: data.citations || [],
+      }
+
+      setResult(mapped)
+
+      const recent =
+        labelForRecent ||
+        data.protocol_title ||
+        data.title ||
+        payload.question ||
+        payload.symptom ||
+        "Clinical action"
+
+      saveRecent(recent)
+      refresh()
+    } catch {
+      setResult(DEMO_RESULT)
+      if (labelForRecent) {
+        saveRecent(labelForRecent)
+        refresh()
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function submitQuestion() {
+    if (!question.trim()) return
+    await runQuickAction({ mode: "ask", question: question.trim() }, question.trim())
+    setQuestion("")
+  }
+
+  function exportResult() {
+    if (!result) return
+
+    const text = [
+      result.title,
+      result.urgency ? `Urgency: ${result.urgency}` : "",
+      "",
+      "Summary",
+      result.summary,
+      "",
+      result.actions?.length ? "Actions" : "",
+      ...(result.actions || []).map((x) => `• ${x}`),
+      "",
+      result.monitoring?.length ? "Monitoring" : "",
+      ...(result.monitoring || []).map((x) => `• ${x}`),
+      "",
+      result.patient_message ? "Patient communication" : "",
+      result.patient_message || "",
+      "",
+      result.citations?.length ? "Evidence" : "",
+      ...(result.citations || []).map(
+        (c) =>
+          `• ${c.title}${c.locator ? ` — ${c.locator}` : ""}${c.snippet ? `: ${c.snippet}` : ""}`
+      ),
+    ].join("\n")
+
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "aestheticite-clinical-result.txt"
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-6">
+      <div className="mx-auto max-w-7xl space-y-6">
+
+        {/* Header */}
+        <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                <Sparkles className="h-4 w-4" />
+                Daily-use feature
+              </div>
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
+                Quick Clinical Home
+              </h1>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                One-tap access to the clinical actions you repeat most: emergency protocols,
+                dosing lookups, evidence search, and instant export — all evidence-grounded.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="text-xs text-slate-500">Today</div>
+                <div className="mt-1 text-sm font-semibold">{todayLabel}</div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="text-xs text-slate-500">Use pattern</div>
+                <div className="mt-1 text-sm font-semibold">Daily quick actions</div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="text-xs text-slate-500">Best for</div>
+                <div className="mt-1 text-sm font-semibold">Busy injectors</div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="text-xs text-slate-500">Outcome</div>
+                <div className="mt-1 text-sm font-semibold">Habit formation</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Two-column layout: sidebar actions + main result */}
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-[370px_minmax(0,1fr)]">
+
+          {/* Left column */}
+          <aside className="space-y-6">
+
+            {/* Quick actions */}
+            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2">
+                <Zap className="h-5 w-5 text-slate-700" />
+                <h2 className="text-lg font-semibold">One-tap quick actions</h2>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                {favorites.map((item) => (
+                  <button
+                    key={item.id}
+                    data-testid={`quick-action-${item.id}`}
+                    onClick={() => runQuickAction(item.payload, item.label)}
+                    disabled={loading}
+                    className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-4 text-left transition hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    <span className="flex items-center gap-3">
+                      <span className="rounded-xl bg-slate-100 p-2 text-slate-700">
+                        {item.id === "vascular-occlusion" ? (
+                          <AlertTriangle className="h-4 w-4" />
+                        ) : item.id === "vision-loss" ? (
+                          <Shield className="h-4 w-4" />
+                        ) : item.id === "hyaluronidase-dose" ? (
+                          <Stethoscope className="h-4 w-4" />
+                        ) : (
+                          <BookOpen className="h-4 w-4" />
+                        )}
+                      </span>
+                      <span className="text-sm font-medium text-slate-800">{item.label}</span>
+                    </span>
+                    <ArrowRight className="h-4 w-4 text-slate-400" />
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Fast ask */}
+            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2">
+                <Search className="h-5 w-5 text-slate-700" />
+                <h2 className="text-lg font-semibold">Fast ask</h2>
+              </div>
+
+              <div className="space-y-3">
+                <textarea
+                  rows={4}
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitQuestion()
+                  }}
+                  placeholder="Ask a clinical question..."
+                  data-testid="input-clinical-question"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none placeholder:text-slate-400 focus:border-slate-400"
+                />
+                <button
+                  onClick={submitQuestion}
+                  disabled={loading || !question.trim()}
+                  data-testid="button-ask-submit"
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                >
+                  <Search className="h-4 w-4" />
+                  {loading ? "Running..." : "Ask now"}
+                </button>
+              </div>
+            </div>
+
+            {/* Recent queries */}
+            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2">
+                <Clock3 className="h-5 w-5 text-slate-700" />
+                <h2 className="text-lg font-semibold">Recent clinical actions</h2>
+              </div>
+
+              <div className="space-y-2">
+                {recentQueries.length === 0 ? (
+                  <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500 ring-1 ring-slate-200">
+                    No recent actions yet.
+                  </div>
+                ) : (
+                  recentQueries.map((item, i) => (
+                    <button
+                      key={`${item}-${i}`}
+                      data-testid={`recent-query-${i}`}
+                      onClick={() => setQuestion(item)}
+                      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <span>{item}</span>
+                      <ArrowRight className="h-4 w-4 text-slate-400" />
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </aside>
+
+          {/* Right column — result panel */}
+          <main className="space-y-6">
+            {result && (
+              <>
+                {/* Result card */}
+                <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Live clinical result
+                      </div>
+                      <h2
+                        data-testid="text-result-title"
+                        className="text-2xl font-semibold text-slate-900"
+                      >
+                        {result.title}
+                      </h2>
+                      <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
+                        {result.summary}
+                      </p>
+                    </div>
+
+                    {result.urgency && (
+                      <span
+                        data-testid="status-urgency"
+                        className={`inline-flex shrink-0 items-center rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset ${urgencyClasses(
+                          result.urgency
+                        )}`}
+                      >
+                        {result.urgency}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {/* Actions */}
+                    {(result.actions || []).length > 0 && (
+                      <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                        <div className="mb-4 flex items-center gap-2">
+                          <Shield className="h-5 w-5 text-slate-700" />
+                          <h3 className="text-base font-semibold text-slate-900">Actions</h3>
+                        </div>
+                        <ul className="space-y-3">
+                          {(result.actions || []).map((item, i) => (
+                            <li
+                              key={i}
+                              data-testid={`text-action-${i}`}
+                              className="flex gap-3 text-sm leading-6 text-slate-700"
+                            >
+                              <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-400" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Monitoring */}
+                    {(result.monitoring || []).length > 0 && (
+                      <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                        <div className="mb-4 flex items-center gap-2">
+                          <Stethoscope className="h-5 w-5 text-slate-700" />
+                          <h3 className="text-base font-semibold text-slate-900">Monitoring</h3>
+                        </div>
+                        <ul className="space-y-3">
+                          {(result.monitoring || []).map((item, i) => (
+                            <li
+                              key={i}
+                              data-testid={`text-monitoring-${i}`}
+                              className="flex gap-3 text-sm leading-6 text-slate-700"
+                            >
+                              <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-400" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Patient message */}
+                  {result.patient_message && (
+                    <div className="mt-4 rounded-3xl bg-slate-50 p-5 ring-1 ring-slate-200">
+                      <div className="mb-2 text-sm font-semibold text-slate-800">
+                        Patient communication
+                      </div>
+                      <p
+                        data-testid="text-patient-message"
+                        className="text-sm leading-7 text-slate-700"
+                      >
+                        {result.patient_message}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Export */}
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      onClick={exportResult}
+                      data-testid="button-export-result"
+                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <FileDown className="h-4 w-4" />
+                      Export result
+                    </button>
+                  </div>
+                </div>
+
+                {/* Evidence panel */}
+                <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="mb-4 flex items-center gap-2">
+                    <BookOpen className="h-5 w-5 text-slate-700" />
+                    <h3 className="text-xl font-semibold">Grounded evidence</h3>
+                  </div>
+
+                  <div className="mb-4 rounded-2xl bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                    Daily-use trust comes from fast answers plus server-validated citations.
+                  </div>
+
+                  <div className="space-y-4">
+                    {(result.citations || []).length === 0 ? (
+                      <div className="rounded-3xl bg-slate-50 p-5 text-sm text-slate-500 ring-1 ring-slate-200">
+                        No citations returned.
+                      </div>
+                    ) : (
+                      result.citations!.map((c) => (
+                        <div
+                          key={c.id}
+                          data-testid={`card-citation-${c.id}`}
+                          className="rounded-3xl border border-slate-200 p-4"
+                        >
+                          <div className="text-sm font-semibold text-slate-900">{c.title}</div>
+                          {c.locator && (
+                            <div className="mt-1 text-xs font-medium text-slate-500">
+                              {c.locator}
+                            </div>
+                          )}
+                          {c.snippet && (
+                            <p className="mt-2 text-sm leading-6 text-slate-600">{c.snippet}</p>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Empty state when no result */}
+            {!result && !loading && (
+              <div className="flex h-64 items-center justify-center rounded-[32px] border border-dashed border-slate-200 bg-white text-slate-400">
+                <div className="text-center">
+                  <Search className="mx-auto mb-3 h-8 w-8 opacity-30" />
+                  <p className="text-sm">Tap a quick action or ask a question to see results</p>
+                </div>
+              </div>
+            )}
+
+            {/* Loading skeleton */}
+            {loading && (
+              <div className="space-y-4 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="h-4 w-1/3 animate-pulse rounded-full bg-slate-100" />
+                <div className="h-7 w-2/3 animate-pulse rounded-full bg-slate-100" />
+                <div className="h-4 w-full animate-pulse rounded-full bg-slate-100" />
+                <div className="h-4 w-4/5 animate-pulse rounded-full bg-slate-100" />
+                <div className="mt-4 grid grid-cols-2 gap-4">
+                  <div className="h-32 animate-pulse rounded-3xl bg-slate-100" />
+                  <div className="h-32 animate-pulse rounded-3xl bg-slate-100" />
+                </div>
+              </div>
+            )}
+          </main>
+        </section>
+      </div>
+    </div>
+  )
+}

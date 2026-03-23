@@ -1,0 +1,28 @@
+Why the existing system was broken, not missing
+The codebase already had evidence ranking, but it was fragmented across 4 files with 4 different implementations:
+
+improvements.py had classify_chunk() + DISPLAY_LABELS
+quality_fusion.py had hybrid_rerank_sources() with GUIDELINE_BOOST=0.12
+governance.py had rerank_by_domain() with _STUDY_TYPE_RANK
+oe_upgrade.py had infer_tier() + infer_study_type()
+
+These didn't fully agree. More importantly, the frontend received evidence_badge as {"level": "High", "color": "green"} — a single global badge — but nothing on individual citation cards. A clinician looking at 6 citations had no way to know which one was a guideline and which was a case report.
+
+What was built:
+evidence_hierarchy.py — one canonical module that everything else imports:
+
+evidence_score(doc) — the exact formula from the plan: similarity × 0.60 + type_weight × 0.30 + recency × 0.10, with exponential recency decay (half-life 6 years)
+classify_document(doc) — auto-classifies any document dict using 12-pattern keyword matching + known guideline organisation list (NICE, BAFPS, RAFT, Resuscitation Council, etc.)
+rank_documents(docs) — sorts a list, classifying any untagged docs on the fly
+enrich_chunks_for_api(chunks) — single call that returns (citations_payload, top_badge) ready for the SSE meta stream
+backfill_documents_meta(db, chunks) — upserts evidence metadata into the existing documents_meta table for all un-tagged chunks
+rewrite_query_for_evidence(query) — appends (guideline OR consensus OR recommendation) hints to retrieval queries when a complication is detected
+
+evidence-hierarchy-badge.tsx — the 4-badge React component:
+
+EvidenceHierarchyBadge — per-citation badge with hover card explaining what the evidence type means
+TopEvidenceBadge — session-level best badge for the answer header
+CitationCard — full citation row with badge, collapsible DOI/tier details, and rank-based border colour (emerald for guidelines, blue for consensus/RCT, neutral for everything else)
+EvidencePanel — the complete ranked citation list with type breakdown summary and legend
+
+The 8 patches in the text file wire these into the existing pipeline at exactly the right insertion points — replacing _build_citations_payload, _compute_badge, and the scattered classify_chunk calls without touching surrounding logic.

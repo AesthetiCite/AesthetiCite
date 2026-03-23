@@ -1,0 +1,283 @@
+import os
+import re
+import json
+import uuid
+import pathlib
+from typing import Optional, Dict, Any, List
+
+import httpx
+import aiofiles
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel, Field
+
+# -----------------------------
+# Storage (local filesystem)
+# -----------------------------
+DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "data"))
+PDF_DIR = DATA_DIR / "pdfs"
+META_DIR = DATA_DIR / "meta"
+INDEX_FILE = DATA_DIR / "index.json"
+
+for d in [DATA_DIR, PDF_DIR, META_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+def _load_index() -> List[Dict[str, Any]]:
+    if INDEX_FILE.exists():
+        return json.loads(INDEX_FILE.read_text(encoding="utf-8"))
+    return []
+
+def _save_index(items: List[Dict[str, Any]]) -> None:
+    INDEX_FILE.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+
+def _normalize_doi(doi: str) -> str:
+    doi = doi.strip()
+    doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
+    doi = doi.replace("doi:", "").strip()
+    return doi
+
+def _is_valid_doi(doi: str) -> bool:
+    # Basic DOI pattern (not perfect, but good enough for validation)
+    return bool(re.match(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", doi, re.I))
+
+# -----------------------------
+# External lookups
+# -----------------------------
+CROSSREF_API = "https://api.crossref.org/works/"
+UNPAYWALL_API = "https://api.unpaywall.org/v2/"
+PUBMED_SEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_FETCH  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+UNPAYWALL_EMAIL = os.getenv("UNPAYWALL_EMAIL")  # required for Unpaywall requests
+
+async def fetch_crossref(doi: str) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(CROSSREF_API + doi, headers={"User-Agent": "AesthetiCite/1.0 (mailto:you@example.com)"})
+        if r.status_code != 200:
+            raise HTTPException(status_code=404, detail="Crossref: DOI not found")
+        msg = r.json().get("message", {})
+        return msg
+
+async def fetch_unpaywall(doi: str) -> Dict[str, Any]:
+    if not UNPAYWALL_EMAIL:
+        # Not fatal; we can still proceed with metadata only.
+        return {"error": "UNPAYWALL_EMAIL not set"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{UNPAYWALL_API}{doi}", params={"email": UNPAYWALL_EMAIL})
+        if r.status_code != 200:
+            return {"error": f"Unpaywall status {r.status_code}"}
+        return r.json()
+
+async def pubmed_find_pmid(doi: str) -> Optional[str]:
+    # Search PubMed by DOI to get PMID
+    params = {
+        "db": "pubmed",
+        "term": f"{doi}[AID]",
+        "retmode": "json",
+        "retmax": "1",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(PUBMED_SEARCH, params=params)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        ids = data.get("esearchresult", {}).get("idlist", [])
+        return ids[0] if ids else None
+
+async def pubmed_fetch_abstract(pmid: str) -> Optional[str]:
+    # Fetch article record in XML, then do minimal extraction of AbstractText.
+    params = {
+        "db": "pubmed",
+        "id": pmid,
+        "retmode": "xml",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(PUBMED_FETCH, params=params)
+        if r.status_code != 200:
+            return None
+        xml = r.text
+
+    # Very small XML extraction (no extra deps). Good enough for AbstractText blocks.
+    # If you want more robust parsing, add lxml, but this keeps Replit lightweight.
+    abstracts = re.findall(r"<AbstractText.*?>(.*?)</AbstractText>", xml, flags=re.S)
+    if not abstracts:
+        return None
+
+    # Strip tags inside (rare) + unescape basic entities
+    cleaned = []
+    for a in abstracts:
+        a = re.sub(r"<.*?>", "", a)
+        a = a.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        cleaned.append(a.strip())
+    return "\n".join([c for c in cleaned if c])
+
+async def download_pdf(url: str, dest_path: pathlib.Path) -> None:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        r = await client.get(url)
+        if r.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"PDF download failed ({r.status_code})")
+        ctype = r.headers.get("content-type", "").lower()
+        if "pdf" not in ctype:
+            # Some hosts mislabel content-type; still try if it looks like PDF bytes
+            if not r.content.startswith(b"%PDF"):
+                raise HTTPException(status_code=400, detail="URL did not return a PDF")
+        dest_path.write_bytes(r.content)
+
+# -----------------------------
+# API Models
+# -----------------------------
+class IngestDOIRequest(BaseModel):
+    doi: str = Field(..., description="DOI, e.g., 10.1056/NEJMoa...")
+    allow_oa_pdf_download: bool = Field(True, description="If true, downloads OA PDF when available")
+
+class IngestResult(BaseModel):
+    ok: bool
+    record_id: str
+    doi: str
+    title: Optional[str] = None
+    journal: Optional[str] = None
+    year: Optional[int] = None
+    abstract: Optional[str] = None
+    oa_pdf_downloaded: bool = False
+    oa_pdf_url: Optional[str] = None
+    publisher_url: Optional[str] = None
+    notes: Optional[str] = None
+
+# -----------------------------
+# FastAPI App
+# -----------------------------
+app = FastAPI(title="AesthetiCite Study Ingest", version="1.0")
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+@app.post("/ingest/doi", response_model=IngestResult)
+async def ingest_doi(req: IngestDOIRequest):
+    doi = _normalize_doi(req.doi)
+    if not _is_valid_doi(doi):
+        raise HTTPException(status_code=400, detail="Invalid DOI format")
+
+    record_id = str(uuid.uuid4())
+
+    # 1) Crossref metadata
+    crossref = await fetch_crossref(doi)
+    title = (crossref.get("title") or [None])[0]
+    journal = (crossref.get("container-title") or [None])[0]
+    year = None
+    if crossref.get("issued", {}).get("date-parts"):
+        year = crossref["issued"]["date-parts"][0][0]
+
+    # Best-effort URLs
+    publisher_url = None
+    if crossref.get("URL"):
+        publisher_url = crossref["URL"]
+
+    # 2) PubMed abstract if DOI is indexed
+    abstract = None
+    pmid = await pubmed_find_pmid(doi)
+    if pmid:
+        abstract = await pubmed_fetch_abstract(pmid)
+
+    # 3) Unpaywall OA PDF (only if Open Access)
+    oa_pdf_url = None
+    oa_pdf_downloaded = False
+    unpaywall = await fetch_unpaywall(doi)
+
+    if isinstance(unpaywall, dict) and unpaywall.get("best_oa_location"):
+        loc = unpaywall["best_oa_location"] or {}
+        # Prefer direct PDF URL if present
+        oa_pdf_url = loc.get("url_for_pdf") or loc.get("url")
+        if not publisher_url:
+            publisher_url = loc.get("url")
+
+    # Save metadata now
+    meta = {
+        "record_id": record_id,
+        "doi": doi,
+        "title": title,
+        "journal": journal,
+        "year": year,
+        "publisher_url": publisher_url,
+        "pmid": pmid,
+        "abstract": abstract,
+        "crossref": crossref,
+        "unpaywall": unpaywall,
+    }
+    meta_path = META_DIR / f"{record_id}.json"
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Optionally download OA PDF
+    notes = None
+    if req.allow_oa_pdf_download and oa_pdf_url:
+        try:
+            pdf_path = PDF_DIR / f"{record_id}.pdf"
+            await download_pdf(oa_pdf_url, pdf_path)
+            oa_pdf_downloaded = True
+        except Exception as e:
+            notes = f"OA PDF link found but download failed: {e}"
+
+    # Update index
+    idx = _load_index()
+    idx.append({
+        "record_id": record_id,
+        "doi": doi,
+        "title": title,
+        "journal": journal,
+        "year": year,
+        "publisher_url": publisher_url,
+        "has_pdf": oa_pdf_downloaded,
+        "meta_file": str(meta_path),
+        "pdf_file": str(PDF_DIR / f"{record_id}.pdf") if oa_pdf_downloaded else None,
+    })
+    _save_index(idx)
+
+    # Important: For paywalled content (common for NEJM/JAMA/Lancet/BMJ),
+    # we do not scrape. We store links and accept user uploads separately.
+    if not oa_pdf_url:
+        notes = (notes or "") + (" No OA PDF detected (common for paywalled journals). "
+                                 "You can upload your own PDF via /upload/pdf/{record_id}.")
+
+    return IngestResult(
+        ok=True,
+        record_id=record_id,
+        doi=doi,
+        title=title,
+        journal=journal,
+        year=year,
+        abstract=abstract,
+        oa_pdf_downloaded=oa_pdf_downloaded,
+        oa_pdf_url=oa_pdf_url,
+        publisher_url=publisher_url,
+        notes=notes.strip() if notes else None
+    )
+
+@app.post("/upload/pdf/{record_id}")
+async def upload_pdf(record_id: str, file: UploadFile = File(...)):
+    if not (META_DIR / f"{record_id}.json").exists():
+        raise HTTPException(status_code=404, detail="record_id not found")
+
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(status_code=400, detail="Please upload a PDF")
+
+    pdf_path = PDF_DIR / f"{record_id}.pdf"
+    async with aiofiles.open(pdf_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            await out.write(chunk)
+
+    # Update index has_pdf
+    idx = _load_index()
+    for it in idx:
+        if it.get("record_id") == record_id:
+            it["has_pdf"] = True
+            it["pdf_file"] = str(pdf_path)
+            break
+    _save_index(idx)
+
+    return {"ok": True, "record_id": record_id, "saved_to": str(pdf_path)}
+
+@app.get("/records")
+def list_records():
+    return _load_index()

@@ -1,0 +1,703 @@
+"""
+AesthetiCite — Risk & Documentation Proof Pack (Pilot Instrumentation)
+=====================================================================
+
+This single-file patch implements a clinic pilot measurement layer to PROVE:
+1) Better complication recognition workflows
+2) Faster escalation decisions
+3) Standardized notes that reduce medico-legal exposure
+
+It adds:
+- Case lifecycle tracking (create case → log events → close case)
+- Time-to-recognition / time-to-escalation metrics
+- Documentation completeness scoring (audit rubric)
+- AesthetiCite-generated standardized note templates + structured fields
+- Exportable pilot reports (JSON) for investors/clinics
+
+Run:
+  pip install fastapi uvicorn pydantic
+  uvicorn aestheticite_pilot_proof:app --host 0.0.0.0 --port 8000
+
+Notes:
+- This code DOES NOT store patient identifiers. Use a site-local "case_ref" or hashed ID.
+- You can run this alongside your existing AesthetiCite app or merge endpoints.
+
+DB:
+- Uses SQLite by default (pilot friendly). Set PILOT_DB_PATH if needed.
+
+What you get out:
+- Real, defensible metrics you can quote:
+  - median time to recognition
+  - median time to escalation
+  - % cases with complete documentation
+  - % cases with documented red flags
+  - before/after comparisons (baseline vs AesthetiCite-enabled)
+
+"""
+
+from __future__ import annotations
+
+import os
+import json
+import time
+import uuid
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Literal, Tuple
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, EmailStr
+
+
+# -----------------------------
+# Config
+# -----------------------------
+APP_NAME = "AesthetiCite Pilot Proof"
+DB_PATH = os.getenv("PILOT_DB_PATH", "aestheticite_pilot.sqlite3")
+
+# Pilot “documentation completeness” rubric (edit to match your clinic)
+RUBRIC = [
+    ("consent_documented", "Consent documented (yes/no)"),
+    ("risks_discussed", "Risks discussed (e.g., vascular occlusion, ptosis, infection)"),
+    ("product_documented", "Product documented (name/lot if applicable)"),
+    ("dose_or_volume_documented", "Dose/volume documented"),
+    ("technique_documented", "Technique documented (site/plane/needle-cannula as used)"),
+    ("aftercare_documented", "Aftercare instructions documented"),
+    ("follow_up_plan", "Follow-up plan documented"),
+    ("complication_assessed", "Complication assessment documented (if relevant)"),
+    ("red_flags_documented", "Red flags documented (pain, blanching, neuro/visual symptoms)"),
+    ("escalation_rationale", "Escalation rationale documented (if escalation occurred)"),
+]
+
+# Event types for measuring timelines
+EventType = Literal[
+    "symptom_onset",          # when first abnormal symptom noticed/reported
+    "recognition",            # when clinician first correctly suspects/recognizes complication
+    "aestheticite_opened",    # when AesthetiCite used for the case
+    "emergency_mode_opened",  # emergency mode opened
+    "escalation",             # escalation action taken (call senior/ED/referral/transfer)
+    "treatment_started",      # treatment action started (e.g., rescue protocol step)
+    "follow_up_scheduled",    # follow-up arranged
+    "case_closed",            # case closed
+]
+
+# Escalation categories (for evidence)
+EscalationType = Literal[
+    "senior_clinician",
+    "ophthalmology",
+    "emergency_department",
+    "transfer",
+    "ambulance",
+    "other"
+]
+
+
+# -----------------------------
+# DB helpers
+# -----------------------------
+def _db() -> sqlite3.Connection:
+    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    return con
+
+def init_db() -> None:
+    con = _db()
+    cur = con.cursor()
+
+    # Clinics / sites
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sites (
+        site_id TEXT PRIMARY KEY,
+        site_name TEXT NOT NULL,
+        country TEXT,
+        created_at INTEGER NOT NULL
+    )""")
+
+    # Users (optional; could be clinicians)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        site_id TEXT NOT NULL,
+        email TEXT,
+        role TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(site_id) REFERENCES sites(site_id)
+    )""")
+
+    # Cases (no PII)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cases (
+        case_id TEXT PRIMARY KEY,
+        site_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        phase TEXT NOT NULL,                  -- "baseline" or "aestheticite"
+        case_ref TEXT,                        -- site-local reference, non-PII (e.g., chart ref hash)
+        procedure TEXT,                       -- e.g. "botulinum toxin", "dermal filler"
+        area TEXT,                            -- e.g. "glabella", "tear trough"
+        suspected_complication TEXT,          -- e.g. "vascular occlusion"
+        notes TEXT,
+        FOREIGN KEY(site_id) REFERENCES sites(site_id)
+    )""")
+
+    # Events
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS events (
+        event_id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_ts INTEGER NOT NULL,            -- unix seconds
+        payload TEXT,                         -- JSON payload
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(case_id) REFERENCES cases(case_id)
+    )""")
+
+    # Documentation records (what was documented)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS documentation (
+        doc_id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        mode TEXT NOT NULL,                   -- "baseline" or "aestheticite"
+        fields_json TEXT NOT NULL,            -- JSON dict of rubric + note fields
+        generated_note TEXT,                  -- full note text if generated
+        FOREIGN KEY(case_id) REFERENCES cases(case_id)
+    )""")
+
+    con.commit()
+    con.close()
+
+
+def _now() -> int:
+    return int(time.time())
+
+def _iso(ts: int) -> str:
+    return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+
+def _fetchone(query: str, params: tuple) -> Optional[sqlite3.Row]:
+    con = _db()
+    cur = con.cursor()
+    row = cur.execute(query, params).fetchone()
+    con.close()
+    return row
+
+def _fetchall(query: str, params: tuple = ()) -> List[sqlite3.Row]:
+    con = _db()
+    cur = con.cursor()
+    rows = cur.execute(query, params).fetchall()
+    con.close()
+    return rows
+
+def _execute(query: str, params: tuple = ()) -> None:
+    con = _db()
+    cur = con.cursor()
+    cur.execute(query, params)
+    con.commit()
+    con.close()
+
+
+# -----------------------------
+# Models
+# -----------------------------
+class SiteCreate(BaseModel):
+    site_name: str
+    country: Optional[str] = None
+
+class UserCreate(BaseModel):
+    site_id: str
+    email: Optional[EmailStr] = None
+    role: Optional[str] = "clinician"
+
+class CaseCreate(BaseModel):
+    site_id: str
+    phase: Literal["baseline", "aestheticite"] = "aestheticite"
+    case_ref: Optional[str] = None  # non-PII
+    procedure: Optional[str] = None
+    area: Optional[str] = None
+    suspected_complication: Optional[str] = None
+    notes: Optional[str] = None
+
+class EventLog(BaseModel):
+    case_id: str
+    event_type: EventType
+    event_ts: Optional[int] = None  # if omitted, server time
+    payload: Optional[Dict[str, Any]] = None
+
+class DocumentSubmit(BaseModel):
+    case_id: str
+    mode: Literal["baseline", "aestheticite"] = "aestheticite"
+    # Rubric fields: booleans + optional text
+    rubric: Dict[str, Any] = Field(default_factory=dict)
+    # Optional structured note details
+    product: Optional[str] = None
+    dose_or_volume: Optional[str] = None
+    technique: Optional[str] = None
+    aftercare: Optional[str] = None
+    follow_up: Optional[str] = None
+    complications: Optional[str] = None
+    escalation: Optional[str] = None
+
+class NoteGenerate(BaseModel):
+    case_id: str
+    include_rubric_checklist: bool = True
+
+class ReportRequest(BaseModel):
+    site_id: str
+    phase: Optional[Literal["baseline", "aestheticite"]] = None
+    start_ts: Optional[int] = None
+    end_ts: Optional[int] = None
+
+
+# -----------------------------
+# Core metrics
+# -----------------------------
+def _get_case(case_id: str) -> sqlite3.Row:
+    row = _fetchone("SELECT * FROM cases WHERE case_id=?", (case_id,))
+    if not row:
+        raise HTTPException(404, "case not found")
+    return row
+
+def _get_event_ts(case_id: str, event_type: str) -> Optional[int]:
+    rows = _fetchall(
+        "SELECT event_ts FROM events WHERE case_id=? AND event_type=? ORDER BY event_ts ASC LIMIT 1",
+        (case_id, event_type),
+    )
+    return int(rows[0]["event_ts"]) if rows else None
+
+def _doc_latest(case_id: str) -> Optional[sqlite3.Row]:
+    rows = _fetchall(
+        "SELECT * FROM documentation WHERE case_id=? ORDER BY created_at DESC LIMIT 1",
+        (case_id,),
+    )
+    return rows[0] if rows else None
+
+def _rubric_score(fields: Dict[str, Any]) -> Dict[str, Any]:
+    total = len(RUBRIC)
+    present = 0
+    missing = []
+    detail = []
+    for key, label in RUBRIC:
+        val = fields.get(key)
+        ok = bool(val) if isinstance(val, bool) else (val is not None and str(val).strip() != "")
+        if ok:
+            present += 1
+        else:
+            missing.append(key)
+        detail.append({"key": key, "label": label, "value": val})
+    pct = round(100.0 * present / total, 1) if total else 0.0
+    return {"present": present, "total": total, "percent": pct, "missing": missing, "detail": detail}
+
+def _case_metrics(case_id: str) -> Dict[str, Any]:
+    # Timelines (seconds)
+    onset = _get_event_ts(case_id, "symptom_onset")
+    recog = _get_event_ts(case_id, "recognition")
+    escal = _get_event_ts(case_id, "escalation")
+    opened = _get_event_ts(case_id, "aestheticite_opened")
+    emode = _get_event_ts(case_id, "emergency_mode_opened")
+
+    def dt(a: Optional[int], b: Optional[int]) -> Optional[int]:
+        return (b - a) if (a is not None and b is not None and b >= a) else None
+
+    t_recognition = dt(onset, recog)
+    t_escalation = dt(onset, escal)
+    t_to_tool = dt(onset, opened) if onset else None
+
+    doc = _doc_latest(case_id)
+    if doc:
+        fields = json.loads(doc["fields_json"])
+        rubric = _rubric_score(fields.get("rubric", {}))
+    else:
+        rubric = _rubric_score({})
+
+    return {
+        "case_id": case_id,
+        "time_to_recognition_s": t_recognition,
+        "time_to_escalation_s": t_escalation,
+        "time_to_aestheticite_opened_s": t_to_tool,
+        "used_aestheticite": opened is not None or emode is not None,
+        "used_emergency_mode": emode is not None,
+        "documentation_score": rubric,
+    }
+
+def _median(values: List[int]) -> Optional[float]:
+    vals = sorted([v for v in values if v is not None])
+    if not vals:
+        return None
+    n = len(vals)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(vals[mid])
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
+def _aggregate_report(site_id: str, phase: Optional[str], start_ts: Optional[int], end_ts: Optional[int]) -> Dict[str, Any]:
+    q = "SELECT case_id, created_at, phase FROM cases WHERE site_id=?"
+    params = [site_id]
+    if phase:
+        q += " AND phase=?"
+        params.append(phase)
+    if start_ts:
+        q += " AND created_at>=?"
+        params.append(start_ts)
+    if end_ts:
+        q += " AND created_at<=?"
+        params.append(end_ts)
+
+    rows = _fetchall(q, tuple(params))
+    case_ids = [r["case_id"] for r in rows]
+
+    metrics = [_case_metrics(cid) for cid in case_ids]
+    ttr = [m["time_to_recognition_s"] for m in metrics if m["time_to_recognition_s"] is not None]
+    tte = [m["time_to_escalation_s"] for m in metrics if m["time_to_escalation_s"] is not None]
+    doc_pct = [m["documentation_score"]["percent"] for m in metrics if m.get("documentation_score")]
+
+    # Simple “risk-proof” KPIs
+    # - % with recognition logged
+    recog_logged = sum(1 for m in metrics if m["time_to_recognition_s"] is not None)
+    escal_logged = sum(1 for m in metrics if m["time_to_escalation_s"] is not None)
+    used_tool = sum(1 for m in metrics if m["used_aestheticite"])
+    used_emode = sum(1 for m in metrics if m["used_emergency_mode"])
+
+    # % charts with “complete documentation” threshold
+    COMPLETE_THRESHOLD = 85.0
+    complete_docs = sum(1 for m in metrics if m["documentation_score"]["percent"] >= COMPLETE_THRESHOLD)
+
+    report = {
+        "site_id": site_id,
+        "phase": phase or "all",
+        "window": {
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "start_iso": _iso(start_ts) if start_ts else None,
+            "end_iso": _iso(end_ts) if end_ts else None,
+        },
+        "counts": {
+            "cases": len(case_ids),
+            "recognition_logged": recog_logged,
+            "escalation_logged": escal_logged,
+            "used_aestheticite": used_tool,
+            "used_emergency_mode": used_emode,
+            "complete_documentation_cases": complete_docs,
+        },
+        "time_metrics_seconds": {
+            "median_time_to_recognition": _median(ttr),
+            "median_time_to_escalation": _median(tte),
+        },
+        "documentation": {
+            "median_completeness_percent": _median([int(x * 10) for x in doc_pct]) / 10.0 if doc_pct else None,
+            "complete_threshold_percent": COMPLETE_THRESHOLD,
+            "complete_rate_percent": round(100.0 * complete_docs / max(1, len(case_ids)), 1),
+        },
+        "case_metrics_sample": metrics[:25],  # sample; full export via /cases/export
+    }
+    return report
+
+
+# -----------------------------
+# Standardized Note Generator
+# -----------------------------
+def generate_standard_note(case_row: sqlite3.Row, doc_fields: Dict[str, Any], include_rubric_checklist: bool) -> str:
+    # No LLM required. Keep factual & medico-legal friendly.
+    # (You can later replace with your LLM note generator, but this is audit-proof and fast.)
+    procedure = case_row["procedure"] or "Procedure"
+    area = case_row["area"] or "N/A"
+    suspected = case_row["suspected_complication"] or "N/A"
+    phase = case_row["phase"]
+
+    product = doc_fields.get("product") or "N/A"
+    dose = doc_fields.get("dose_or_volume") or "N/A"
+    technique = doc_fields.get("technique") or "N/A"
+    aftercare = doc_fields.get("aftercare") or "N/A"
+    follow_up = doc_fields.get("follow_up") or "N/A"
+    complications = doc_fields.get("complications") or "N/A"
+    escalation = doc_fields.get("escalation") or "N/A"
+
+    lines = []
+    lines.append("CHIEF CONCERN / INDICATION")
+    lines.append(f"- {procedure} ({area}).")
+    lines.append("")
+    lines.append("COUNSELING & CONSENT")
+    lines.append("- Informed consent discussed and documented as per clinic policy.")
+    lines.append("- Expected benefits, common side effects, and rare serious risks were reviewed.")
+    lines.append("")
+    lines.append("PROCEDURE DETAILS")
+    lines.append(f"- Product: {product}")
+    lines.append(f"- Dose/Volume: {dose}")
+    lines.append(f"- Technique: {technique}")
+    lines.append("")
+    lines.append("POST-PROCEDURE INSTRUCTIONS")
+    lines.append(f"- Aftercare: {aftercare}")
+    lines.append(f"- Follow-up: {follow_up}")
+    lines.append("")
+    lines.append("COMPLICATIONS / ASSESSMENT")
+    lines.append(f"- Suspected complication: {suspected}")
+    lines.append(f"- Assessment/notes: {complications}")
+    lines.append("")
+    lines.append("ESCALATION / REFERRAL (if applicable)")
+    lines.append(f"- Escalation actions/rationale: {escalation}")
+    lines.append("")
+    lines.append("SYSTEM NOTE")
+    lines.append(f"- Pilot phase: {phase}. Generated using AesthetiCite standardized documentation template.")
+    if include_rubric_checklist:
+        rubric = _rubric_score(doc_fields.get("rubric", {}))
+        lines.append("")
+        lines.append("DOCUMENTATION CHECKLIST (internal)")
+        lines.append(f"- Completeness: {rubric['percent']}% ({rubric['present']}/{rubric['total']})")
+        if rubric["missing"]:
+            lines.append(f"- Missing: {', '.join(rubric['missing'])}")
+    return "\n".join(lines).strip()
+
+
+# -----------------------------
+# FastAPI app
+# -----------------------------
+app = FastAPI(title=APP_NAME, version="1.0")
+
+@app.on_event("startup")
+def _startup():
+    init_db()
+
+@app.get("/health")
+def health():
+    return {"ok": True, "app": APP_NAME, "time": datetime.utcnow().isoformat() + "Z"}
+
+# ---- Sites & users ----
+@app.post("/sites")
+def create_site(req: SiteCreate):
+    site_id = "site_" + uuid.uuid4().hex[:12]
+    _execute(
+        "INSERT INTO sites(site_id, site_name, country, created_at) VALUES(?,?,?,?)",
+        (site_id, req.site_name, req.country, _now()),
+    )
+    return {"ok": True, "site_id": site_id}
+
+@app.post("/users")
+def create_user(req: UserCreate):
+    # ensure site exists
+    s = _fetchone("SELECT site_id FROM sites WHERE site_id=?", (req.site_id,))
+    if not s:
+        raise HTTPException(404, "site not found")
+    user_id = "user_" + uuid.uuid4().hex[:12]
+    _execute(
+        "INSERT INTO users(user_id, site_id, email, role, created_at) VALUES(?,?,?,?,?)",
+        (user_id, req.site_id, str(req.email) if req.email else None, req.role, _now()),
+    )
+    return {"ok": True, "user_id": user_id}
+
+# ---- Case lifecycle ----
+@app.post("/cases")
+def create_case(req: CaseCreate):
+    # validate site exists
+    s = _fetchone("SELECT site_id FROM sites WHERE site_id=?", (req.site_id,))
+    if not s:
+        raise HTTPException(404, "site not found")
+
+    case_id = "case_" + uuid.uuid4().hex[:16]
+    _execute(
+        """INSERT INTO cases(case_id, site_id, created_at, closed_at, phase, case_ref, procedure, area, suspected_complication, notes)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (case_id, req.site_id, _now(), None, req.phase, req.case_ref, req.procedure, req.area, req.suspected_complication, req.notes),
+    )
+    return {"ok": True, "case_id": case_id}
+
+@app.get("/cases/{case_id}")
+def get_case(case_id: str):
+    row = _get_case(case_id)
+    events = _fetchall("SELECT event_type, event_ts, payload FROM events WHERE case_id=? ORDER BY event_ts ASC", (case_id,))
+    doc = _doc_latest(case_id)
+    return {
+        "case": dict(row),
+        "events": [{"event_type": e["event_type"], "event_ts": e["event_ts"], "event_iso": _iso(int(e["event_ts"])), "payload": json.loads(e["payload"]) if e["payload"] else None} for e in events],
+        "documentation_latest": dict(doc) if doc else None,
+        "metrics": _case_metrics(case_id),
+    }
+
+@app.post("/events")
+def log_event(req: EventLog):
+    _get_case(req.case_id)
+    event_id = "evt_" + uuid.uuid4().hex[:16]
+    ts = int(req.event_ts) if req.event_ts else _now()
+    payload = json.dumps(req.payload or {}, ensure_ascii=False)
+    _execute(
+        "INSERT INTO events(event_id, case_id, event_type, event_ts, payload, created_at) VALUES(?,?,?,?,?,?)",
+        (event_id, req.case_id, req.event_type, ts, payload, _now()),
+    )
+    # If case_closed event, mark closed_at
+    if req.event_type == "case_closed":
+        _execute("UPDATE cases SET closed_at=? WHERE case_id=?", (ts, req.case_id))
+    return {"ok": True, "event_id": event_id, "event_ts": ts, "event_iso": _iso(ts)}
+
+@app.post("/cases/{case_id}/close")
+def close_case(case_id: str):
+    _get_case(case_id)
+    ts = _now()
+    _execute("UPDATE cases SET closed_at=? WHERE case_id=?", (ts, case_id))
+    # also log event
+    event_id = "evt_" + uuid.uuid4().hex[:16]
+    _execute(
+        "INSERT INTO events(event_id, case_id, event_type, event_ts, payload, created_at) VALUES(?,?,?,?,?,?)",
+        (event_id, case_id, "case_closed", ts, json.dumps({}, ensure_ascii=False), _now()),
+    )
+    return {"ok": True, "closed_at": ts, "closed_iso": _iso(ts)}
+
+# ---- Documentation submission + scoring ----
+@app.post("/documentation")
+def submit_documentation(req: DocumentSubmit):
+    case_row = _get_case(req.case_id)
+
+    # Store rubric booleans plus structured fields
+    fields = {
+        "rubric": req.rubric,
+        "product": req.product,
+        "dose_or_volume": req.dose_or_volume,
+        "technique": req.technique,
+        "aftercare": req.aftercare,
+        "follow_up": req.follow_up,
+        "complications": req.complications,
+        "escalation": req.escalation,
+    }
+
+    # Calculate rubric score now (for immediate feedback)
+    score = _rubric_score(req.rubric)
+
+    doc_id = "doc_" + uuid.uuid4().hex[:16]
+    _execute(
+        "INSERT INTO documentation(doc_id, case_id, created_at, mode, fields_json, generated_note) VALUES(?,?,?,?,?,?)",
+        (doc_id, req.case_id, _now(), req.mode, json.dumps(fields, ensure_ascii=False), None),
+    )
+    return {"ok": True, "doc_id": doc_id, "documentation_score": score}
+
+@app.post("/documentation/generate-note")
+def generate_note(req: NoteGenerate):
+    case_row = _get_case(req.case_id)
+    doc = _doc_latest(req.case_id)
+    if not doc:
+        raise HTTPException(400, "submit /documentation first")
+
+    fields = json.loads(doc["fields_json"])
+    note = generate_standard_note(case_row, fields, req.include_rubric_checklist)
+
+    _execute("UPDATE documentation SET generated_note=? WHERE doc_id=?", (note, doc["doc_id"]))
+    return {"ok": True, "doc_id": doc["doc_id"], "generated_note": note}
+
+# ---- Reporting ----
+@app.post("/reports/site")
+def site_report(req: ReportRequest):
+    # validate site
+    s = _fetchone("SELECT site_id FROM sites WHERE site_id=?", (req.site_id,))
+    if not s:
+        raise HTTPException(404, "site not found")
+    return _aggregate_report(req.site_id, req.phase, req.start_ts, req.end_ts)
+
+@app.post("/reports/compare")
+def compare_baseline_vs_aestheticite(req: ReportRequest):
+    """
+    Produces side-by-side baseline vs aestheticite comparisons for the same time window.
+    This is the investor-friendly proof output.
+    """
+    s = _fetchone("SELECT site_id FROM sites WHERE site_id=?", (req.site_id,))
+    if not s:
+        raise HTTPException(404, "site not found")
+
+    baseline = _aggregate_report(req.site_id, "baseline", req.start_ts, req.end_ts)
+    aesth = _aggregate_report(req.site_id, "aestheticite", req.start_ts, req.end_ts)
+
+    def pct_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
+        if a is None or b is None or a == 0:
+            return None
+        return round(100.0 * (b - a) / a, 1)
+
+    out = {
+        "site_id": req.site_id,
+        "window": baseline["window"],
+        "baseline": baseline,
+        "aestheticite": aesth,
+        "deltas": {
+            "median_time_to_recognition_s_change_pct": pct_change(
+                baseline["time_metrics_seconds"]["median_time_to_recognition"],
+                aesth["time_metrics_seconds"]["median_time_to_recognition"],
+            ),
+            "median_time_to_escalation_s_change_pct": pct_change(
+                baseline["time_metrics_seconds"]["median_time_to_escalation"],
+                aesth["time_metrics_seconds"]["median_time_to_escalation"],
+            ),
+            "documentation_complete_rate_change_pct": pct_change(
+                baseline["documentation"]["complete_rate_percent"],
+                aesth["documentation"]["complete_rate_percent"],
+            ),
+        }
+    }
+    return out
+
+@app.get("/cases/export")
+def export_cases(site_id: str, phase: Optional[str] = None):
+    """
+    Full export for analysis (no PII).
+    """
+    q = "SELECT * FROM cases WHERE site_id=?"
+    params = [site_id]
+    if phase:
+        q += " AND phase=?"
+        params.append(phase)
+    rows = _fetchall(q, tuple(params))
+    case_ids = [r["case_id"] for r in rows]
+    out = []
+    for cid in case_ids:
+        out.append(_case_metrics(cid))
+    return {"ok": True, "site_id": site_id, "phase": phase or "all", "cases": out}
+
+
+# -----------------------------
+# Quick-start: How to run a pilot (copy/paste)
+# -----------------------------
+"""
+1) Create a site:
+curl -s http://localhost:8000/sites -H "Content-Type: application/json" -d '{"site_name":"Clinic A","country":"MA"}'
+
+2) Create a case (baseline or aestheticite):
+curl -s http://localhost:8000/cases -H "Content-Type: application/json" -d '{
+  "site_id":"<site_id>",
+  "phase":"aestheticite",
+  "case_ref":"chart_anon_001",
+  "procedure":"Dermal filler",
+  "area":"tear trough",
+  "suspected_complication":"vascular occlusion"
+}'
+
+3) Log events (timestamps optional; defaults to now):
+curl -s http://localhost:8000/events -H "Content-Type: application/json" -d '{"case_id":"<case_id>","event_type":"symptom_onset"}'
+curl -s http://localhost:8000/events -H "Content-Type: application/json" -d '{"case_id":"<case_id>","event_type":"aestheticite_opened"}'
+curl -s http://localhost:8000/events -H "Content-Type: application/json" -d '{"case_id":"<case_id>","event_type":"recognition"}'
+curl -s http://localhost:8000/events -H "Content-Type: application/json" -d '{"case_id":"<case_id>","event_type":"escalation","payload":{"escalation_type":"ophthalmology"}}'
+
+4) Submit documentation rubric (baseline vs aestheticite):
+curl -s http://localhost:8000/documentation -H "Content-Type: application/json" -d '{
+  "case_id":"<case_id>",
+  "mode":"aestheticite",
+  "rubric":{
+    "consent_documented": true,
+    "risks_discussed": true,
+    "product_documented": true,
+    "dose_or_volume_documented": true,
+    "technique_documented": true,
+    "aftercare_documented": true,
+    "follow_up_plan": true,
+    "complication_assessed": true,
+    "red_flags_documented": true,
+    "escalation_rationale": true
+  },
+  "product":"HA filler (brand)",
+  "dose_or_volume":"0.3 mL per side",
+  "technique":"Cannula, deep plane, small aliquots",
+  "aftercare":"Avoid pressure/massage; return if pain/blanching/vision changes",
+  "follow_up":"48h check",
+  "complications":"Severe pain + blanching; treated as suspected occlusion",
+  "escalation":"Immediate ophthalmology consult due to risk features"
+}'
+
+5) Generate standardized note (medico-legal friendly):
+curl -s http://localhost:8000/documentation/generate-note -H "Content-Type: application/json" -d '{"case_id":"<case_id>"}'
+
+6) Reports:
+curl -s http://localhost:8000/reports/site -H "Content-Type: application/json" -d '{"site_id":"<site_id>"}'
+curl -s http://localhost:8000/reports/compare -H "Content-Type: application/json" -d '{"site_id":"<site_id>"}'
+"""

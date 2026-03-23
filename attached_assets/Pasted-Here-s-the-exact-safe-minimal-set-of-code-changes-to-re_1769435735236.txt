@@ -1,0 +1,111 @@
+Here’s the exact, safe, minimal set of code changes to rename your Replit project from Evidentia → Veridoc.
+
+I’ll assume you used the structure I gave earlier.
+
+1) Change app name in app/core/config.py
+
+Find:
+
+APP_NAME: str = "Evidentia"
+
+
+Replace with:
+
+APP_NAME: str = "Veridoc"
+
+
+(Optional if you want the AI branding everywhere)
+
+APP_NAME: str = "Veridoc AI"
+
+2) Change FastAPI title in app/main.py (if hardcoded anywhere)
+
+If you have:
+
+app = FastAPI(title="Evidentia")
+
+
+Change to:
+
+app = FastAPI(title="Veridoc")
+
+
+If you used the config version already:
+
+app = FastAPI(title=settings.APP_NAME)
+
+
+✅ then you don’t need to change anything else.
+
+3) Update README / docs (optional but recommended)
+
+Search and replace Evidentia → Veridoc in:
+
+README.md
+
+any comments
+
+any UI labels if you already built the frontend
+
+4) Update environment variables (only if you used them)
+
+If your .env contains anything like:
+
+APP_NAME=Evidentia
+
+
+Change to:
+
+APP_NAME=Veridoc
+
+5) Database name (only if you named it evidentia)
+
+If your DATABASE_URL contains:
+
+DATABASE_URL: str = "postgresql+psycopg://.../evidentia"
+
+
+You have two choices:
+
+✅ Option A (recommended): keep DB name as-is for now
+
+No change needed — it’s fine to keep the DB name evidentia while you build.
+
+Option B: rename DB to veridoc (only if you want it clean now)
+
+Change to:
+
+DATABASE_URL: str = "postgresql+psycopg://.../veridoc"
+
+
+But you must also create that database and migrate tables.
+
+6) API response /health
+
+If you want /health to show Veridoc, and you already use settings, you’re done.
+
+It returns:
+
+return {"status": "ok", "app": settings.APP_NAME, "env": settings.ENV}
+
+Fastest way: global search/replace
+
+In Replit:
+
+Press Ctrl+Shift+F
+
+Search: Evidentia
+
+Replace: Veridoc
+
+Apply carefully (don’t touch DB table names unless you want to rename DB too)
+
+Quick verification
+
+Run server and open:
+
+/health → should show "app": "Veridoc"
+
+/docs → should show API title “Veridoc”
+
+If you paste your current config.py + main.py here, I can tell you exactly if there are any other places you hardcoded “Evidentia” (frontend, docs, env).

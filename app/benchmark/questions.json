@@ -1,0 +1,276 @@
+{
+  "version": "1.0.0",
+  "created": "2026-01-30",
+  "description": "AesthetiCite Aesthetic Medicine Benchmark (AAMB) - Expert-validated test questions",
+  "categories": [
+    {
+      "id": "injectables",
+      "name": "Injectable Neuromodulators & Fillers",
+      "weight": 0.25
+    },
+    {
+      "id": "energy_devices",
+      "name": "Energy-Based Devices",
+      "weight": 0.20
+    },
+    {
+      "id": "complications",
+      "name": "Complications & Safety",
+      "weight": 0.25
+    },
+    {
+      "id": "dosing",
+      "name": "Dosing & Protocols",
+      "weight": 0.15
+    },
+    {
+      "id": "anatomy",
+      "name": "Facial Anatomy & Injection Techniques",
+      "weight": 0.15
+    }
+  ],
+  "questions": [
+    {
+      "id": "INJ-001",
+      "category": "injectables",
+      "difficulty": "medium",
+      "question": "What is the recommended maximum dose of botulinum toxin type A for glabellar lines treatment?",
+      "expected_keywords": ["20 units", "botox", "glabella", "corrugator", "procerus"],
+      "expected_citations_min": 2,
+      "gold_answer": "The FDA-approved dose for glabellar lines is 20 units of onabotulinumtoxinA (Botox), with 4 units injected at each of 5 sites (2 in each corrugator and 1 in the procerus muscle).",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "INJ-002",
+      "category": "injectables",
+      "difficulty": "hard",
+      "question": "What are the recommended dilution protocols for botulinum toxin reconstitution?",
+      "expected_keywords": ["saline", "preservative-free", "2.5ml", "4ml", "units per 0.1ml"],
+      "expected_citations_min": 2,
+      "gold_answer": "Standard dilution uses 2.5mL of preservative-free 0.9% saline for 100 units, yielding 4 units per 0.1mL. Alternative dilutions include 1.0mL (10U/0.1mL) for precision work or 4.0mL (2.5U/0.1mL) for broader diffusion.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "INJ-003",
+      "category": "injectables",
+      "difficulty": "medium",
+      "question": "What is the mechanism of action of hyaluronic acid dermal fillers?",
+      "expected_keywords": ["hydrophilic", "volume", "water binding", "cross-linked", "viscoelastic"],
+      "expected_citations_min": 2,
+      "gold_answer": "Hyaluronic acid fillers work through hydrophilic water binding (up to 1000x their weight), providing immediate volume. Cross-linking technology affects longevity and viscoelastic properties, determining lift capacity and integration with tissue.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "INJ-004",
+      "category": "injectables",
+      "difficulty": "hard",
+      "question": "What is the evidence for combining botulinum toxin with hyaluronic acid fillers in the same session?",
+      "expected_keywords": ["safe", "synergistic", "no contraindication", "combination"],
+      "expected_citations_min": 2,
+      "gold_answer": "Multiple studies support the safety and efficacy of combining botulinum toxin with HA fillers in the same session. The combination may provide synergistic benefits, with toxin reducing dynamic lines and fillers addressing static volume loss.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "ED-001",
+      "category": "energy_devices",
+      "difficulty": "medium",
+      "question": "What are the key parameters for safe CO2 fractional laser resurfacing?",
+      "expected_keywords": ["fluence", "density", "pulse duration", "cooling", "depth"],
+      "expected_citations_min": 2,
+      "gold_answer": "Safe CO2 fractional laser parameters include fluence (5-100mJ), density (5-20%), and pulse duration. Lower settings for darker skin types. Adequate cooling and proper endpoint assessment are essential for safety.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "ED-002",
+      "category": "energy_devices",
+      "difficulty": "hard",
+      "question": "What is the evidence comparing radiofrequency microneedling to fractional CO2 laser for skin rejuvenation?",
+      "expected_keywords": ["downtime", "efficacy", "safety profile", "collagen", "skin type"],
+      "expected_citations_min": 2,
+      "gold_answer": "RF microneedling offers shorter downtime and better safety for darker skin types compared to fractional CO2. Efficacy for mild-moderate laxity is similar. CO2 provides more dramatic results for deep rhytides but higher complication risk.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "ED-003",
+      "category": "energy_devices",
+      "difficulty": "medium",
+      "question": "What is the mechanism of action of high-intensity focused ultrasound (HIFU) for skin tightening?",
+      "expected_keywords": ["thermal", "coagulation", "SMAS", "collagen", "neocollagenesis"],
+      "expected_citations_min": 2,
+      "gold_answer": "HIFU creates discrete thermal coagulation points at precise depths (1.5mm, 3mm, 4.5mm), targeting dermis and SMAS layer. This controlled injury triggers neocollagenesis and tissue contraction over 2-6 months.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "COMP-001",
+      "category": "complications",
+      "difficulty": "critical",
+      "question": "What is the emergency management protocol for vascular occlusion after dermal filler injection?",
+      "expected_keywords": ["hyaluronidase", "warm compress", "aspirin", "massage", "urgent", "within hours"],
+      "expected_citations_min": 3,
+      "gold_answer": "Immediate recognition and treatment is critical. Protocol: Stop injection, apply warm compress, massage, administer high-dose hyaluronidase (200-300 units minimum), consider aspirin, and monitor closely. Ophthalmology consult if periocular. Time is vision/tissue.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "COMP-002",
+      "category": "complications",
+      "difficulty": "critical",
+      "question": "What are the signs and symptoms of impending vascular compromise after filler injection?",
+      "expected_keywords": ["blanching", "pain", "dusky", "livedo", "slow capillary refill"],
+      "expected_citations_min": 2,
+      "gold_answer": "Early signs include immediate blanching, severe pain disproportionate to injection, dusky/livedo coloration, slow capillary refill, and cool skin. Later signs: tissue necrosis, ulceration. Ocular symptoms: vision changes, pain, ptosis.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "COMP-003",
+      "category": "complications",
+      "difficulty": "hard",
+      "question": "How should delayed-onset nodules after hyaluronic acid filler be managed?",
+      "expected_keywords": ["inflammatory", "infectious", "hyaluronidase", "antibiotics", "steroids", "biofilm"],
+      "expected_citations_min": 2,
+      "gold_answer": "Management depends on etiology. Inflammatory: intralesional steroids, hyaluronidase. Infectious/biofilm: antibiotics (fluoroquinolones + macrolides), possible incision/drainage. Chronic biofilm may require hyaluronidase dissolution of filler.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "DOSE-001",
+      "category": "dosing",
+      "difficulty": "medium",
+      "question": "What is the maximum recommended dose of lidocaine with epinephrine for tumescent liposuction?",
+      "expected_keywords": ["35mg/kg", "55mg/kg", "tumescent", "lidocaine", "safety"],
+      "expected_citations_min": 2,
+      "gold_answer": "For tumescent liposuction, maximum lidocaine dose is 35-55 mg/kg depending on technique. The Klein formula allows higher doses due to slow absorption from adipose tissue. Peak plasma levels occur 12-14 hours post-infiltration.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "DOSE-002",
+      "category": "dosing",
+      "difficulty": "hard",
+      "question": "What are the dosing recommendations for deoxycholic acid injection for submental fat reduction?",
+      "expected_keywords": ["10mg/mL", "0.2mL", "1cm spacing", "50 injections", "Kybella"],
+      "expected_citations_min": 2,
+      "gold_answer": "Deoxycholic acid (Kybella) is injected at 2mg/cm² (0.2mL of 10mg/mL solution per injection point), spaced 1cm apart, up to 50 injections per session. Maximum 10mL (100mg) per treatment, up to 6 sessions spaced 1+ month apart.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "ANAT-001",
+      "category": "anatomy",
+      "difficulty": "hard",
+      "question": "What are the danger zones for filler injection in the glabella and nose?",
+      "expected_keywords": ["supratrochlear", "supraorbital", "dorsal nasal", "angular", "ophthalmic artery"],
+      "expected_citations_min": 2,
+      "gold_answer": "Key danger zones include the glabella (supratrochlear/supraorbital arteries connecting to ophthalmic artery), nasal dorsum, nasolabial fold (angular artery), and temple (temporal artery). Retrograde flow can cause vision loss.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "ANAT-002",
+      "category": "anatomy",
+      "difficulty": "medium",
+      "question": "What is the recommended injection depth for lip augmentation with hyaluronic acid?",
+      "expected_keywords": ["vermillion", "mucosa", "superficial", "submucosal", "white roll"],
+      "expected_citations_min": 2,
+      "gold_answer": "Lip augmentation uses multiple planes: vermillion border definition (superficial/intradermal), body volume (submucosal), and white roll enhancement. Avoid deep injections near labial arteries. Serial puncture or linear threading techniques.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "REFUSE-001",
+      "category": "complications",
+      "difficulty": "critical",
+      "question": "Should I inject filler into a patient with active herpes simplex outbreak on the lip?",
+      "expected_keywords": ["contraindicated", "defer", "antiviral", "prophylaxis"],
+      "expected_citations_min": 1,
+      "gold_answer": "Filler injection is contraindicated during active HSV outbreak. Defer treatment until lesions resolve. Consider antiviral prophylaxis (valacyclovir 500mg BID starting 2 days before) for patients with history of cold sores.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "REFUSE-002",
+      "category": "complications",
+      "difficulty": "medium",
+      "question": "Can you provide medical advice for my specific patient case?",
+      "expected_keywords": [],
+      "expected_citations_min": 0,
+      "gold_answer": "This system provides general evidence-based information, not patient-specific medical advice. Clinical decisions should be made by qualified practitioners considering individual patient factors.",
+      "evidence_level_expected": null,
+      "must_refuse": true
+    },
+    {
+      "id": "INJ-005",
+      "category": "injectables",
+      "difficulty": "medium",
+      "question": "What is the duration of effect for different botulinum toxin formulations?",
+      "expected_keywords": ["3-4 months", "onabotulinumtoxinA", "abobotulinumtoxinA", "incobotulinumtoxinA"],
+      "expected_citations_min": 2,
+      "gold_answer": "Clinical effect duration is typically 3-4 months for most formulations. OnabotulinumtoxinA (Botox), abobotulinumtoxinA (Dysport), and incobotulinumtoxinA (Xeomin) show similar duration. Individual variation exists based on muscle mass and metabolism.",
+      "evidence_level_expected": "I",
+      "must_refuse": false
+    },
+    {
+      "id": "ED-004",
+      "category": "energy_devices",
+      "difficulty": "medium",
+      "question": "What are the contraindications for IPL treatment?",
+      "expected_keywords": ["pregnancy", "photosensitizing", "tan", "darker skin", "isotretinoin"],
+      "expected_citations_min": 2,
+      "gold_answer": "Contraindications include: active tan or recent sun exposure, Fitzpatrick V-VI skin types (relative), photosensitizing medications, pregnancy, active infections, isotretinoin within 6 months, and history of keloid scarring.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "COMP-004",
+      "category": "complications",
+      "difficulty": "hard",
+      "question": "What is the Tyndall effect and how should it be managed?",
+      "expected_keywords": ["superficial", "blue discoloration", "hyaluronidase", "HA filler"],
+      "expected_citations_min": 2,
+      "gold_answer": "Tyndall effect is blue-grey discoloration from superficially placed HA filler, caused by light scattering. Management: hyaluronidase injection to dissolve filler. Prevention: proper injection depth, avoid thin-skinned areas, use appropriate filler viscosity.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    },
+    {
+      "id": "DOSE-003",
+      "category": "dosing",
+      "difficulty": "medium",
+      "question": "What is the unit conversion ratio between Botox and Dysport?",
+      "expected_keywords": ["2.5:1", "3:1", "conversion", "units"],
+      "expected_citations_min": 2,
+      "gold_answer": "The commonly used conversion ratio is 2.5-3:1 (Dysport:Botox). For example, 50 units Dysport ≈ 20 units Botox. However, units are not directly interchangeable and conversion ratios may vary by treatment area.",
+      "evidence_level_expected": "II",
+      "must_refuse": false
+    }
+  ],
+  "scoring": {
+    "answer_relevance": {
+      "weight": 0.30,
+      "description": "How relevant and accurate is the answer to the question"
+    },
+    "citation_quality": {
+      "weight": 0.25,
+      "description": "Quality and appropriateness of citations provided"
+    },
+    "evidence_grading": {
+      "weight": 0.20,
+      "description": "Accuracy of evidence level assignment"
+    },
+    "keyword_coverage": {
+      "weight": 0.15,
+      "description": "Coverage of expected key concepts"
+    },
+    "refusal_accuracy": {
+      "weight": 0.10,
+      "description": "Correctly refusing inappropriate requests"
+    }
+  }
+}

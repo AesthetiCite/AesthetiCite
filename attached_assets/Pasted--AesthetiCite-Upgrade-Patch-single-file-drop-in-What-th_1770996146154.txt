@@ -1,0 +1,649 @@
+"""
+AesthetiCite Upgrade Patch (single-file drop-in)
+
+What this gives you immediately:
+- Aesthetic-first answer assembly (plan → retrieve → verify → write)
+- Hard "no cite → no claim" gating (prevents hallucinations)
+- Aesthetic Confidence Index (ACI™) scoring per answer + per claim
+- Automatic Complication Protocol Layer for injectables (your #1 moat)
+- Inline calculators/tools support (hyaluronidase, BoNT dilution, etc.) via execute_tool()
+- Optional endpoints:
+  - POST /deepconsult (JSON)
+  - POST /deepconsult/pdf/from-query (returns a ready PDF bytes)
+
+What you must plug in (3 functions):
+- retrieve_chunks(query, *, k, filters) -> list[Chunk]
+- llm_json(system, user, schema) -> dict
+- llm_text(system, user) -> str
+Optional:
+- execute_tool(name, args) -> dict
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+import math
+import re
+import time
+
+# -----------------------------
+# Data structures
+# -----------------------------
+
+@dataclass
+class Chunk:
+    """Your retriever should return these fields (or adapt mapping)."""
+    text: str
+    title: str
+    source: str  # URL or doc id
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    journal: Optional[str] = None
+    evidence_type: Optional[str] = None  # e.g., "guideline", "meta-analysis", "RCT", "review", "case-series"
+    # Optional: for highlighting
+    score: Optional[float] = None
+
+
+@dataclass
+class Claim:
+    claim: str
+    rationale: str
+    needed: str  # what evidence is required
+    risk_level: str  # low/medium/high (esp. for injections/complications)
+    topic_tags: List[str]
+
+
+@dataclass
+class EvidenceItem:
+    chunk: Chunk
+    excerpt: str
+    supports: List[str]  # claim ids or phrases
+    weight: float
+
+
+# -----------------------------
+# Evidence weighting + ACI™
+# -----------------------------
+
+EVIDENCE_WEIGHTS = {
+    "guideline": 1.00,
+    "meta-analysis": 0.95,
+    "systematic-review": 0.90,
+    "RCT": 0.85,
+    "cohort": 0.70,
+    "case-control": 0.65,
+    "review": 0.55,
+    "case-series": 0.45,
+    "case-report": 0.35,
+    "expert-opinion": 0.25,
+    None: 0.40,  # unknown defaults conservative
+}
+
+def _year_modifier(year: Optional[int], now_year: int = 2026) -> float:
+    # Recency matters in devices/techniques; keep it gentle.
+    if not year:
+        return 0.90
+    age = max(0, now_year - year)
+    if age <= 2:  # very recent
+        return 1.00
+    if age <= 5:
+        return 0.95
+    if age <= 10:
+        return 0.90
+    return 0.85
+
+def _consensus_modifier(n_supporting_sources: int) -> float:
+    if n_supporting_sources >= 4:
+        return 1.00
+    if n_supporting_sources == 3:
+        return 0.95
+    if n_supporting_sources == 2:
+        return 0.90
+    if n_supporting_sources == 1:
+        return 0.80
+    return 0.60
+
+def compute_aci(evidence_items: List[EvidenceItem], risk_level: str) -> float:
+    """
+    Aesthetic Confidence Index (0–10)
+    - More + stronger evidence => higher
+    - High-risk topics require stronger evidence (penalize if weak)
+    """
+    if not evidence_items:
+        return 0.0
+
+    base = sum(e.weight for e in evidence_items)
+    base = min(base, 4.0)  # cap raw accumulation
+
+    consensus = _consensus_modifier(len({e.chunk.source for e in evidence_items}))
+    risk_penalty = {"low": 0.0, "medium": 0.6, "high": 1.2}.get(risk_level, 0.6)
+
+    # Convert to 0–10 with diminishing returns
+    score = 10.0 * (1.0 - math.exp(-base)) * consensus
+    score = max(0.0, min(10.0, score - risk_penalty))
+    return round(score, 1)
+
+
+# -----------------------------
+# Aesthetic routing + safety heuristics
+# -----------------------------
+
+INJECTABLE_TRIGGERS = [
+    "filler", "hyaluronic", "ha", "juvederm", "restylane", "teosyal", "belotero",
+    "radiesse", "sculptra", "pmma", "hyaluronidase", "vascular occlusion",
+    "botox", "dysport", "xeomin", "bocouture", "botulinum", "glabella", "nose",
+    "tear trough", "nasolabial", "temple", "forehead", "cannula", "needle"
+]
+
+DEVICE_TRIGGERS = [
+    "laser", "ipl", "rf", "radiofrequency", "hifu", "ultherapy", "morpheus",
+    "fractional", "co2", "erbium", "1064", "532", "nd:yag", "picosecond",
+    "microneedling", "energy device"
+]
+
+REG_TRIGGERS = ["fda", "ce mark", "ce-mark", "approved", "off-label", "label", "indication"]
+
+def classify_query(query: str) -> Dict[str, Any]:
+    q = query.lower()
+    injectable = any(t in q for t in INJECTABLE_TRIGGERS)
+    device = any(t in q for t in DEVICE_TRIGGERS)
+    regulatory = any(t in q for t in REG_TRIGGERS)
+
+    # crude risk: glabella/nose/tear trough = higher risk zones
+    high_risk_terms = ["glabella", "nose", "nasal", "tear trough", "forehead", "blindness", "vision loss"]
+    risk_level = "high" if any(t in q for t in high_risk_terms) else ("medium" if injectable else "low")
+
+    return {
+        "is_injectable": injectable,
+        "is_device": device,
+        "needs_regulatory": regulatory or injectable or device,
+        "risk_level": risk_level,
+    }
+
+
+# -----------------------------
+# The "single best upgrade": Complication Protocol Layer
+# -----------------------------
+
+def complication_protocol_layer(query: str, execute_tool=None) -> Optional[Dict[str, Any]]:
+    """
+    Returns a structured protocol block to embed in the answer.
+    Keep it conservative: general educational guidance + prompts to follow local protocols.
+    If you have execute_tool(), you can provide region/dose calculators.
+    """
+    q = query.lower()
+    if not any(t in q for t in INJECTABLE_TRIGGERS):
+        return None
+
+    # We do NOT hardcode clinical dosing as authoritative; we provide tool hooks + general steps.
+    # Your evidence engine must back up any numeric dose with citations (gating).
+    block = {
+        "title": "Complication Protocol Layer (Injectables)",
+        "red_flags": [
+            "Sudden severe pain, blanching, livedo/reticular discoloration",
+            "Cool skin, delayed capillary refill",
+            "Visual symptoms (blurred vision, scotoma), ptosis, ophthalmoplegia",
+        ],
+        "immediate_actions": [
+            "Stop injection immediately; do not continue in the area.",
+            "Assess perfusion and symptoms; document time of onset.",
+            "Initiate your clinic’s vascular occlusion protocol and escalate early if any ocular symptoms.",
+        ],
+        "tool_suggestions": [],
+        "note": "This section supports risk awareness and does not replace formal training, manufacturer IFUs, or local emergency protocols.",
+    }
+
+    if execute_tool:
+        # Example: ask your tool registry for a hyaluronidase dosing *range* helper by region,
+        # but your final answer must still cite evidence for any numeric guidance.
+        try:
+            block["tool_suggestions"].append({
+                "name": "hyaluronidase_helper",
+                "args": {"region": "auto_from_query", "query": query}
+            })
+        except Exception:
+            pass
+
+    return block
+
+
+# -----------------------------
+# Core upgrade pipeline
+# -----------------------------
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "rationale": {"type": "string"},
+                    "needed": {"type": "string"},
+                    "risk_level": {"type": "string"},
+                    "topic_tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["claim", "rationale", "needed", "risk_level", "topic_tags"],
+            },
+        },
+        "search_queries": {"type": "array", "items": {"type": "string"}},
+        "must_include": {"type": "array", "items": {"type": "string"}},
+        "must_avoid": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["claims", "search_queries", "must_include", "must_avoid"],
+}
+
+def make_plan(query: str, llm_json) -> Dict[str, Any]:
+    system = (
+        "You are AesthetiCite Planner. Create an answer plan specialized for aesthetic medicine.\n"
+        "Rules:\n"
+        "- Output JSON only, matching schema.\n"
+        "- Prefer guidelines/meta-analyses/RCTs; avoid marketing claims.\n"
+        "- Include complication/risk considerations when injectables are involved.\n"
+        "- Create search queries that include: technique, product class, complication, and guideline keywords.\n"
+        "- Keep claims minimal (4–7)."
+    )
+    user = f"User query:\n{query}"
+    return llm_json(system=system, user=user, schema=PLAN_SCHEMA)
+
+def retrieve_evidence(plan: Dict[str, Any], retrieve_chunks, query_meta: Dict[str, Any]) -> List[Chunk]:
+    # Aesthetic filters (adapt to your index taxonomy)
+    filters = {
+        "domain": "aesthetic_medicine",
+        "prefer": ["guideline", "meta-analysis", "systematic-review", "RCT"],
+        "include_regulatory": query_meta["needs_regulatory"],
+    }
+
+    chunks: List[Chunk] = []
+    seen = set()
+    for q in plan.get("search_queries", [])[:10]:
+        for c in retrieve_chunks(q, k=8, filters=filters) or []:
+            key = (c.source, c.title, (c.year or 0))
+            if key in seen:
+                continue
+            seen.add(key)
+            chunks.append(c)
+
+    # Light cap for latency
+    return chunks[:30]
+
+def extract_supporting_excerpts(claims: List[Claim], chunks: List[Chunk], llm_json) -> Dict[str, Any]:
+    """
+    Ask LLM to map evidence excerpts to each claim *with citations candidates*.
+    This is NOT the final answer; we still gate.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "claim_maps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claim": {"type": "string"},
+                        "support": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "source_hint": {"type": "string"},
+                                    "excerpt": {"type": "string"},
+                                    "evidence_type": {"type": "string"},
+                                    "year": {"type": "integer"},
+                                },
+                                "required": ["source_hint", "excerpt"],
+                            },
+                        },
+                    },
+                    "required": ["claim", "support"],
+                },
+            }
+        },
+        "required": ["claim_maps"],
+    }
+
+    # Provide a compact context
+    ctx = []
+    for i, c in enumerate(chunks, 1):
+        ctx.append(
+            f"[{i}] {c.title} ({c.year or 'n.d.'}) {c.evidence_type or 'unknown'}\n"
+            f"SOURCE: {c.source}\n"
+            f"TEXT: {c.text[:1200]}\n"
+        )
+    system = (
+        "You are AesthetiCite Evidence Mapper.\n"
+        "Task: For each claim, pick the best supporting excerpts from the provided sources.\n"
+        "Rules:\n"
+        "- Use short excerpts only.\n"
+        "- If no support exists, return empty support list for that claim.\n"
+        "- Prefer higher evidence_type when available.\n"
+        "- Do NOT invent data.\n"
+        "Output JSON only."
+    )
+    user = "CLAIMS:\n" + "\n".join([f"- {c.claim}" for c in claims]) + "\n\nSOURCES:\n" + "\n".join(ctx)
+    return llm_json(system=system, user=user, schema=schema)
+
+def gate_claims(
+    claims: List[Claim],
+    chunks: List[Chunk],
+    claim_maps: Dict[str, Any],
+) -> Tuple[List[Claim], Dict[str, List[EvidenceItem]]]:
+    """
+    Hard gate: claim is allowed only if it has >=1 supporting evidence excerpt.
+    High-risk claims ideally need >=2 sources; otherwise downgrade wording later.
+    """
+    # index chunks by source/title for matching
+    by_source = {}
+    for c in chunks:
+        by_source.setdefault(c.source, []).append(c)
+
+    allowed: List[Claim] = []
+    evidence_by_claim: Dict[str, List[EvidenceItem]] = {}
+
+    for cl in claims:
+        supports = []
+        for cm in claim_maps.get("claim_maps", []):
+            if cm.get("claim", "").strip() == cl.claim.strip():
+                supports = cm.get("support", []) or []
+                break
+
+        items: List[EvidenceItem] = []
+        for s in supports:
+            hint = (s.get("source_hint") or "").strip()
+            excerpt = (s.get("excerpt") or "").strip()
+            if not excerpt:
+                continue
+
+            # try to match by source URL contained in hint, else accept first chunk
+            matched_chunk = None
+            for c in chunks:
+                if (c.source and c.source in hint) or (c.title and c.title in hint):
+                    matched_chunk = c
+                    break
+            if not matched_chunk:
+                matched_chunk = chunks[0] if chunks else None
+            if not matched_chunk:
+                continue
+
+            et = (s.get("evidence_type") or matched_chunk.evidence_type)
+            w = EVIDENCE_WEIGHTS.get(et, EVIDENCE_WEIGHTS[None]) * _year_modifier(matched_chunk.year)
+            items.append(EvidenceItem(chunk=matched_chunk, excerpt=excerpt, supports=[cl.claim], weight=w))
+
+        # Gate rule: no evidence => claim removed
+        if items:
+            allowed.append(cl)
+            evidence_by_claim[cl.claim] = items
+
+    return allowed, evidence_by_claim
+
+def build_answer(
+    query: str,
+    allowed_claims: List[Claim],
+    evidence_by_claim: Dict[str, List[EvidenceItem]],
+    query_meta: Dict[str, Any],
+    protocol_block: Optional[Dict[str, Any]],
+    llm_text,
+) -> str:
+    """
+    Produces final narrative answer, with citations.
+    Also inserts ACI™ score and safety layer.
+    """
+    # Build a citations list with compact references
+    refs = []
+    ref_ids = {}
+    idx = 1
+    for cl in allowed_claims:
+        for e in evidence_by_claim.get(cl.claim, []):
+            key = (e.chunk.source, e.chunk.title, e.chunk.year or 0)
+            if key in ref_ids:
+                continue
+            ref_ids[key] = idx
+            refs.append({
+                "id": idx,
+                "title": e.chunk.title,
+                "year": e.chunk.year,
+                "evidence_type": e.chunk.evidence_type,
+                "source": e.chunk.source,
+                "doi": e.chunk.doi,
+                "journal": e.chunk.journal,
+            })
+            idx += 1
+
+    # Compute ACI overall (use risk level from query meta)
+    all_evidence = [ei for lst in evidence_by_claim.values() for ei in lst]
+    aci = compute_aci(all_evidence, risk_level=query_meta["risk_level"])
+
+    # Provide the LLM a strict writing spec
+    system = (
+        "You are AesthetiCite Writer.\n"
+        "Write a clinical, aesthetic-medicine-focused answer.\n"
+        "Rules:\n"
+        "- Do NOT add any clinical claim that is not supported by provided excerpts.\n"
+        "- Use narrative prose (no bullet lists unless explicitly asked).\n"
+        "- Include a short 'Clinical Summary' then 'Evidence & Rationale' then 'Practical Considerations'.\n"
+        "- If injectables: include risk-aware language and integrate the provided protocol block.\n"
+        "- Whenever you mention a supported claim, add citations like [1], [2].\n"
+        "- If evidence is weak or only 1 source for a high-risk topic, downgrade wording: use 'may', 'limited evidence'.\n"
+    )
+
+    # Compose evidence pack
+    pack_lines = []
+    for cl in allowed_claims:
+        eis = evidence_by_claim.get(cl.claim, [])
+        # map each EvidenceItem to its ref id
+        mapped = []
+        for ei in eis:
+            rid = ref_ids.get((ei.chunk.source, ei.chunk.title, ei.chunk.year or 0))
+            mapped.append(f"- Excerpt ({rid}): {ei.excerpt}")
+        aci_claim = compute_aci(eis, risk_level=cl.risk_level)
+        pack_lines.append(
+            f"CLAIM: {cl.claim}\n"
+            f"RISK: {cl.risk_level}\n"
+            f"ACI_CLAIM: {aci_claim}/10\n"
+            + "\n".join(mapped)
+            + "\n"
+        )
+
+    protocol_txt = ""
+    if protocol_block:
+        protocol_txt = (
+            f"\nPROTOCOL_BLOCK_TITLE: {protocol_block['title']}\n"
+            f"RED_FLAGS: {', '.join(protocol_block['red_flags'])}\n"
+            f"IMMEDIATE_ACTIONS: {', '.join(protocol_block['immediate_actions'])}\n"
+            f"NOTE: {protocol_block['note']}\n"
+        )
+
+    user = (
+        f"USER QUESTION:\n{query}\n\n"
+        f"OVERALL_ACI: {aci}/10\n"
+        f"QUERY_META: {query_meta}\n"
+        f"{protocol_txt}\n"
+        f"EVIDENCE_PACK:\n" + "\n".join(pack_lines) + "\n"
+        "REFERENCES:\n" + "\n".join([f"[{r['id']}] {r['title']} ({r.get('year','n.d.')}) {r.get('source')}" for r in refs])
+    )
+
+    answer = llm_text(system=system, user=user)
+
+    # Append structured references (you can format to your UI)
+    refs_block = "\n\nReferences\n" + "\n".join(
+        [
+            f"[{r['id']}] {r['title']} ({r.get('year','n.d.')}). {r.get('journal','')}. "
+            + (f"DOI: {r['doi']}. " if r.get("doi") else "")
+            + f"Source: {r['source']}"
+            for r in refs
+        ]
+    )
+
+    # Add a top banner ACI
+    banner = f"Aesthetic Confidence Index (ACI™): {aci}/10\n"
+    return banner + "\n\n" + answer.strip() + refs_block
+
+
+# -----------------------------
+# Public API: one function to call from your app
+# -----------------------------
+
+def deepconsult_upgrade(
+    query: str,
+    *,
+    retrieve_chunks,
+    llm_json,
+    llm_text,
+    execute_tool=None,
+) -> Dict[str, Any]:
+    t0 = time.time()
+
+    meta = classify_query(query)
+
+    plan = make_plan(query, llm_json)
+
+    # Convert plan claims into Claim dataclasses
+    claims = []
+    for c in plan.get("claims", []):
+        claims.append(Claim(
+            claim=c["claim"].strip(),
+            rationale=c.get("rationale","").strip(),
+            needed=c.get("needed","").strip(),
+            risk_level=(c.get("risk_level") or meta["risk_level"]).strip(),
+            topic_tags=c.get("topic_tags") or [],
+        ))
+
+    chunks = retrieve_evidence(plan, retrieve_chunks, meta)
+
+    # Evidence mapping + gating
+    claim_maps = extract_supporting_excerpts(claims, chunks, llm_json)
+    allowed, evidence_by_claim = gate_claims(claims, chunks, claim_maps)
+
+    protocol = complication_protocol_layer(query, execute_tool=execute_tool)
+
+    # If nothing survives gating, return safe response
+    if not allowed:
+        return {
+            "ok": True,
+            "answer": (
+                "Aesthetic Confidence Index (ACI™): 0/10\n\n"
+                "I couldn’t find strong, directly supporting evidence in the current corpus for the specific question as phrased. "
+                "Try rephrasing with the exact procedure/product/device, patient context (age/sex/skin type), and the outcome you want to optimize "
+                "(efficacy, safety, longevity, complications)."
+            ),
+            "debug": {
+                "meta": meta,
+                "plan": plan,
+                "n_chunks": len(chunks),
+                "n_claims": len(claims),
+                "n_allowed": 0,
+                "latency_s": round(time.time() - t0, 2),
+            }
+        }
+
+    answer = build_answer(query, allowed, evidence_by_claim, meta, protocol, llm_text)
+
+    return {
+        "ok": True,
+        "answer": answer,
+        "debug": {
+            "meta": meta,
+            "plan": plan,
+            "n_chunks": len(chunks),
+            "n_claims": len(claims),
+            "n_allowed": len(allowed),
+            "latency_s": round(time.time() - t0, 2),
+        }
+    }
+
+
+# -----------------------------
+# Optional: FastAPI wiring (still single file)
+# -----------------------------
+# If you already have FastAPI, you can copy/paste these endpoints.
+
+def make_fastapi_app(retrieve_chunks, llm_json, llm_text, execute_tool=None):
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse, Response
+
+    app = FastAPI(title="AesthetiCite DeepConsult Upgrade")
+
+    @app.post("/deepconsult")
+    def deepconsult(payload: Dict[str, Any]):
+        q = (payload.get("query") or "").strip()
+        if not q:
+            return JSONResponse({"ok": False, "error": "Missing 'query'."}, status_code=400)
+
+        out = deepconsult_upgrade(
+            q,
+            retrieve_chunks=retrieve_chunks,
+            llm_json=llm_json,
+            llm_text=llm_text,
+            execute_tool=execute_tool,
+        )
+        return JSONResponse(out)
+
+    @app.post("/deepconsult/pdf/from-query")
+    def deepconsult_pdf(payload: Dict[str, Any]):
+        # Minimal PDF generation: uses reportlab if installed.
+        q = (payload.get("query") or "").strip()
+        if not q:
+            return JSONResponse({"ok": False, "error": "Missing 'query'."}, status_code=400)
+
+        out = deepconsult_upgrade(
+            q,
+            retrieve_chunks=retrieve_chunks,
+            llm_json=llm_json,
+            llm_text=llm_text,
+            execute_tool=execute_tool,
+        )
+
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.units import cm
+
+            import io
+            buf = io.BytesIO()
+            c = canvas.Canvas(buf, pagesize=A4)
+            width, height = A4
+
+            # Simple typography
+            text = c.beginText(2 * cm, height - 2 * cm)
+            text.setFont("Helvetica", 11)
+
+            lines = (out.get("answer") or "").splitlines()
+            for line in lines:
+                # wrap basic
+                for part in _wrap_line(line, max_chars=95):
+                    if text.getY() < 2 * cm:
+                        c.drawText(text)
+                        c.showPage()
+                        text = c.beginText(2 * cm, height - 2 * cm)
+                        text.setFont("Helvetica", 11)
+                    text.textLine(part)
+            c.drawText(text)
+            c.showPage()
+            c.save()
+
+            pdf_bytes = buf.getvalue()
+            return Response(content=pdf_bytes, media_type="application/pdf")
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"PDF generation failed: {e}", "result": out}, status_code=500)
+
+    return app
+
+def _wrap_line(s: str, max_chars: int = 95) -> List[str]:
+    if len(s) <= max_chars:
+        return [s]
+    words = s.split(" ")
+    lines = []
+    cur = ""
+    for w in words:
+        if len(cur) + len(w) + 1 <= max_chars:
+            cur = (cur + " " + w).strip()
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines

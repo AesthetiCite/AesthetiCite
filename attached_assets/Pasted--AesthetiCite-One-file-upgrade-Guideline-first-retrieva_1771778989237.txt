@@ -1,0 +1,506 @@
+"""
+AesthetiCite — One-file upgrade: Guideline-first retrieval + query expansion + tier-aware reranking
+
+✅ What this improves (immediately):
+1) Retrieves higher-quality evidence first (Guidelines / Consensus / Systematic reviews / Meta-analyses / RCTs)
+2) Expands “complication” queries (vascular occlusion etc.) so guidelines are found more reliably
+3) Ensures top sources shown are Tier A/B before Tier C when available
+4) Recomputes deterministic ACI AFTER fusion so scores reflect the improved evidence mix
+
+How to integrate (2 lines):
+- In your endpoint, replace your single retrieval call with:
+    sources = retrieve_with_quality_fusion(question, retrieve_fn=your_retrieve_fn)
+- Then pass `sources` into your existing prompt builder / answer engine.
+
+Expected `retrieve_fn` signature (adapt if needed):
+    retrieve_fn(query: str, k: int, filters: dict | None) -> list[dict]
+Where each dict should include at least:
+    id, title, year, journal, publication_type (or publication_types), source_tier (optional), evidence_rank (optional)
+
+If your schema differs, adjust the field names in the adapters below.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+
+QUALITY_PUB_TYPES = {
+    "guideline",
+    "consensus",
+    "position statement",
+    "systematic review",
+    "meta-analysis",
+    "meta analysis",
+    "randomized controlled trial",
+    "rct",
+}
+
+# Strong boost if we detect “emergency” / complication management topics
+EMERGENCY_HINTS = [
+    "vascular occlusion", "occlusion", "ischemia", "ischaemia", "necrosis",
+    "vision loss", "blindness", "embol", "intravascular", "arterial",
+    "hyaluronidase", "filler complication", "adverse event", "complication",
+]
+
+# Query expansions that help “find guidelines”
+EXPANSIONS = {
+    # vascular compromise / occlusion
+    "vascular occlusion": [
+        "vascular compromise", "intravascular injection", "ischemic event",
+        "ischemia", "arterial occlusion", "filler-induced ischemia",
+        "hyaluronic acid filler complication", "dermal filler complication",
+    ],
+    "hyaluronidase": [
+        "hyaluronidase protocol", "high-dose hyaluronidase", "hyaluronidase consensus",
+        "hyaluronidase guideline", "hyaluronidase vascular compromise",
+    ],
+    "vision": [
+        "ocular complication", "retinal artery occlusion", "visual loss filler",
+        "ophthalmic emergency dermal filler",
+    ],
+}
+
+# Evidence type ordering for reranking
+EVIDENCE_TYPE_ORDER = [
+    "Guideline", "Consensus", "SystematicReview", "MetaAnalysis", "RCT",
+    "Cohort", "CaseControl", "CaseSeries", "NarrativeReview", "CaseReport", "Other"
+]
+EVIDENCE_TYPE_RANK = {t: i for i, t in enumerate(EVIDENCE_TYPE_ORDER)}
+
+# Tier ordering (A best)
+TIER_RANK = {"A": 0, "B": 1, "C": 2}
+
+
+# -----------------------------
+# MODELS
+# -----------------------------
+
+@dataclass
+class Source:
+    id: str
+    title: str
+    journal: Optional[str] = None
+    year: Optional[int] = None
+    url: Optional[str] = None
+    doi: Optional[str] = None
+
+    # Your retriever may provide one of these:
+    publication_type: Optional[str] = None          # e.g. "Narrative Review"
+    publication_types: Optional[List[str]] = None   # e.g. ["Guideline", "Consensus"]
+
+    # Your KB may provide these, but we can compute if missing:
+    source_tier: Optional[str] = None               # A/B/C (optional in raw)
+    evidence_rank: Optional[float] = None           # retriever score (optional)
+
+    # Enriched
+    evidence_type: str = "Other"
+    evidence_tier: str = "C"
+    evidence_grade: str = "IV"
+
+
+@dataclass
+class ACIResult:
+    score_0_to_10: float
+    badge: str
+    components: Dict[str, float]
+    rationale: str
+
+
+# -----------------------------
+# CLASSIFICATION
+# -----------------------------
+
+def _norm_list(x: Optional[List[str]]) -> List[str]:
+    return [s.strip().lower() for s in (x or []) if s and s.strip()]
+
+def _norm_str(x: Optional[str]) -> str:
+    return (x or "").strip().lower()
+
+def classify_evidence_type(src: Source) -> str:
+    """
+    Robust type classification using publication types + title hints.
+    """
+    pub = _norm_list(src.publication_types)
+    one = _norm_str(src.publication_type)
+    title = (src.title or "").lower()
+
+    # Trust structured types first
+    merged = set(pub)
+    if one:
+        merged.add(one)
+
+    def has_any(sub: str) -> bool:
+        return any(sub in p for p in merged)
+
+    if has_any("guideline"):
+        return "Guideline"
+    if has_any("consensus") or has_any("position statement"):
+        return "Consensus"
+    if has_any("systematic"):
+        return "SystematicReview"
+    if has_any("meta-analysis") or has_any("meta analysis"):
+        return "MetaAnalysis"
+    if has_any("randomized") or has_any("rct") or has_any("trial"):
+        return "RCT"
+    if has_any("cohort"):
+        return "Cohort"
+    if has_any("case-control") or has_any("case control"):
+        return "CaseControl"
+    if has_any("case series"):
+        return "CaseSeries"
+    if has_any("case report"):
+        return "CaseReport"
+    if has_any("review"):
+        # if not systematic/meta, treat as narrative by default
+        return "NarrativeReview"
+
+    # Title hints fallback
+    if re.search(r"\bguideline(s)?\b", title):
+        return "Guideline"
+    if re.search(r"\bconsensus\b|\bposition statement\b|\bdelphi\b", title):
+        return "Consensus"
+    if re.search(r"\bsystematic review\b", title):
+        return "SystematicReview"
+    if re.search(r"\bmeta[- ]analysis\b", title):
+        return "MetaAnalysis"
+    if re.search(r"\brandomi[sz]ed\b|\bdouble[- ]blind\b|\bplacebo\b|\btrial\b", title):
+        return "RCT"
+    if re.search(r"\bcohort\b", title):
+        return "Cohort"
+    if re.search(r"\bcase[- ]control\b", title):
+        return "CaseControl"
+    if re.search(r"\bcase series\b|\bcase[- ]series\b", title):
+        return "CaseSeries"
+    if re.search(r"\bcase report\b", title):
+        return "CaseReport"
+    if re.search(r"\breview\b", title):
+        return "NarrativeReview"
+
+    return "Other"
+
+
+def map_to_tier(evidence_type: str) -> str:
+    if evidence_type in {"Guideline", "Consensus", "SystematicReview", "MetaAnalysis", "RCT"}:
+        return "A"
+    if evidence_type in {"Cohort", "CaseControl"}:
+        return "B"
+    return "C"
+
+
+def map_to_grade(evidence_type: str) -> str:
+    if evidence_type in {"Guideline", "Consensus"}:
+        return "I"
+    if evidence_type in {"SystematicReview", "MetaAnalysis", "RCT"}:
+        return "II"
+    if evidence_type in {"Cohort", "CaseControl", "CaseSeries"}:
+        return "III"
+    return "IV"
+
+
+def enrich_sources(raw_sources: List[Dict[str, Any]]) -> List[Source]:
+    """
+    Adapter from dict -> Source + enrichment.
+    Adjust field names here if your schema differs.
+    """
+    out: List[Source] = []
+    for r in raw_sources:
+        s = Source(
+            id=str(r.get("id") or r.get("source_id") or r.get("doc_id") or ""),
+            title=str(r.get("title") or r.get("paper_title") or ""),
+            journal=r.get("journal"),
+            year=r.get("year"),
+            url=r.get("url"),
+            doi=r.get("doi"),
+            publication_type=r.get("publication_type") or r.get("pub_type"),
+            publication_types=r.get("publication_types") or r.get("pub_types"),
+            source_tier=r.get("source_tier"),
+            evidence_rank=r.get("evidence_rank") or r.get("score"),
+        )
+        s.evidence_type = classify_evidence_type(s)
+        s.evidence_tier = map_to_tier(s.evidence_type) if not s.source_tier else str(s.source_tier).strip().upper()
+        s.evidence_grade = map_to_grade(s.evidence_type)
+        out.append(s)
+    # Remove empty IDs (optional)
+    return [s for s in out if s.id and s.title]
+
+
+# -----------------------------
+# ACI (deterministic)
+# -----------------------------
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+def compute_aci(question: str, sources: List[Source], now_year: Optional[int] = None) -> ACIResult:
+    if now_year is None:
+        now_year = datetime.utcnow().year
+
+    n = len(sources)
+    if n == 0:
+        return ACIResult(
+            score_0_to_10=0.0,
+            badge="Low",
+            components={"tier_quality": 0.0, "evidence_diversity": 0.0, "recency": 0.0, "source_count": 0.0, "guideline_presence": 0.0},
+            rationale="No supporting sources retrieved."
+        )
+
+    tier_map = {"A": 1.0, "B": 0.6, "C": 0.3}
+    tier_quality = sum(tier_map.get(s.evidence_tier, 0.3) for s in sources) / n
+
+    types = {s.evidence_type for s in sources}
+    diversity = _clamp(len(types) / 6.0, 0.0, 1.0)
+
+    recs: List[float] = []
+    for s in sources:
+        if not s.year:
+            recs.append(0.4)
+        else:
+            age = max(0, now_year - int(s.year))
+            rec = 1.0 / (1.0 + (age / 6.0))
+            recs.append(_clamp(rec, 0.15, 1.0))
+    recency = sum(recs) / n
+
+    source_count = _clamp(1.0 - math.exp(-n / 7.0), 0.0, 1.0)
+
+    guideline_presence = 1.0 if any(s.evidence_type in {"Guideline", "Consensus"} for s in sources) else 0.0
+
+    q = (question or "").lower()
+    missing_guideline_penalty = 0.0
+    if any(k in q for k in EMERGENCY_HINTS) and guideline_presence < 0.5:
+        missing_guideline_penalty = 0.08
+
+    raw = (
+        0.42 * tier_quality +
+        0.18 * diversity +
+        0.22 * recency +
+        0.12 * source_count +
+        0.06 * guideline_presence
+    )
+    raw = _clamp(raw - missing_guideline_penalty, 0.0, 1.0)
+
+    score = round(raw * 10.0, 1)
+    badge = "High" if score >= 8.5 else ("Moderate" if score >= 6.5 else "Low")
+
+    rationale = (
+        f"Computed from tier quality ({tier_quality:.2f}), diversity ({diversity:.2f}), "
+        f"recency ({recency:.2f}), source count ({source_count:.2f}), guideline presence ({guideline_presence:.0f})."
+    )
+    if missing_guideline_penalty:
+        rationale += " Mild penalty applied: emergency topic lacks guideline/consensus evidence."
+
+    return ACIResult(
+        score_0_to_10=score,
+        badge=badge,
+        components={
+            "tier_quality": round(tier_quality, 2),
+            "evidence_diversity": round(diversity, 2),
+            "recency": round(recency, 2),
+            "source_count": round(source_count, 2),
+            "guideline_presence": guideline_presence,
+        },
+        rationale=rationale
+    )
+
+
+# -----------------------------
+# QUERY EXPANSION + QUALITY FUSION
+# -----------------------------
+
+def expand_query(question: str) -> List[str]:
+    q = (question or "").strip()
+    ql = q.lower()
+    expansions: List[str] = [q]
+
+    # Add generic “quality” keywords if emergency topic
+    if any(k in ql for k in EMERGENCY_HINTS):
+        expansions.append(q + " guideline")
+        expansions.append(q + " consensus")
+        expansions.append(q + " position statement")
+        expansions.append(q + " systematic review")
+        expansions.append(q + " complications management")
+
+    # Add topic-specific expansions
+    for key, adds in EXPANSIONS.items():
+        if key in ql:
+            for a in adds:
+                expansions.append(f"{q} {a}")
+                expansions.append(f"{a} guideline consensus")
+
+    # De-dup while preserving order
+    seen = set()
+    dedup: List[str] = []
+    for x in expansions:
+        nx = " ".join(x.split())
+        if nx.lower() not in seen:
+            seen.add(nx.lower())
+            dedup.append(nx)
+    return dedup[:10]  # cap expansions
+
+
+def build_quality_filters() -> Dict[str, Any]:
+    """
+    Generic filter dictionary. Adapt to your retriever’s filter syntax.
+    """
+    return {
+        "publication_type_in": [
+            "Guideline", "Consensus", "Position Statement",
+            "Systematic Review", "Meta-analysis", "Randomized Controlled Trial"
+        ]
+    }
+
+
+def _source_key(s: Source) -> str:
+    # Use DOI if present, else title+year, else id.
+    if s.doi:
+        return f"doi:{s.doi.lower()}"
+    ty = (s.title or "").strip().lower()
+    yr = str(s.year or "")
+    if ty:
+        return f"title:{ty}|year:{yr}"
+    return f"id:{s.id}"
+
+
+def rerank_sources(question: str, sources: List[Source]) -> List[Source]:
+    """
+    Tier/type-first reranking. Keeps retriever score as tie-breaker when present.
+    """
+    ql = (question or "").lower()
+    emergency = any(k in ql for k in EMERGENCY_HINTS)
+
+    def score(s: Source) -> Tuple[int, int, int, float]:
+        # Lower is better for ranks
+        tier_r = TIER_RANK.get(s.evidence_tier, 2)
+        type_r = EVIDENCE_TYPE_RANK.get(s.evidence_type, EVIDENCE_TYPE_RANK["Other"])
+        year_r = -(int(s.year) if s.year else 0)  # newer first
+        # retriever score: higher is better (convert to negative for sort)
+        retr = -(float(s.evidence_rank) if s.evidence_rank is not None else 0.0)
+
+        # Emergency topics: extra push for guideline/consensus
+        if emergency and s.evidence_type in {"Guideline", "Consensus"}:
+            type_r -= 2  # stronger priority
+            tier_r = 0
+
+        return (tier_r, type_r, year_r, retr)
+
+    return sorted(sources, key=score)
+
+
+def retrieve_with_quality_fusion(
+    question: str,
+    retrieve_fn: Callable[[str, int, Optional[Dict[str, Any]]], List[Dict[str, Any]]],
+    k_final: int = 40,
+    k_quality: int = 25,
+    k_general: int = 40,
+) -> Dict[str, Any]:
+    """
+    Main function: retrieves with two passes:
+      Pass 1: Quality-filtered (guideline/consensus/systematic/RCT)
+      Pass 2: General recall
+    Then merges, enriches, reranks, and computes deterministic ACI.
+    """
+    expansions = expand_query(question)
+
+    merged: Dict[str, Source] = {}
+
+    # Pass 1 — quality retrieval (try multiple expansions)
+    q_filters = build_quality_filters()
+    for q in expansions[:4]:
+        for r in retrieve_fn(q, k_quality, q_filters) or []:
+            s = enrich_sources([r])[0]
+            merged[_source_key(s)] = s
+
+    # Pass 2 — general retrieval (recall)
+    for q in expansions[:3]:
+        for r in retrieve_fn(q, k_general, None) or []:
+            s = enrich_sources([r])[0]
+            key = _source_key(s)
+            if key not in merged:
+                merged[key] = s
+
+    # Enforce: keep best K after rerank
+    fused = rerank_sources(question, list(merged.values()))[:k_final]
+
+    aci = compute_aci(question, fused)
+
+    return {
+        "sources": [asdict(s) for s in fused],
+        "aci": asdict(aci),
+        "meta": {
+            "retrieval_mode": "quality_fusion_v1",
+            "expansions_used": expansions[:5],
+            "retrieved_unique_sources": len(fused),
+            "generated_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+    }
+
+
+# -----------------------------
+# OPTIONAL: protocol follow-ups (v2-safe)
+# -----------------------------
+
+def protocol_followups(question: str) -> List[str]:
+    q = (question or "").lower()
+    if "hyaluronidase" in q and ("occlusion" in q or "ischemi" in q):
+        return [
+            "What repeat dosing interval is recommended (e.g., every 30–60 minutes) and when should dosing be escalated?",
+            "What clinical signs suggest worsening ischemia requiring urgent escalation or referral?",
+            "What adjunctive measures are recommended alongside hyaluronidase and what is the evidence strength for each?",
+            "If ocular symptoms occur, what immediate emergency steps and referral pathway are recommended?",
+            "How do recommendations differ for impending versus established occlusion?"
+        ]
+    return [
+        "What guideline or consensus statement provides the highest-quality recommendation on this topic?",
+        "What contraindications and safety monitoring should be considered?",
+        "Which patient factors change management and why?",
+        "What evidence gaps remain and what studies would most strengthen recommendations?"
+    ]
+
+
+# -----------------------------
+# POST-ANSWER PACKAGER (prevents LLM from inventing ACI)
+# -----------------------------
+
+def package_response(
+    answer_text: str,
+    retrieval_bundle: Dict[str, Any],
+) -> Dict[str, Any]:
+    sources = retrieval_bundle.get("sources", [])
+    aci = retrieval_bundle.get("aci", {})
+    meta = retrieval_bundle.get("meta", {})
+
+    return {
+        "answer": (answer_text or "").strip(),
+        "evidence_strength": {
+            "badge": aci.get("badge", "Moderate"),
+            "aci_score_0_to_10": aci.get("score_0_to_10", 0.0),
+            "components": aci.get("components", {}),
+            "rationale": aci.get("rationale", ""),
+        },
+        "sources_top": sources[:8],
+        "sources_all": sources,
+        "meta": meta,
+    }
+
+
+# -----------------------------
+# QUICK SELF-TEST (optional)
+# -----------------------------
+if __name__ == "__main__":
+    # Dummy retriever for local sanity test (replace with your own)
+    def dummy_retrieve(query: str, k: int, filters: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        _ = (query, k, filters)
+        return []
+
+    q = "What is the recommended hyaluronidase dose for vascular occlusion?"
+    bundle = retrieve_with_quality_fusion(q, dummy_retrieve)
+    print(bundle["meta"])
+    print(bundle["aci"])

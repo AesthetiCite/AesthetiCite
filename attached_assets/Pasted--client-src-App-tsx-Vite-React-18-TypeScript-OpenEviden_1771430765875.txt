@@ -1,0 +1,476 @@
+// client/src/App.tsx
+// Vite + React 18 + TypeScript
+// OpenEvidence-style conversation history sidebar + streaming chat + clickable sources ribbon
+//
+// Assumptions (per your setup):
+// - Auth helpers exist: client/src/lib/auth.ts exporting getToken()
+// - API base URL: set VITE_API_BASE (e.g. "https://your-backend") or leave "" for same-origin
+// - Backend endpoints (from your backend):
+//    GET  /conversations
+//    POST /conversations/new
+//    GET  /conversations/{id}/messages
+//    POST /ask/stream   (SSE)
+//
+// Drop-in: Replace your current App.tsx with this file.
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { getToken } from "./lib/auth";
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+type Conversation = {
+  id: string;
+  title?: string | null;
+  created_at?: string | null;
+  last_message?: string | null;
+};
+
+type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  created_at?: string | null;
+};
+
+type Source = {
+  sid: string;
+  title?: string | null;
+  year?: number | null;
+  doi?: string | null;
+  doi_url?: string | null;
+  pubmed_url?: string | null;
+  url?: string | null;
+  evidence_type?: string | null;
+  organization_or_journal?: string | null;
+  journal?: string | null;
+  document_type?: string | null;
+  domain?: string | null;
+};
+
+type SSEEvent =
+  | { event: "status"; data: { phase?: string; message?: string } }
+  | { event: "sources"; data: { sources: Source[]; ms?: number } }
+  | { event: "replace"; data: { channel?: string; message?: string } }
+  | { event: "token"; data: { t: string; channel?: string } }
+  | { event: "meta"; data: any }
+  | { event: "done"; data: any }
+  | { event: "error"; data: { message: string } };
+
+function fmtTitle(conv: Conversation): string {
+  const t = (conv.title ?? "").trim();
+  if (t) return t;
+  const lm = (conv.last_message ?? "").trim();
+  if (lm) return lm.slice(0, 48) + (lm.length > 48 ? "…" : "");
+  return "New conversation";
+}
+
+function fmtTime(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+function bestLink(s: Source): string | null {
+  return s.url || s.doi_url || s.pubmed_url || null;
+}
+
+async function api<T>(path: string, opts?: { method?: string; body?: any }): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: opts?.method ?? "GET",
+    headers,
+    body: opts?.body ? JSON.stringify(opts.body) : undefined,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * SSE over fetch() + ReadableStream parser.
+ * Returns a stop() function (AbortController).
+ */
+function ssePost(
+  path: string,
+  payload: any,
+  onEvent: (ev: SSEEvent) => void
+): () => void {
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const abort = new AbortController();
+
+  fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: abort.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buf = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        // SSE frames separated by \n\n
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+
+          let eventName = "message";
+          let dataStr = "";
+
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+          }
+          if (!dataStr) continue;
+
+          let data: any = dataStr;
+          try {
+            data = JSON.parse(dataStr);
+          } catch {
+            // keep as string
+          }
+
+          const ev = { event: eventName as any, data } as SSEEvent;
+          onEvent(ev);
+        }
+      }
+    })
+    .catch((e) => {
+      onEvent({ event: "error", data: { message: String(e?.message || e) } });
+    });
+
+  return () => abort.abort();
+}
+
+export default function App(): JSX.Element {
+  const [convos, setConvos] = useState<Conversation[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [sources, setSources] = useState<Source[]>([]);
+  const [statusLine, setStatusLine] = useState<string>("Ready");
+  const [input, setInput] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [err, setErr] = useState<string>("");
+
+  const stopStreamRef = useRef<null | (() => void)>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  const tokenPresent = useMemo(() => !!getToken(), []);
+
+  useEffect(() => {
+    if (!tokenPresent) {
+      setErr("Missing auth token. Please login first (token stored in localStorage).");
+      return;
+    }
+    void refreshConversations(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  async function refreshConversations(autoSelectFirst: boolean) {
+    try {
+      const data = await api<{ ok: boolean; conversations: Conversation[] }>("/conversations");
+      const list = data.conversations ?? [];
+      setConvos(list);
+      setErr("");
+
+      if (autoSelectFirst && !activeId && list.length) {
+        await openConversation(list[0].id);
+      }
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  }
+
+  async function openConversation(id: string) {
+    try {
+      stopStreamRef.current?.();
+      stopStreamRef.current = null;
+
+      setActiveId(id);
+      setLoading(false);
+      setStatusLine("Ready");
+      setSources([]);
+
+      const data = await api<{ ok: boolean; conversation_id: string; messages: Msg[] }>(
+        `/conversations/${id}/messages`
+      );
+
+      setMessages(
+        (data.messages ?? []).map((m) => ({
+          role: m.role,
+          content: m.content,
+          created_at: m.created_at,
+        }))
+      );
+      setErr("");
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  }
+
+  async function newConversation() {
+    try {
+      stopStreamRef.current?.();
+      stopStreamRef.current = null;
+
+      const data = await api<{ conversation_id: string }>("/conversations/new", { method: "POST" });
+      const cid = data.conversation_id;
+
+      setActiveId(cid);
+      setMessages([]);
+      setSources([]);
+      setStatusLine("Ready");
+      setInput("");
+      setLoading(false);
+
+      await refreshConversations(false);
+      setErr("");
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  }
+
+  function pushMessage(role: Msg["role"], content: string) {
+    setMessages((prev) => [...prev, { role, content, created_at: new Date().toISOString() }]);
+  }
+
+  function appendToLastAssistant(text: string) {
+    setMessages((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === "assistant") {
+          next[i] = { ...next[i], content: (next[i].content || "") + text };
+          return next;
+        }
+      }
+      next.push({ role: "assistant", content: text, created_at: new Date().toISOString() });
+      return next;
+    });
+  }
+
+  async function send() {
+    if (!activeId) {
+      setErr("Create or select a conversation first.");
+      return;
+    }
+    const q = input.trim();
+    if (!q) return;
+
+    setInput("");
+    setErr("");
+    setSources([]);
+    setStatusLine("Searching evidence…");
+    setLoading(true);
+
+    pushMessage("user", q);
+    pushMessage("assistant", "");
+
+    stopStreamRef.current?.();
+    stopStreamRef.current = ssePost(
+      "/ask/stream",
+      { q, conversation_id: activeId, k: 40 },
+      async (ev) => {
+        if (ev.event === "status") {
+          setStatusLine(ev.data?.message ?? "");
+        } else if (ev.event === "sources") {
+          setSources(ev.data?.sources ?? []);
+        } else if (ev.event === "replace") {
+          // Optional: clear assistant text when backend says "replace"
+          // We keep current content to preserve header+skeleton, unless you prefer hard replace.
+        } else if (ev.event === "token") {
+          appendToLastAssistant(ev.data?.t ?? "");
+        } else if (ev.event === "meta") {
+          setStatusLine(`Done • ${ev.data?.total_ms ?? ""} ms`);
+          setLoading(false);
+          stopStreamRef.current = null;
+          await refreshConversations(false);
+        } else if (ev.event === "done") {
+          setLoading(false);
+          stopStreamRef.current = null;
+          await refreshConversations(false);
+        } else if (ev.event === "error") {
+          setErr(ev.data?.message ?? "Stream error");
+          setLoading(false);
+          stopStreamRef.current = null;
+        }
+      }
+    );
+  }
+
+  // Small UX: filter/search in sidebar
+  const [filter, setFilter] = useState("");
+  const filteredConvos = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    if (!f) return convos;
+    return convos.filter((c) => (fmtTitle(c) + " " + (c.last_message ?? "")).toLowerCase().includes(f));
+  }, [convos, filter]);
+
+  return (
+    <div className="h-screen w-screen flex bg-slate-950 text-slate-100">
+      {/* Sidebar */}
+      <aside className="w-80 border-r border-slate-800 flex flex-col">
+        <div className="p-3 flex items-center justify-between gap-2 border-b border-slate-800">
+          <div className="font-semibold tracking-wide">AesthetiCite</div>
+          <button
+            onClick={newConversation}
+            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+          >
+            New
+          </button>
+        </div>
+
+        <div className="p-2 border-b border-slate-800">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Search history…"
+            className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 outline-none focus:border-slate-600 text-sm"
+          />
+        </div>
+
+        <div className="p-2 overflow-y-auto flex-1">
+          {filteredConvos.length === 0 ? (
+            <div className="text-sm text-slate-500 p-3">No conversations yet.</div>
+          ) : (
+            filteredConvos.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => openConversation(c.id)}
+                className={[
+                  "w-full text-left px-3 py-2 rounded-xl mb-1 transition",
+                  c.id === activeId ? "bg-slate-800" : "hover:bg-slate-900",
+                ].join(" ")}
+              >
+                <div className="text-sm font-medium truncate">{fmtTitle(c)}</div>
+                <div className="text-xs text-slate-400 flex justify-between gap-2">
+                  <span className="truncate">{(c.last_message ?? "").slice(0, 36)}</span>
+                  <span className="shrink-0">{fmtTime(c.created_at)}</span>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="p-2 border-t border-slate-800 text-xs text-slate-400">
+          {statusLine || "Ready"}
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 flex flex-col">
+        {/* Sources ribbon */}
+        <div className="border-b border-slate-800 p-2 text-xs text-slate-300 flex gap-2 overflow-x-auto">
+          {sources.length ? (
+            sources.slice(0, 14).map((s) => {
+              const link = bestLink(s);
+              const label = `${s.sid} • ${s.evidence_type ?? "Source"}${s.year ? ` • ${s.year}` : ""}`;
+              const title = `${s.title ?? ""}${s.year ? ` (${s.year})` : ""}\n${s.organization_or_journal ?? s.journal ?? ""}`;
+              return link ? (
+                <a
+                  key={s.sid}
+                  href={link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 whitespace-nowrap"
+                  title={title}
+                >
+                  {label}
+                </a>
+              ) : (
+                <span
+                  key={s.sid}
+                  className="px-2 py-1 rounded-lg bg-slate-900 whitespace-nowrap text-slate-500"
+                  title={title}
+                >
+                  {label}
+                </span>
+              );
+            })
+          ) : (
+            <span className="text-slate-500">Sources will appear here…</span>
+          )}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {!activeId ? (
+            <div className="text-slate-400 text-sm">
+              Create a new conversation to start.
+            </div>
+          ) : null}
+
+          {messages.map((m, idx) => (
+            <div key={idx} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+              <div
+                className={[
+                  "max-w-3xl rounded-2xl px-4 py-3 whitespace-pre-wrap leading-relaxed text-sm",
+                  m.role === "user"
+                    ? "bg-blue-600/25 border border-blue-500/25"
+                    : "bg-slate-900 border border-slate-800",
+                ].join(" ")}
+              >
+                {m.content}
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Composer */}
+        <div className="border-t border-slate-800 p-3 flex gap-2">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (!loading) void send();
+              }
+            }}
+            placeholder={activeId ? "Ask a clinical question…" : "Select a conversation…"}
+            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 outline-none focus:border-slate-600"
+            disabled={!activeId || loading}
+          />
+          <button
+            onClick={() => void send()}
+            disabled={!activeId || loading || !input.trim()}
+            className="px-4 py-2 rounded-xl bg-emerald-600/25 border border-emerald-500/25 hover:bg-emerald-600/35 disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
+
+        {err ? (
+          <div className="p-2 text-xs text-red-300 border-t border-slate-800 bg-red-950/30">
+            {err}
+          </div>
+        ) : null}
+      </main>
+    </div>
+  );
+}

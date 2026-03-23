@@ -1,0 +1,794 @@
+"""
+AesthetiCite — “Top 10 Improvements” single code patch
+======================================================
+This single file implements the 10 upgrades that move AesthetiCite to “better-than-OpenEvidence”
+*in aesthetic medicine*, by combining: procedure-aware reasoning, complication-first answers,
+claim-level evidence tagging, evidence freshness scoring, hallucination kill-switch, emergency mode,
+comparison tooling, risk-map guidance, documentation generator, and precomputation/caching.
+
+✅ What you get (the 10 improvements implemented)
+
+1) Procedure-aware context extraction (auto-detect: procedure, area, product, patient constraints)
+2) Complication-centric answer template (always includes red flags + rescue steps + escalation threshold)
+3) “What can go wrong next?” engine (predict next failure modes / complications)
+4) Claim-level evidence tagging (claims get evidence strength tags: High/Moderate/Low/Consensus)
+5) Evidence freshness scoring (age-weighted confidence; surfaces “freshness” in the UI payload)
+6) Hallucination kill-switch (hard refuse to speculate if high-stakes and weak sources)
+7) Emergency Mode endpoint (big-text, step-by-step, timers/checklists style payload)
+8) Treatment comparison tool (extended fields: diffusion, onset, duration, storage, medicolegal risk notes)
+9) Injection-zone risk map tool (text-first “never inject blindly” + planes/landmarks warnings)
+10) Predictive precompute + multi-layer caching (embedding cache, answer cache, “hot topics” precompute)
+
+How to run
+----------
+pip install fastapi uvicorn openai cachetools hnswlib
+
+export OPENAI_API_KEY="..."
+# Suggested:
+export OPENAI_MODEL="gpt-4.1-mini"
+export OPENAI_EMBED_MODEL="text-embedding-3-small"
+export EMBED_DIM="1536"
+
+uvicorn aestheticite_top10:app --host 0.0.0.0 --port 8000
+
+IMPORTANT
+---------
+- You must plug in retrieve_chunks() (your existing hybrid retrieval).
+- Optional: If you already have your own HNSW index & ingestion, wire it into retrieve_chunks().
+- This is clinical decision support: it returns conservative guidance + always encourages local protocol.
+
+Endpoints
+---------
+POST /qa
+POST /emergency
+POST /compare
+GET  /risk-map
+POST /handout
+POST /doc-note
+POST /precompute/hot
+"""
+
+from __future__ import annotations
+
+import os, re, json, time, hashlib, threading
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from cachetools import TTLCache
+
+from openai import OpenAI
+
+# ----------------------------
+# OpenAI wiring
+# ----------------------------
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+
+_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+def llm_text(system: str, user: str, temperature: float = 0.2) -> str:
+    resp = _client.responses.create(
+        model=OPENAI_MODEL,
+        input=[{"role":"system","content":system},{"role":"user","content":user}],
+        temperature=temperature,
+    )
+    if getattr(resp, "output_text", None):
+        return resp.output_text
+    # fallback
+    try:
+        parts = []
+        for item in (resp.output or []):
+            for c in (getattr(item, "content", None) or []):
+                t = getattr(c, "text", None)
+                if t: parts.append(t)
+        return "\n".join(parts).strip()
+    except Exception:
+        return str(resp)
+
+def llm_json(system: str, user: str, temperature: float = 0.0) -> dict:
+    # Strict JSON with repair fallback
+    txt = llm_text(system, user, temperature=temperature).strip()
+    # quick extract JSON object
+    m = re.search(r"\{.*\}", txt, re.S)
+    if m:
+        txt = m.group(0)
+    try:
+        return json.loads(txt)
+    except Exception:
+        # attempt minimal repair
+        txt2 = txt.replace("\n", " ").strip()
+        m2 = re.search(r"\{.*\}", txt2, re.S)
+        if m2:
+            return json.loads(m2.group(0))
+        raise
+
+def embed(text: str) -> List[float]:
+    text = (text or "").strip()
+    if not text:
+        return [0.0] * EMBED_DIM
+    emb = _client.embeddings.create(model=OPENAI_EMBED_MODEL, input=text)
+    vec = emb.data[0].embedding
+    if len(vec) != EMBED_DIM:
+        raise RuntimeError(f"Embedding dim mismatch: got {len(vec)} expected {EMBED_DIM}")
+    return vec
+
+# ----------------------------
+# YOU MUST PLUG THIS IN
+# ----------------------------
+def retrieve_chunks(query: str, filters: Optional[dict] = None) -> List[dict]:
+    """
+    Your hybrid retrieval must return list of chunks like:
+      {
+        "id": "doc#chunk",
+        "text": "...",
+        "title": "...",
+        "source_type": "pi|guideline|rct|review|textbook|other",
+        "year": 2023,
+        "doi": "...",
+        "url": "...",
+        "authors": [...]
+      }
+    """
+    raise NotImplementedError("Plug in retrieve_chunks(query, filters)")
+
+# ----------------------------
+# Caching / precompute (Improvement #10)
+# ----------------------------
+CACHE_TTL = int(os.getenv("CACHE_TTL_SECONDS", "172800"))  # 48h
+embed_cache = TTLCache(maxsize=50_000, ttl=CACHE_TTL)
+answer_cache = TTLCache(maxsize=25_000, ttl=CACHE_TTL)
+tool_cache = TTLCache(maxsize=25_000, ttl=CACHE_TTL)
+
+def _h(kind: str, obj: dict) -> str:
+    raw = kind + ":" + json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def embed_cached(text: str) -> List[float]:
+    k = _h("emb", {"t": text[:4000]})
+    v = embed_cache.get(k)
+    if v is not None:
+        return v
+    v = embed(text[:8000])
+    embed_cache[k] = v
+    return v
+
+# ----------------------------
+# Evidence & freshness engine (Improvements #4, #5, #14)
+# ----------------------------
+WEIGHTS = {"pi": 1.00, "guideline": 0.95, "rct": 0.80, "review": 0.55, "textbook": 0.45, "other": 0.35}
+CURRENT_YEAR = datetime.utcnow().year
+
+def extract_citations(chunks: List[dict], max_items: int = 8) -> List[dict]:
+    seen = set()
+    out = []
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title") or c.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+            "source_type": c.get("source_type"),
+        })
+        if len(out) >= max_items:
+            break
+    return out
+
+def evidence_freshness_score(chunks: List[dict]) -> dict:
+    """
+    Score = quality (by source type) * freshness penalty (older sources reduce confidence)
+    """
+    if not chunks:
+        return {"score": 0.10, "badge": "Low", "freshness": "unknown", "why": "No retrievable sources"}
+
+    seen = set()
+    best_q = 0.0
+    total_q = 0.0
+    years = []
+    type_counts: Dict[str, int] = {}
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title") or c.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        st = (c.get("source_type") or "other").lower().strip()
+        w = WEIGHTS.get(st, 0.30)
+        best_q = max(best_q, w)
+        total_q += w
+        type_counts[st] = type_counts.get(st, 0) + 1
+        y = c.get("year")
+        if isinstance(y, int) and 1900 < y <= CURRENT_YEAR:
+            years.append(y)
+
+    n = max(1, len(seen))
+    avg_q = total_q / n
+
+    # freshness penalty: median age
+    if years:
+        years_sorted = sorted(years)
+        med = years_sorted[len(years_sorted)//2]
+        age = max(0, CURRENT_YEAR - med)
+        # penalty: 0y=1.0, 5y≈0.85, 10y≈0.70, 15y≈0.55
+        freshness_mult = max(0.55, 1.0 - 0.03 * age)
+        freshness_label = f"median source year {med} (~{age}y old)"
+    else:
+        freshness_mult = 0.75
+        freshness_label = "unknown (years not provided)"
+
+    base = min(0.99, 0.55 * best_q + 0.45 * avg_q + 0.05 * min(1.0, n / 6.0))
+    score = max(0.10, min(0.99, base * freshness_mult))
+
+    if score >= 0.85:
+        badge = "High"
+    elif score >= 0.65:
+        badge = "Moderate"
+    else:
+        badge = "Low"
+
+    why = []
+    if type_counts.get("pi"): why.append("Prescribing information present")
+    if type_counts.get("guideline"): why.append("Guidelines present")
+    if not why: why.append("Mostly secondary literature")
+    why.append(freshness_label)
+
+    return {"score": round(score, 2), "badge": badge, "types": type_counts, "freshness": freshness_label, "why": "; ".join(why)}
+
+# ----------------------------
+# Procedure-aware parsing (Improvement #1)
+# ----------------------------
+def parse_context(query: str) -> dict:
+    key = _h("ctx", {"q": query})
+    cached = tool_cache.get(key)
+    if cached is not None:
+        return cached
+
+    system = (
+        "Extract structured clinical context from a query about aesthetic medicine.\n"
+        "Return STRICT JSON with fields:\n"
+        "procedure (string|null), area (string|null), product (string|null), intent (one of: dosing, protocol, comparison, complication, consent, general),\n"
+        "patient_constraints (array of strings), urgency (one of: routine, urgent, emergency),\n"
+        "high_stakes (boolean)\n"
+        "Rules: If unknown, use null or empty list."
+    )
+    user = f"Query: {query}"
+    data = llm_json(system, user, temperature=0.0)
+
+    # conservative defaults
+    data.setdefault("procedure", None)
+    data.setdefault("area", None)
+    data.setdefault("product", None)
+    data.setdefault("intent", "general")
+    data.setdefault("patient_constraints", [])
+    data.setdefault("urgency", "routine")
+    data.setdefault("high_stakes", False)
+
+    tool_cache[key] = data
+    return data
+
+# ----------------------------
+# Hallucination kill-switch (Improvement #6)
+# ----------------------------
+HIGH_STAKES_INTENTS = {"dosing", "protocol", "complication"}
+def should_kill_switch(ctx: dict, evidence: dict) -> bool:
+    # If high-stakes and evidence low, refuse to invent specifics
+    if ctx.get("high_stakes") or ctx.get("intent") in HIGH_STAKES_INTENTS or ctx.get("urgency") in ("urgent", "emergency"):
+        return evidence.get("badge") == "Low" and evidence.get("score", 0.0) < 0.60
+    return False
+
+# ----------------------------
+# Complication-first + “what next” engine (Improvements #2, #3, #8)
+# ----------------------------
+def build_answer(query: str, ctx: dict, chunks: List[dict], evidence: dict, compact: bool) -> str:
+    citations = extract_citations(chunks, max_items=8)
+    cite_lines = "\n".join([f"- {c.get('title','')} ({c.get('year','')}) [{c.get('source_type','')}] {c.get('doi') or c.get('url') or ''}".strip()
+                            for c in citations])
+
+    kill = should_kill_switch(ctx, evidence)
+    if kill:
+        return (
+            "Clinical Summary:\n"
+            "Insufficient high-quality evidence was retrieved to provide specific dosing/protocol-level guidance for this request.\n\n"
+            "Practical Steps:\n"
+            "• Use local institutional protocol / prescribing information for the exact product and indication.\n"
+            "• If this involves an acute complication or patient harm risk, escalate to senior clinician support and follow emergency pathways.\n\n"
+            "Safety / Red Flags:\n"
+            "If severe pain, skin color change, neurologic symptoms, visual symptoms, or rapid swelling occur, treat as urgent and follow emergency management protocols.\n"
+        )
+
+    system = (
+        "You are AesthetiCite, clinician-facing decision support for aesthetic medicine.\n"
+        "Write conservatively and be procedure-aware.\n"
+        "MANDATORY sections (in this order):\n"
+        "1) Clinical Summary (3–6 lines)\n"
+        "2) Practical Steps (bullets)\n"
+        "3) Complications & Red Flags (bullets; include escalation threshold)\n"
+        "4) What can go wrong next? (3–6 bullets)\n"
+        "5) Evidence Notes (brief; mention if PI/guidelines vs consensus)\n"
+        "Rules:\n"
+        "- Prefer PI/guidelines.\n"
+        "- If a detail is not supported, say 'insufficient evidence' rather than guessing.\n"
+        "- Avoid marketing tone.\n"
+        "- This is not a substitute for clinical judgement.\n"
+    )
+
+    user = (
+        f"Query: {query}\n\n"
+        f"Context JSON:\n{json.dumps(ctx, ensure_ascii=False)}\n\n"
+        f"Evidence badge: {evidence.get('badge')} (score={evidence.get('score')}, freshness={evidence.get('freshness')})\n\n"
+        f"Sources:\n{cite_lines}\n"
+    )
+
+    text = llm_text(system, user, temperature=0.2).strip()
+    if compact:
+        text = compact_text(text, 1900)
+    return text
+
+def compact_text(s: str, max_chars: int) -> str:
+    s = re.sub(r"\n{3,}", "\n\n", (s or "")).strip()
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars].rsplit(" ", 1)[0] + "…"
+
+# ----------------------------
+# Claim-level evidence tagging (Improvement #4)
+# ----------------------------
+def claim_level_tagging(answer_text: str, chunks: List[dict]) -> dict:
+    """
+    Returns a small list of claims with evidence_strength labels.
+    It does NOT try to fully verify; it provides structured “confidence cues” for UI.
+    """
+    key = _h("claims", {"a": answer_text[:2400], "n": len(chunks)})
+    cached = tool_cache.get(key)
+    if cached is not None:
+        return cached
+
+    # provide a short description of what source types exist
+    st = {}
+    for c in chunks:
+        t = (c.get("source_type") or "other").lower().strip()
+        st[t] = st.get(t, 0) + 1
+
+    system = (
+        "Extract up to 8 key clinical claims from the answer and label each with evidence_strength.\n"
+        "Return STRICT JSON:\n"
+        "{ \"claims\": [ {\"claim\":\"...\", \"evidence_strength\":\"High|Moderate|Low|Consensus\", \"why\":\"...\"} ] }\n"
+        "Rules:\n"
+        "- High: PI or guideline directly supports.\n"
+        "- Moderate: RCT supports or multiple high-quality sources indirectly support.\n"
+        "- Low: secondary or limited support.\n"
+        "- Consensus: expert practice without strong trials.\n"
+        "- If uncertain, choose lower strength.\n"
+    )
+    user = (
+        f"Answer:\n{answer_text}\n\n"
+        f"Available source-type counts: {json.dumps(st)}\n"
+    )
+    data = llm_json(system, user, temperature=0.0)
+    tool_cache[key] = data
+    return data
+
+# ----------------------------
+# Emergency Mode (Improvement #7)
+# ----------------------------
+EMERGENCY_KEYWORDS = ["vascular occlusion", "vision loss", "blindness", "necrosis", "anaphylaxis", "compartment", "airway", "stroke"]
+def emergency_payload(query: str, ctx: dict, chunks: List[dict], compact: bool) -> dict:
+    evidence = evidence_freshness_score(chunks)
+    citations = extract_citations(chunks, max_items=6)
+
+    system = (
+        "You are AesthetiCite Emergency Mode for aesthetic complications.\n"
+        "Return a step-by-step checklist with short lines suitable for a phone screen.\n"
+        "Return in plain text with sections:\n"
+        "IMMEDIATE ACTIONS\n"
+        "DO NOT DO\n"
+        "ESCALATE WHEN\n"
+        "DOCUMENTATION\n"
+        "Rules:\n"
+        "- Be conservative.\n"
+        "- If a detail is not supported, state 'follow local protocol / PI'.\n"
+        "- Avoid exact dosing if not supported by PI/guidelines in sources.\n"
+    )
+
+    cite_lines = "\n".join([f"- {c.get('title','')} ({c.get('year','')}) [{c.get('source_type','')}]".strip()
+                            for c in citations])
+
+    user = (
+        f"Emergency query: {query}\n"
+        f"Context JSON: {json.dumps(ctx, ensure_ascii=False)}\n\n"
+        f"Sources:\n{cite_lines}\n"
+    )
+    text = llm_text(system, user, temperature=0.1).strip()
+    if compact:
+        text = compact_text(text, 2200)
+
+    # simple UI-friendly extras
+    timers = []
+    if any(k in query.lower() for k in ["vascular occlusion", "vision", "blind"]):
+        timers = [
+            {"label": "Reassess symptoms", "minutes": 5},
+            {"label": "Consider escalation threshold check", "minutes": 10},
+        ]
+    return {"mode": "emergency", "checklist": text, "timers": timers, "evidence": evidence, "citations": citations}
+
+# ----------------------------
+# Comparison tool (Improvement #9)
+# ----------------------------
+class CompareRequest(BaseModel):
+    treatments: List[str] = Field(..., min_items=2, max_items=4)
+    context: Optional[str] = None
+    compact: bool = True
+
+def compare_tool(req: CompareRequest) -> dict:
+    key = _h("compare", req.model_dump())
+    cached = answer_cache.get(key)
+    if cached is not None:
+        return {**cached, "meta": {"cached": True}}
+
+    q = (
+        f"Compare {', '.join(req.treatments)} in aesthetic practice.\n"
+        "Include: typical indications, onset, duration, diffusion/spread, storage/handling, dosing equivalence if supported, contraindications, adverse events,\n"
+        "practical selection notes, and any medicolegal/documentation considerations."
+    )
+    if req.context:
+        q += f" Context: {req.context}"
+
+    chunks = retrieve_chunks(q, filters={"domain": "aesthetics"})
+    evidence = evidence_freshness_score(chunks)
+    citations = extract_citations(chunks, max_items=8)
+
+    system = (
+        "Return STRICT JSON for a side-by-side comparison.\n"
+        "Schema:\n"
+        "{"
+        "\"table\": {\"columns\": [\"Feature\", ...treatments], \"rows\": [[\"Feature\", \"...\", \"...\"], ...]},"
+        "\"summary\": \"short paragraph\","
+        "\"selection_tips\": [\"...\"],"
+        "\"limitations\": [\"... (insufficient evidence where applicable)\"]"
+        "}\n"
+        "Rules: never invent equivalence; if unsure, say 'insufficient evidence'. Prefer PI/guidelines.\n"
+    )
+    user = f"Treatments: {req.treatments}\nContext: {req.context or ''}\nEvidence badge: {evidence}\nCitations:\n" + "\n".join(
+        [f"- {c.get('title','')} ({c.get('year','')}) [{c.get('source_type','')}]".strip() for c in citations]
+    )
+    data = llm_json(system, user, temperature=0.0)
+
+    payload = {"comparison": data, "evidence": evidence, "citations": citations, "meta": {"cached": False}}
+    answer_cache[key] = payload
+    return payload
+
+# ----------------------------
+# Risk map tool (Improvement #10)
+# ----------------------------
+RISK_MAP = {
+    "high_risk_zones": [
+        {"zone": "Glabella / nasal root", "risk": "vascular compromise; severe ischemic complications", "note": "Use careful technique; avoid blind bolus."},
+        {"zone": "Nose (dorsum / tip)", "risk": "vascular compromise; skin necrosis risk", "note": "High-risk territory; consider minimal volumes and cautious planes."},
+        {"zone": "Nasolabial fold (superior)", "risk": "vascular branches; embolic risk", "note": "Prioritize anatomical knowledge; aspirate practice varies—follow local protocol."},
+        {"zone": "Periorbital / tear trough", "risk": "vascular + vision-threatening events", "note": "Treat as high-stakes; have emergency plan."},
+        {"zone": "Temple", "risk": "vascular injury; deep anatomy complexity", "note": "High expertise zone."},
+    ],
+    "principles": [
+        "High-risk areas demand strict technique, conservative volumes, and readiness to manage complications.",
+        "Use product-specific PI and institutional protocols; avoid unsupported dosing/technique claims.",
+        "For suspected acute complication (severe pain, blanching, livedo, visual symptoms), treat as emergency."
+    ],
+    "disclaimer": "Educational guidance only; follow product PI, local protocols, and qualified clinical judgement."
+}
+
+# ----------------------------
+# Patient handouts + consent-style outputs (Improvement #12)
+# ----------------------------
+class HandoutRequest(BaseModel):
+    topic: str
+    language: str = "en"
+    style: str = "patient_handout"  # "patient_handout" or "consent_summary"
+    compact: bool = True
+
+def handout_tool(req: HandoutRequest) -> dict:
+    key = _h("handout", req.model_dump())
+    cached = answer_cache.get(key)
+    if cached is not None:
+        return {**cached, "meta": {"cached": True}}
+
+    q = f"Patient education: {req.topic}"
+    chunks = retrieve_chunks(q, filters={"domain": "aesthetics"})
+    evidence = evidence_freshness_score(chunks)
+    citations = extract_citations(chunks, max_items=6)
+
+    system = (
+        "Write a patient-facing document.\n"
+        f"Language: {req.language}\n"
+        f"Style: {req.style}\n"
+        "Include: what it is, benefits, common side effects, rare serious risks, aftercare, when to call.\n"
+        "Avoid jargon and marketing.\n"
+        "If evidence is weak, keep conservative.\n"
+    )
+    user = f"Topic: {req.topic}\nEvidence badge: {evidence}\nCitations:\n" + "\n".join(
+        [f"- {c.get('title','')} ({c.get('year','')}) [{c.get('source_type','')}]".strip() for c in citations]
+    )
+    text = llm_text(system, user, temperature=0.2).strip()
+    if req.compact:
+        text = compact_text(text, 2200)
+
+    payload = {"handout": text, "style": req.style, "evidence": evidence, "citations": citations, "meta": {"cached": False}}
+    answer_cache[key] = payload
+    return payload
+
+# ----------------------------
+# Documentation generator (Improvement #13)
+# ----------------------------
+class DocNoteRequest(BaseModel):
+    procedure: str
+    area: str
+    product: Optional[str] = None
+    indications: Optional[str] = None
+    consent_obtained: bool = True
+    complications: Optional[str] = None
+    compact: bool = True
+
+def doc_note_tool(req: DocNoteRequest) -> dict:
+    key = _h("docnote", req.model_dump())
+    cached = answer_cache.get(key)
+    if cached is not None:
+        return {**cached, "meta": {"cached": True}}
+
+    system = (
+        "Generate a clinic documentation note template for aesthetic medicine.\n"
+        "Return plain text with:\n"
+        "CHIEF CONCERN / INDICATION\n"
+        "COUNSELING & CONSENT\n"
+        "PROCEDURE DETAILS\n"
+        "POST-PROCEDURE INSTRUCTIONS\n"
+        "COMPLICATIONS / FOLLOW-UP\n"
+        "Tone: neutral, factual, medico-legal friendly. Do not invent specifics.\n"
+    )
+    user = json.dumps(req.model_dump(), ensure_ascii=False)
+    text = llm_text(system, user, temperature=0.2).strip()
+    if req.compact:
+        text = compact_text(text, 2400)
+
+    payload = {"note": text, "meta": {"cached": False}}
+    answer_cache[key] = payload
+    return payload
+
+# ----------------------------
+# Predictive precompute (Improvement #10)
+# ----------------------------
+HOT_TOPICS_DEFAULT = [
+    "Hyaluronic acid vascular occlusion management",
+    "Botulinum toxin dosing glabella practical protocol",
+    "Tear trough filler complication management",
+    "Local anesthetic maximum safe dosing in office procedures",
+    "Post-filler delayed nodule evaluation and management"
+]
+
+class PrecomputeRequest(BaseModel):
+    topics: List[str] = Field(default_factory=list)
+
+_precompute_lock = threading.Lock()
+
+def precompute_hot(topics: List[str]) -> dict:
+    """
+    Warms caches for clinic “instant feel”.
+    """
+    topics = topics or HOT_TOPICS_DEFAULT
+    done = []
+    failed = []
+    with _precompute_lock:
+        for t in topics:
+            try:
+                # warm context + embedding cache + answer cache
+                ctx = parse_context(t)
+                chunks = retrieve_chunks(t, filters={"domain": "aesthetics"})
+                ev = evidence_freshness_score(chunks)
+                ans = build_answer(t, ctx, chunks, ev, compact=True)
+                claims = claim_level_tagging(ans, chunks)
+                payload = {
+                    "answer": ans,
+                    "context": ctx,
+                    "evidence": ev,
+                    "claims": claims.get("claims", []),
+                    "citations": extract_citations(chunks),
+                    "meta": {"precomputed": True}
+                }
+                answer_cache[_h("qa", {"q": t, "compact": True})] = payload
+                done.append(t)
+            except Exception as e:
+                failed.append({"topic": t, "error": str(e)})
+    return {"ok": True, "done": done, "failed": failed}
+
+# ----------------------------
+# QA endpoint (ties everything together)
+# ----------------------------
+class QARequest(BaseModel):
+    query: str
+    filters: Optional[dict] = None
+    compact: bool = True
+    include_claim_tags: bool = True
+    include_progressive_disclosure: bool = True  # Improvement #17 (UX)
+    force_emergency: bool = False
+
+def is_emergency(query: str, ctx: dict) -> bool:
+    q = query.lower()
+    if ctx.get("urgency") == "emergency":
+        return True
+    return any(k in q for k in EMERGENCY_KEYWORDS)
+
+def qa(req: QARequest) -> dict:
+    cache_key = _h("qa", {"q": req.query, "f": req.filters or {}, "compact": req.compact, "claims": req.include_claim_tags})
+    cached = answer_cache.get(cache_key)
+    if cached is not None:
+        return {**cached, "meta": {**cached.get("meta", {}), "cached": True}}
+
+    ctx = parse_context(req.query)
+
+    # Emergency path
+    chunks = retrieve_chunks(req.query, filters=req.filters or {"domain": "aesthetics"})
+    if req.force_emergency or is_emergency(req.query, ctx):
+        payload = emergency_payload(req.query, ctx, chunks, compact=req.compact)
+        answer_cache[cache_key] = payload
+        return payload
+
+    evidence = evidence_freshness_score(chunks)
+    answer_text = build_answer(req.query, ctx, chunks, evidence, compact=req.compact)
+    claims = claim_level_tagging(answer_text, chunks) if req.include_claim_tags else {"claims": []}
+    citations = extract_citations(chunks, max_items=8)
+
+    # Progressive disclosure (UI calm): summary + details separated
+    if req.include_progressive_disclosure:
+        # naive split; your frontend can render accordions
+        sections = split_sections(answer_text)
+    else:
+        sections = None
+
+    payload = {
+        "answer": answer_text,
+        "sections": sections,
+        "context": ctx,
+        "evidence": evidence,
+        "claim_tags": claims.get("claims", []),
+        "citations": citations,
+        "meta": {"cached": False, "model": OPENAI_MODEL}
+    }
+    answer_cache[cache_key] = payload
+    return payload
+
+def split_sections(text: str) -> dict:
+    # Best effort: detect section headings used by build_answer()
+    headings = ["Clinical Summary", "Practical Steps", "Complications & Red Flags", "What can go wrong next?", "Evidence Notes"]
+    out = {}
+    current = None
+    buf = []
+    for line in text.splitlines():
+        line_stripped = line.strip().rstrip(":")
+        if line_stripped in headings:
+            if current:
+                out[current] = "\n".join(buf).strip()
+            current = line_stripped
+            buf = []
+        else:
+            buf.append(line)
+    if current:
+        out[current] = "\n".join(buf).strip()
+    if not out:
+        out["Answer"] = text.strip()
+    return out
+
+# ----------------------------
+# FastAPI app
+# ----------------------------
+app = FastAPI(title="AesthetiCite Top 10 Upgrades", version="1.0")
+
+@app.get("/health")
+def health():
+    return {"ok": True, "app": "AesthetiCite", "time": datetime.utcnow().isoformat() + "Z"}
+
+@app.post("/qa")
+def qa_endpoint(req: QARequest):
+    try:
+        return qa(req)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"QA error: {e}")
+
+@app.post("/emergency")
+def emergency_endpoint(req: QARequest):
+    try:
+        # Force emergency mode
+        req.force_emergency = True
+        return qa(req)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Emergency error: {e}")
+
+@app.post("/compare")
+def compare_endpoint(req: CompareRequest):
+    try:
+        return compare_tool(req)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Compare error: {e}")
+
+@app.get("/risk-map")
+def risk_map():
+    return {"ok": True, "risk_map": RISK_MAP}
+
+@app.post("/handout")
+def handout_endpoint(req: HandoutRequest):
+    try:
+        return handout_tool(req)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Handout error: {e}")
+
+@app.post("/doc-note")
+def doc_note_endpoint(req: DocNoteRequest):
+    try:
+        return doc_note_tool(req)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Doc note error: {e}")
+
+@app.post("/precompute/hot")
+def precompute_endpoint(req: PrecomputeRequest):
+    try:
+        return precompute_hot(req.topics)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Precompute error: {e}")
+
+"""
+Quick curl tests:
+
+# QA (routine)
+curl -s http://localhost:8000/qa -H "Content-Type: application/json" -d '{
+  "query":"Protocol for botulinum toxin in glabellar lines for a patient with mild ptosis risk",
+  "compact": true
+}' | jq .
+
+# Emergency Mode
+curl -s http://localhost:8000/emergency -H "Content-Type: application/json" -d '{
+  "query":"Suspected vascular occlusion after filler — severe pain and blanching",
+  "compact": true
+}' | jq .
+
+# Compare
+curl -s http://localhost:8000/compare -H "Content-Type: application/json" -d '{
+  "treatments":["Botox","Dysport","Xeomin"],
+  "context":"glabellar lines",
+  "compact": true
+}' | jq .
+
+# Risk map
+curl -s http://localhost:8000/risk-map | jq .
+
+# Handout
+curl -s http://localhost:8000/handout -H "Content-Type: application/json" -d '{
+  "topic":"Dermal filler for nasolabial folds",
+  "language":"en",
+  "style":"patient_handout",
+  "compact": true
+}' | jq .
+
+# Doc note
+curl -s http://localhost:8000/doc-note -H "Content-Type: application/json" -d '{
+  "procedure":"Dermal filler",
+  "area":"nasolabial folds",
+  "product":"Hyaluronic acid filler",
+  "indications":"volume correction",
+  "consent_obtained": true
+}' | jq -r .note
+
+# Precompute hot topics
+curl -s http://localhost:8000/precompute/hot -H "Content-Type: application/json" -d '{}' | jq .
+"""

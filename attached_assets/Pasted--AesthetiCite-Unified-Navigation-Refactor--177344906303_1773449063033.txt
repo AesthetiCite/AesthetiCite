@@ -1,0 +1,302 @@
+/**
+ * AesthetiCite — Unified Navigation Refactor
+ * ==========================================
+ *
+ * GOAL
+ * ----
+ * Make /safety-workspace the single clinic-facing safety surface.
+ *
+ * PRODUCT RECOMMENDATION
+ * ----------------------
+ * Keep only one main safety destination in navigation:
+ *   /safety-workspace
+ *
+ * Remove fragmented navigation entries for:
+ *   /safety-check
+ *   /session-report
+ *
+ * Keep these as separate supporting tools:
+ *   /drug-interactions
+ *   /patient-export
+ *   /visual-counsel
+ *   /clinic-dashboard
+ *   /api-keys
+ *   /bookmarks
+ *   /paper-alerts
+ *
+ * WHY
+ * ---
+ * This matches the AesthetiCite direction:
+ * - Pre-Procedure Safety UI and Session Safety Report should feel like one workflow
+ * - clinicians should enter one safety environment, not multiple fragmented pages
+ * - better for demos, cleaner for enterprise positioning, clearer for clinics
+ *
+ * WHAT TO REPLACE
+ * ---------------
+ * 1. Desktop top nav: replace the old /safety-check button with /safety-workspace
+ * 2. Mobile sheet nav: remove /safety-check and /session-report links
+ * 3. Desktop “More” dropdown: remove /session-report entry
+ * 4. Add redirects so old links still work:
+ *      /safety-check -> /safety-workspace
+ *      /session-report -> /safety-workspace
+ *
+ * HOW TO USE
+ * ----------
+ * Replace the matching sections in your navigation component with the blocks below.
+ * Then add the redirect routes at the bottom of your route file.
+ */
+
+
+/* ============================================================================
+   1) DESKTOP TOP NAV
+   REPLACE the old Safety button block with this
+   ============================================================================ */
+
+<Link href="/ask-oe">
+  <Button
+    variant="ghost"
+    size="sm"
+    className="hidden md:flex items-center gap-1.5 text-xs h-8"
+    data-testid="button-ask-oe"
+    title="Structured Evidence View"
+  >
+    <FileText className="w-3.5 h-3.5" />
+    <span>Evidence</span>
+  </Button>
+</Link>
+
+<Link href="/hardest-10">
+  <Button
+    variant="ghost"
+    size="sm"
+    className="hidden md:flex items-center gap-1.5 text-xs h-8"
+    data-testid="button-hardest10"
+    title="10 Hardest Questions vs General AI"
+  >
+    <BarChart3 className="w-3.5 h-3.5" />
+    <span>Challenge</span>
+  </Button>
+</Link>
+
+<Link href="/safety-workspace">
+  <Button
+    variant="ghost"
+    size="sm"
+    className="hidden md:flex items-center gap-1.5 text-xs h-8"
+    data-testid="button-safety-workspace"
+    title="Safety Workspace — Pre-Procedure Safety + Session Safety Report"
+  >
+    <ShieldAlert className="w-3.5 h-3.5" />
+    <span>Safety</span>
+  </Button>
+</Link>
+
+<Link href="/visual-counsel">
+  <Button
+    variant="ghost"
+    size="sm"
+    className="hidden md:flex items-center gap-1.5 text-xs h-8"
+    data-testid="button-visual-counsel"
+    title="Visual Counseling"
+  >
+    <Eye className="w-3.5 h-3.5" />
+    <span>Visuals</span>
+  </Button>
+</Link>
+
+<Button
+  variant="ghost"
+  size="sm"
+  className="hidden sm:flex items-center gap-1.5 text-xs h-8"
+  onClick={() => setShowClinicalTools(true)}
+  data-testid="button-clinical-tools-header"
+  title="Clinical Tools — BMI, BSA, eGFR, Unit Converter"
+>
+  <Calculator className="w-3.5 h-3.5" />
+  <span>Tools</span>
+</Button>
+
+
+/* ============================================================================
+   2) MOBILE SHEET NAV
+   REPLACE the whole “Safety & Tools” section with this
+   ============================================================================ */
+
+<div>
+  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+    Safety & Tools
+  </p>
+
+  <div className="space-y-1">
+    <Link
+      href="/safety-workspace"
+      className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"
+    >
+      <ShieldAlert className="h-4 w-4" />
+      Safety Workspace
+    </Link>
+
+    <Link
+      href="/drug-interactions"
+      className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"
+    >
+      <Pill className="h-4 w-4" />
+      Drug Interactions
+    </Link>
+
+    <Link
+      href="/patient-export"
+      className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"
+    >
+      <FileUser className="h-4 w-4" />
+      Patient Export
+    </Link>
+
+    <Link
+      href="/visual-counsel"
+      className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"
+    >
+      <Eye className="h-4 w-4" />
+      Visual Counseling
+    </Link>
+  </div>
+</div>
+
+
+/* ============================================================================
+   3) DESKTOP “MORE” DROPDOWN
+   REPLACE the whole DropdownMenuContent block with this
+   ============================================================================ */
+
+<DropdownMenuContent align="end" className="w-56">
+  <DropdownMenuLabel>Clinical</DropdownMenuLabel>
+
+  <DropdownMenuItem asChild>
+    <Link href="/safety-workspace" className="flex items-center gap-2 cursor-pointer">
+      <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+      Safety Workspace
+    </Link>
+  </DropdownMenuItem>
+
+  <DropdownMenuItem asChild>
+    <Link href="/drug-interactions" className="flex items-center gap-2 cursor-pointer">
+      <Pill className="h-4 w-4 text-muted-foreground" />
+      Drug Interaction Checker
+    </Link>
+  </DropdownMenuItem>
+
+  <DropdownMenuItem asChild>
+    <Link href="/patient-export" className="flex items-center gap-2 cursor-pointer">
+      <FileUser className="h-4 w-4 text-muted-foreground" />
+      Patient-Readable Export
+    </Link>
+  </DropdownMenuItem>
+
+  <DropdownMenuSeparator />
+
+  <DropdownMenuLabel>My Account</DropdownMenuLabel>
+
+  <DropdownMenuItem asChild>
+    <Link href="/bookmarks" className="flex items-center gap-2 cursor-pointer">
+      <Bookmark className="h-4 w-4 text-muted-foreground" />
+      Saved Answers
+    </Link>
+  </DropdownMenuItem>
+
+  <DropdownMenuItem asChild>
+    <Link href="/paper-alerts" className="flex items-center gap-2 cursor-pointer">
+      <Bell className="h-4 w-4 text-muted-foreground" />
+      Paper Alerts
+    </Link>
+  </DropdownMenuItem>
+
+  <DropdownMenuSeparator />
+
+  <DropdownMenuLabel>Clinic</DropdownMenuLabel>
+
+  <DropdownMenuItem asChild>
+    <Link href="/clinic-dashboard" className="flex items-center gap-2 cursor-pointer">
+      <LayoutDashboard className="h-4 w-4 text-muted-foreground" />
+      Clinic Dashboard
+    </Link>
+  </DropdownMenuItem>
+
+  <DropdownMenuItem asChild>
+    <Link href="/api-keys" className="flex items-center gap-2 cursor-pointer">
+      <Key className="h-4 w-4 text-muted-foreground" />
+      API Keys
+    </Link>
+  </DropdownMenuItem>
+</DropdownMenuContent>
+
+
+/* ============================================================================
+   4) ROUTE REDIRECTS
+   ADD these to your router file so old pages still work
+   ============================================================================ */
+
+/**
+ * If you are using react-router:
+ *
+ * import { Navigate, Route } from "react-router-dom";
+ *
+ * Then add:
+ */
+
+<Route path="/safety-check" element={<Navigate to="/safety-workspace" replace />} />
+<Route path="/session-report" element={<Navigate to="/safety-workspace" replace />} />
+
+/**
+ * If you are using a ProtectedRoute wrapper, use:
+ *
+ * <Route path="/safety-check" element={<Navigate to="/safety-workspace" replace />} />
+ * <Route path="/session-report" element={<Navigate to="/safety-workspace" replace />} />
+ *
+ * or if your route structure wraps protected pages differently,
+ * keep the same route structure and return Navigate inside it.
+ */
+
+
+/* ============================================================================
+   5) OPTIONAL LABEL IMPROVEMENT
+   RECOMMENDED wording inside Safety Workspace page
+   ============================================================================ */
+
+/**
+ * Use these labels consistently in the UI:
+ *
+ * "AesthetiCite Pre-Procedure Safety Check"
+ * "Session Safety Report"
+ * "Top Complication Risks"
+ * "Danger Zones"
+ * "Mitigation Steps"
+ * "Clinical Evidence"
+ * "Drug Interaction Checker"
+ *
+ * Avoid generic wording like:
+ * "AI answer"
+ * "chat result"
+ * "search response"
+ */
+
+
+/* ============================================================================
+   6) FINAL RECOMMENDATION
+   ============================================================================ */
+
+/**
+ * Keep only one main safety destination in navigation:
+ *   /safety-workspace
+ *
+ * That page should become the unified entry point for:
+ * - Pre-Procedure Safety UI
+ * - Session Safety Report
+ *
+ * Keep other routes as supporting tools, not competing safety hubs.
+ *
+ * Best navigation logic:
+ * - Header safety button -> /safety-workspace
+ * - Mobile safety section -> /safety-workspace first
+ * - Dropdown clinical section -> /safety-workspace first
+ * - Legacy safety pages -> redirect into /safety-workspace
+ */

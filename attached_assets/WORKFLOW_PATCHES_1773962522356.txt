@@ -1,0 +1,177 @@
+================================================================================
+WORKFLOW ENGINE — INTEGRATION PATCHES
+================================================================================
+
+================================================================================
+PATCH 1 — app/main.py
+================================================================================
+
+ADD import:
+
+    from app.api.workflow_engine import router as workflow_router
+
+ADD router registration:
+
+    app.include_router(workflow_router)
+
+Registers:
+  GET /api/workflow?complication=vascular_occlusion  — full workflow
+  GET /api/workflow/list                             — all workflows with metadata
+
+
+================================================================================
+PATCH 2 — server/routes.ts
+================================================================================
+
+ADD inside registerRoutes():
+
+    // ── Workflow Engine ───────────────────────────────────────────────────
+    app.get("/api/workflow/list",   (req, res) => proxyToFastAPI(req, res, "/api/workflow/list"));
+    app.get("/api/workflow",        (req, res) => proxyToFastAPI(req, res, "/api/workflow"));
+
+Note: /list must come BEFORE the bare /workflow route.
+
+
+================================================================================
+PATCH 3 — client/src/App.tsx
+================================================================================
+
+ADD import:
+
+    import WorkflowPage from "@/pages/workflow";
+
+ADD route inside <Switch>:
+
+    <Route path="/workflow">
+      {() => <ProtectedRoute component={WorkflowPage} />}
+    </Route>
+
+Navigation: Link to workflow from the complication decision page with
+  href={`/workflow?complication=${encodeURIComponent(workflow_key)}`}
+
+
+================================================================================
+PATCH 4 — client/src/pages/complication-decision.tsx
+================================================================================
+
+ADD import:
+
+    import { WorkflowRunner } from "@/pages/workflow";
+
+FIND the existing "Immediate Actions" Section (Section 2 — the tap-to-complete
+step list with `WorkflowStep` cards).
+
+REPLACE the entire Section 2 block with WorkflowRunner:
+
+    {/* SECTION 2 — WORKFLOW (replaces manual step list) */}
+    {result && (
+      <WorkflowRunner
+        complication={result.workflow_key?.replace(/_/g, " ") ?? selected ?? customQuery}
+        procedure={undefined}
+        region={undefined}
+        className="mt-0"
+      />
+    )}
+
+The WorkflowRunner fetches from /api/workflow independently — it does NOT
+use result.workflow from /api/decide. This means:
+  - /api/decide returns fast (workflow from in-memory WORKFLOWS dict)
+  - /api/workflow returns the FULL workflow with timers, branches, dose blocks
+  - Both resolve in < 5ms (both in-memory)
+
+The WorkflowRunner replaces the previous manual WorkflowStep components
+and the completedSteps/progressPct state — those can be removed.
+
+
+================================================================================
+PATCH 5 — Add "Run Workflow" button to existing protocol lookup in ask.tsx
+================================================================================
+
+After any complication answer, add a button that opens the workflow:
+
+    {aciMeta?.query_meta?.is_complication && (
+      <Link href={`/workflow?complication=${encodeURIComponent(
+        aciMeta.query_meta.complication_type ?? ""
+      )}`}>
+        <Button size="sm" variant="default" className="gap-1.5 mt-3">
+          <Shield className="h-3.5 w-3.5" />
+          Run Protocol
+        </Button>
+      </Link>
+    )}
+
+This gives clinicians a path: evidence answer → one click → live workflow.
+
+
+================================================================================
+WHY THIS IS THE SECRET WEAPON
+================================================================================
+
+Every other evidence platform gives clinicians text.
+Text requires reading, parsing, and executing — three cognitive steps.
+
+In a vascular occlusion emergency:
+  - The clinician has a patient with blanching in front of them
+  - They have 60 minutes
+  - They cannot read paragraphs
+
+The WorkflowRunner gives them:
+  Step 1: STOP injection immediately         [CRITICAL] [tap to complete]
+  Step 2: Check for visual symptoms          [CRITICAL] [tap if clear]
+  Step 3: Inject hyaluronidase 1500 IU NOW   [CRITICAL] [drug + dose shown]
+  Step 4: Give aspirin 300 mg                [CRITICAL] [drug + dose shown]
+  Step 5: Apply warm compress                [tap to complete]
+  Step 6: Apply nitroglycerin paste          [drug + dose shown]
+  Step 7: Monitor capillary refill every 5m  [⏱ 5-min timer auto-starts]
+  Step 8: No improvement at 60 min? Repeat   [⏱ 60-min escalation timer]
+  Step 9: Document everything
+
+The 5-minute timer in Step 7 starts automatically when the step is reached.
+At 0:00 it turns red. The 60-minute timer in Step 8 counts down in the background.
+
+The branch logic in Step 2 shows a red banner:
+  ⚠ IF: Any visual symptom present
+  → STOP this protocol. Call 999 immediately.
+
+The clinician cannot miss this. It is not buried in text.
+
+Focus Mode (top-right button) shows ONE step filling the entire screen.
+Large font. One action. Impossible to misread.
+
+
+================================================================================
+WHAT DISTINGUISHES THIS FROM THE EXISTING WORKFLOW IN clinical_decision.py
+================================================================================
+
+BEFORE (clinical_decision.py WORKFLOWS dict):
+  - Steps are plain strings: "Stop injection", "Massage area"
+  - No timers
+  - No drug/dose blocks
+  - No branch logic
+  - No step types
+  - Rendered as a list in the UI with basic tap-to-complete
+  - Served from /api/decide as part of a larger response
+
+AFTER (workflow_engine.py):
+  - 8 complete protocols with 4–9 steps each
+  - Every step has: type, priority, action, detail, timer_seconds, drug, dose, branch, checkpoint
+  - Standalone GET /api/workflow?complication= endpoint
+  - WorkflowRunner UI with timers, branches, focus mode, completion screen
+  - "Log This Case" CTA at completion
+  - Dark clinical UI (not white card stack)
+
+
+================================================================================
+FILES CREATED
+================================================================================
+
+  app/api/workflow_engine.py       — Canonical workflow API (8 protocols)
+  client/src/pages/workflow.tsx    — WorkflowRunner component + standalone page
+
+FILES PATCHED (additions only):
+  app/main.py               — register workflow_router
+  server/routes.ts          — 2 proxy routes
+  client/src/App.tsx        — /workflow route
+  client/src/pages/complication-decision.tsx — replace step list with WorkflowRunner
+  client/src/pages/ask.tsx — "Run Protocol" button after complication answers
+================================================================================

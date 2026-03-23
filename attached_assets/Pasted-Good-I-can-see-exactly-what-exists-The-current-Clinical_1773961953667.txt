@@ -1,0 +1,16 @@
+Good — I can see exactly what exists. The current ClinicalToolsPanel handles BMI/BSA/eGFR. The hyaluronidase_helper is just a note block, not a real calculator. The ToolsPage at /tools exists but its content isn't in the codebase bundle. Building the full Epocrates-grade tools page now — one file, all tools, proper /tools route.Created a file, read a fileCreated a file, read a fileOne file — the complete /tools page. Here's the integration patch and why this builds daily habit:
+To wire it in — in App.tsx, the /tools route already exists pointing to ToolsPage. Just replace the import:
+tsx// REPLACE:
+import ToolsPage from "@/pages/tools";
+// WITH:
+import ToolsPage from "@/pages/tools-epocrates";
+No route change, no nav change needed. The "Tools" button in the header already links to /tools.
+
+What makes Epocrates a daily habit — and how this matches it
+Epocrates has three properties that drive daily opens: instant results (no network call, everything is local), high specificity (not "consult your training" but actual numbers), and contextual precision (region matters, indication matters, product matters).
+The existing AesthetiCite hyaluronidase calculator was area × severity × 50 — a flat formula with no anatomical awareness. A clinician treating the tear trough (150 IU baseline, thin skin, high risk) gets the same number as one treating the masseter (600 IU, flood technique). That's wrong and not useful.
+Tab 1 — Hyaluronidase is the biggest improvement. Every region has its own base dose, needle gauge, injection plane, specific technique notes, and a high-risk flag for vascular danger zones. Vascular occlusion severity overrides to minimum 1500 IU regardless of region. Volume-adjusted dosing (if 1.5ml was injected → minimum 450 IU) is calculated automatically. The output is copy-ready in one tap.
+Tab 2 — Toxin Dilution builds a live concentration table showing exactly how many units are in every common volume increment (0.025ml → 0.5ml). This is what every injector calculates manually before every session. Done in one view.
+Tab 3 — Toxin Dosing is the Epocrates drug dosing lookup equivalent. Every major region, both Botox and Dysport doses, anatomy warnings ("avoid < 1cm above brow"), and common adverse effects per region. Filterable. Copy per row. This alone is a daily reference.
+Tab 4 — Protocol Lookup requires zero network call, zero LLM. The 6 core protocols are embedded in the component. A clinician with a vascular occlusion doesn't have time to wait for a streaming answer — they tap "Vascular Occlusion" and see the numbered steps immediately, with the key drug highlighted and escalation criteria at the bottom. Bridge to full /decide workflow.
+Tab 5 — Product Reference is the first version of the filler database. 8 products with HA/non-HA status, crosslink level, duration, viscosity, indication, and specific risk note. The non-HA flag matters clinically — Sculptra and Radiesse cannot be dissolved.

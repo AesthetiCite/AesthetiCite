@@ -1,0 +1,341 @@
+Below is a copy-paste instruction set you can give to the Replit AI Agent. It’s written like a technical spec + task list so the agent produces a working pipeline (not a vague design).
+
+Instructions to Replit AI Agent: PubMed harvesting pipeline + 1M keyword strategy + compliant phrasing
+Role & Goal
+
+You are my Replit AI Agent. Design and implement an exact ingestion pipeline that can:
+
+Harvest ~1,000,000 biomedical publications as metadata + abstracts from PubMed, with incremental updates, deduplication, and filtering.
+
+Optionally harvest open-access full text from PubMed Central (OA subset only).
+
+Output data in a format optimized for retrieval (vector + keyword) for AesthetiCite.
+
+Deliverables must include:
+
+A working repo with scripts, tests, a small CLI, and a minimal config system.
+
+A clear README with commands and operational notes.
+
+A legal/compliance note describing what is harvested and what is not.
+
+Part A — Build the “Exact PubMed Harvesting Pipeline”
+Requirements
+
+Implement a 3-stage pipeline:
+
+Stage 1: Query planning (build the corpus definition)
+
+Input: a “corpus plan” YAML file containing:
+
+query groups (keywords, MeSH terms, journal filters, date windows)
+
+inclusion/exclusion rules
+
+target size per group (to reach ~1M total)
+
+Output: a list of PubMed IDs (PMIDs) to fetch.
+
+Stage 2: Retrieval (metadata + abstracts)
+
+Use NCBI E-utilities endpoints:
+
+esearch → PMIDs
+
+efetch/esummary → metadata
+
+Store:
+
+PMID, title, abstract, authors, journal, year, publication types, MeSH terms, DOI (if present), language, and links.
+
+Stage 3: Normalization + Storage
+
+Normalize into consistent JSON schema and persist into a database.
+
+Database choices:
+
+Postgres (preferred) OR SQLite for MVP.
+
+Include an “ingestion state” table so the pipeline can be resumed safely.
+
+Non-negotiable engineering rules
+
+Incremental ingestion: never re-download everything. Support:
+
+full backfill (first run)
+
+incremental “last N days” updates
+
+Dedup:
+
+Deduplicate by PMID.
+
+If DOI appears, store it and keep a DOI index.
+
+Robustness:
+
+Retry with exponential backoff for transient failures.
+
+Checkpoint progress every N records.
+
+Log counts and failures.
+
+Throttling:
+
+Implement a request throttle and respect NCBI usage guidance (configurable QPS; default conservative).
+
+Cost control:
+
+Save raw API responses (optional) but compress them (gzip) if enabled.
+
+Data model (define these tables/collections)
+
+Implement at minimum:
+
+Table: publications
+
+pmid (PK)
+
+title
+
+abstract
+
+journal
+
+year
+
+doi
+
+publication_types (array)
+
+mesh_terms (array)
+
+authors (array)
+
+language
+
+created_at, updated_at
+
+source = "pubmed"
+
+Table: ingestion_runs
+
+run_id (PK)
+
+started_at, ended_at
+
+mode: backfill|incremental
+
+query_plan_hash
+
+counts: pmids_found, fetched, stored, skipped
+
+errors JSON
+
+Table: pmid_queue
+
+run_id
+
+pmid
+
+status: pending|fetched|failed
+
+attempts
+
+last_error
+
+CLI commands (must implement)
+
+python -m pubmed_pipeline plan --config corpus.yaml
+
+python -m pubmed_pipeline fetch --run-id <id> --batch-size 500
+
+python -m pubmed_pipeline incremental --days 7
+
+python -m pubmed_pipeline export --format jsonl --out data/pubmed.jsonl
+
+Output format for AesthetiCite retrieval
+
+Export JSONL with fields:
+
+id = pubmed:<pmid>
+
+title
+
+abstract
+
+year
+
+journal
+
+doi
+
+mesh_terms
+
+publication_types
+
+url (PubMed landing page)
+
+source_type = one of: guideline|rct|review|case_series|meta_analysis|other (heuristic mapping)
+
+Optional Stage 4: PMC OA full text (strictly legal subset)
+
+Add a separate module that:
+
+Finds PMC IDs linked from PMIDs.
+
+Downloads only open-access full-text from PMC OA (not paywalled).
+
+Stores full text separately as pmc_fulltext table, linked to PMID.
+
+Keep toggled OFF by default.
+
+Part B — Keyword Strategy to Reach “1M Publications” Without Noise
+Objective
+
+We want a large corpus (for breadth) while keeping it relevant and low-noise.
+
+Build a three-tier query plan:
+
+Tier 1: High-precision aesthetic core (10k–50k)
+
+Goal: maximum relevance.
+Use MeSH + keywords for:
+
+botulinum toxin, onabotulinumtoxinA, abobotulinumtoxinA, incobotulinumtoxinA
+
+hyaluronic acid dermal fillers, polymethylmethacrylate, calcium hydroxylapatite, PLLA
+
+vascular occlusion, blindness, necrosis, hyaluronidase
+
+cosmetic dermatology, facial rejuvenation, rhytides, glabellar lines, tear trough, nasolabial fold
+Add publication type focus:
+
+clinical trials, guidelines, systematic reviews, case series
+
+Tier 2: Adjacent safety & anatomy (100k–300k)
+
+Goal: capture complications + cross-specialty safety literature.
+Include:
+
+facial anatomy, arterial anatomy, ophthalmic artery, retinal artery occlusion
+
+skin necrosis, embolism, ischemia
+
+local anesthesia, lidocaine toxicity, epinephrine, nerve blocks
+
+infection prevention, biofilms, delayed nodules, granulomas
+
+Tier 3: Broad biomedical “safety net” (to 1M)
+
+Goal: reach 1M while staying clinically useful.
+Use structured expansion, not random growth:
+
+Dermatology + plastic surgery + ophthalmology + ENT + emergency medicine + wound care + pain management
+
+Limit by:
+
+Humans
+
+English + French (optional)
+
+2000–present (or 1990–present if you need more volume)
+
+Exclude: veterinary, plant studies, in vitro only (unless needed)
+
+Query construction rules (agent must implement)
+
+Use BOTH:
+
+MeSH terms where possible (high precision)
+
+Keyword synonyms (for newly emerging terms)
+
+Use negative filters to suppress noise:
+
+exclude “mouse”, “rat” when you want human-only
+
+exclude “in vitro” only if it bloats volume without benefit
+
+Use publication types to reduce junk:
+
+prioritize RCT, meta-analysis, guideline, review, case reports/series
+
+Use date slicing:
+
+break queries by year ranges to avoid API limits and for easier backfill.
+
+What the agent must output
+
+corpus.yaml with:
+
+tiered query groups (tier1/tier2/tier3)
+
+target counts per tier
+
+inclusion/exclusion logic
+
+A “coverage report” after planning:
+
+count by year
+
+count by journal
+
+count by publication type
+
+top MeSH terms
+
+estimated total PMIDs
+
+Part C — Legal & Credible Phrasing for Investors and Clinicians
+What we can say (safe and accurate)
+
+Provide exact suggested language:
+
+Clinician-facing
+
+“AesthetiCite indexes biomedical evidence from PubMed and prioritizes prescribing information and guidelines for clinical answers.”
+
+“Full-text is used when available via open-access sources; otherwise, we rely on abstracts and citation metadata with links to the original publisher.”
+
+Investor-facing
+
+“Indexed over 1,000,000 biomedical publication records (metadata + abstracts) and continuously updates new publications.”
+
+“Full-text ingestion is restricted to open-access repositories and licensed sources.”
+
+What we must NOT say
+
+Don’t claim you “host” or “store” copyrighted paywalled PDFs at scale.
+
+Don’t claim “we downloaded all papers” or “we have full text for 1M”.
+
+Don’t imply publisher content is redistributed.
+
+Compliance note to include in README
+
+“This pipeline ingests bibliographic metadata and abstracts from PubMed. Where full text is ingested, it is limited to open-access sources such as PubMed Central OA content. For paywalled articles, AesthetiCite stores citations and links, not the full text.”
+
+Acceptance Criteria (Agent must meet)
+
+Running plan → fetch → export yields a valid JSONL dataset.
+
+Pipeline resumes after interruption without duplication.
+
+Coverage report shows tier counts and total.
+
+Clear README: setup, env vars, rate limits, and common failures.
+
+Legal/compliance section included as described.
+
+Bonus: Performance hooks (optional but recommended)
+
+Export should include:
+
+source_type classification heuristic
+
+quality_rank (PI/guideline highest)
+
+Provide a separate script:
+
+embed_and_hnsw_build.py that takes JSONL and builds an HNSW index for AesthetiCite.

@@ -1,0 +1,389 @@
+# ============================================================
+# AesthetiCite — ONE CODE PATCH (DB + Backend)
+# Fixes ALL issues you identified:
+# ✅ Evidence-type diversity: add deterministic publication_type + better inference
+# ✅ Tier grades (A/B/C) computed and returned per source
+# ✅ ACI score computed by engine (not LLM) and returned to UI
+# ✅ SSE events include {aci, tiers} so sidebar never shows "?"
+# ✅ Follow-ups become complication/dosing-specific (template guidance, no extra LLM calls)
+#
+# APPLY:
+# 1) Paste this into main.py (merge/replace the indicated functions/SQL/sections).
+# 2) Ensure startup() executes the MIGRATION SQL block once (idempotent).
+#
+# Requirements already used: httpx, asyncpg, fastapi, pydantic (no new external deps)
+# ============================================================
+
+import re, time
+from typing import Dict, Any, Optional, List
+
+# -----------------------------
+# (A) DB MIGRATION (ADD to CREATE_TABLES_SQL or run in startup() after it)
+# -----------------------------
+DOC_META_MIGRATION_SQL = r"""
+ALTER TABLE documents_meta ADD COLUMN IF NOT EXISTS publication_type TEXT;
+ALTER TABLE documents_meta ADD COLUMN IF NOT EXISTS source_tier TEXT; -- A/B/C
+ALTER TABLE documents_meta ADD COLUMN IF NOT EXISTS evidence_type TEXT; -- normalized label
+ALTER TABLE documents_meta ADD COLUMN IF NOT EXISTS evidence_rank INT;
+ALTER TABLE documents_meta ADD COLUMN IF NOT EXISTS organization TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_docs_meta_pubtype ON documents_meta(publication_type);
+CREATE INDEX IF NOT EXISTS idx_docs_meta_evidtype ON documents_meta(evidence_type);
+"""
+
+# In your startup() right after CREATE_TABLES_SQL execute, add:
+# await con.execute(DOC_META_MIGRATION_SQL)
+
+# -----------------------------
+# (B) Stronger evidence typing + tiers (REPLACE your infer_evidence_type + evidence_rank)
+# -----------------------------
+def infer_evidence_type(
+    publication_type: Optional[str],
+    document_type: Optional[str],
+    journal_or_org: Optional[str],
+    title: Optional[str] = None
+) -> str:
+    """
+    Deterministic first: publication_type (if populated).
+    Fallback: document_type / journal / title heuristics.
+    """
+    pt = (publication_type or "").strip().lower()
+    dt = (document_type or "").strip().lower()
+    j  = (journal_or_org or "").strip().lower()
+    ti = (title or "").strip().lower()
+
+    # 1) publication_type (preferred)
+    # common pubmed/crossref-ish signals
+    if any(k in pt for k in ["guideline", "practice guideline", "consensus", "position statement", "recommendation"]):
+        return "Guideline/Consensus"
+    if any(k in pt for k in ["systematic review", "meta-analysis", "meta analysis"]):
+        return "Systematic Review"
+    if any(k in pt for k in ["randomized", "randomised", "clinical trial", "rct", "controlled trial"]):
+        return "Randomized Trial"
+    if any(k in pt for k in ["cohort", "case-control", "case control", "observational", "cross-sectional", "registry"]):
+        return "Observational Study"
+    if any(k in pt for k in ["case report", "case series"]):
+        return "Case Report/Series"
+    if "review" in pt:
+        return "Narrative Review"
+
+    # 2) document_type fallback
+    if any(k in dt for k in ["guideline", "consensus", "position statement", "recommendation"]):
+        return "Guideline/Consensus"
+    if any(k in dt for k in ["systematic", "meta-analysis", "meta analysis"]):
+        return "Systematic Review"
+    if any(k in dt for k in ["random", "rct", "trial", "controlled trial"]):
+        return "Randomized Trial"
+    if any(k in dt for k in ["cohort", "case-control", "case control", "observational", "cross-sectional"]):
+        return "Observational Study"
+    if any(k in dt for k in ["case report", "case series"]):
+        return "Case Report/Series"
+    if "review" in dt:
+        return "Narrative Review"
+
+    # 3) title heuristics (useful when metadata sparse)
+    if any(k in ti for k in ["consensus", "guideline", "recommendation", "position statement"]):
+        return "Guideline/Consensus"
+    if any(k in ti for k in ["systematic review", "meta-analysis", "meta analysis"]):
+        return "Systematic Review"
+    if any(k in ti for k in ["randomized", "randomised", "trial"]):
+        return "Randomized Trial"
+    if any(k in ti for k in ["case report", "case series"]):
+        return "Case Report/Series"
+    if "review" in ti:
+        return "Narrative Review"
+
+    # 4) journal heuristic (very weak fallback)
+    if any(x in j for x in ["nejm", "jama", "lancet", "bmj"]):
+        return "Journal Article"
+
+    return "Other"
+
+def evidence_rank(evidence_type: str) -> int:
+    order = {
+        "Guideline/Consensus": 1,
+        "Systematic Review": 2,
+        "Randomized Trial": 3,
+        "Observational Study": 4,
+        "Case Report/Series": 5,
+        "Narrative Review": 6,
+        "Journal Article": 7,
+        "Other": 8,
+    }
+    return order.get(evidence_type, 9)
+
+def source_tier_from_evidence(evidence_type: str, journal_or_org: Optional[str]) -> str:
+    """
+    Simple, deterministic A/B/C tier for UI.
+    """
+    et = evidence_type
+    j = (journal_or_org or "").lower()
+
+    if et in ("Guideline/Consensus", "Systematic Review"):
+        return "A"
+    if et in ("Randomized Trial", "Observational Study"):
+        return "B"
+    # narrative/case/other
+    return "C"
+
+# -----------------------------
+# (C) ACI must be computed server-side and returned (REPLACE or ADD this helper)
+# -----------------------------
+def compute_aci_engine(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Deterministic ACI (0–10) using:
+    - evidence rank distribution
+    - supporting count
+    - recency
+    - penalties for low-evidence dominance
+    """
+    now_year = time.gmtime().tm_year
+    n = len(sources)
+    if n == 0:
+        return {
+            "overall_confidence_0_10": 0.0,
+            "highest_level": "N/A",
+            "supporting_count": 0,
+            "gaps": ["No sources retrieved"],
+            "mix": {},
+        }
+
+    def recency_score(y: Optional[int]) -> float:
+        if not y or y < 1900 or y > now_year:
+            return 0.55
+        age = max(0, now_year - y)
+        # half-life ~6 years (tunable)
+        return 2 ** (-(age / 6.0))
+
+    mix = {}
+    ranks = []
+    recs = []
+    for s in sources:
+        et = s.get("evidence_type") or "Other"
+        mix[et] = mix.get(et, 0) + 1
+        ranks.append(int(s.get("evidence_rank") or 9))
+        y = s.get("year")
+        recs.append(recency_score(y if isinstance(y, int) else None))
+
+    ranks.sort()
+    highest = sources[min(range(n), key=lambda i: int(sources[i].get("evidence_rank") or 9))].get("evidence_type") or "Other"
+
+    hi = sum(1 for r in ranks if r == 1)
+    sr = sum(1 for r in ranks if r == 2)
+    rct = sum(1 for r in ranks if r == 3)
+    low = sum(1 for r in ranks if r >= 5)
+
+    strong_frac = (hi + sr + rct) / n
+    low_frac = low / n
+    rec = sum(recs) / len(recs) if recs else 0.55
+    support_score = min(1.0, (n ** 0.5) / (20 ** 0.5))
+
+    base = 0.0
+    base += 0.55 * strong_frac
+    base += 0.20 * (hi / n)
+    base += 0.15 * rec
+    base += 0.10 * support_score
+    base -= 0.35 * max(0.0, low_frac - 0.35)
+
+    conf = max(0.0, min(1.0, base))
+    conf_0_10 = round(conf * 10.0, 1)
+
+    gaps = []
+    if n < 5:
+        gaps.append("Limited number of directly relevant sources retrieved")
+    if strong_frac < 0.25:
+        gaps.append("Low proportion of high-level evidence (guidelines/systematic reviews/RCTs)")
+    if rec < 0.45:
+        gaps.append("Evidence appears older on average (limited recent high-quality data)")
+    if highest in ("Case Report/Series", "Narrative Review", "Other"):
+        gaps.append("Highest evidence level found is low; interpret cautiously")
+
+    return {
+        "overall_confidence_0_10": conf_0_10,
+        "highest_level": highest,
+        "supporting_count": n,
+        "gaps": gaps,
+        "mix": mix,
+    }
+
+# -----------------------------
+# (D) PubMed metadata enrichment to populate publication_type (ADD helper)
+# -----------------------------
+PUBMED_SUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+
+async def pubmed_summary(pmid: str) -> Dict[str, Any]:
+    params = {"db": "pubmed", "id": pmid, "retmode": "json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(PUBMED_SUMMARY, params=params)
+        r.raise_for_status()
+        data = r.json() or {}
+        result = data.get("result", {})
+        return result.get(str(pmid), {}) if result else {}
+
+def infer_pubtype_from_pubmed_summary(s: Dict[str, Any]) -> Optional[str]:
+    """
+    PubMed esummary often provides a list under 'pubtype' or similar keys depending on response.
+    We'll try a few common keys.
+    """
+    for k in ("pubtype", "pubtypes", "publicationtype", "publicationtypes"):
+        v = s.get(k)
+        if isinstance(v, list) and v:
+            # join for easy downstream matching
+            return "; ".join([str(x) for x in v if x])
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+# -----------------------------
+# (E) Update upsert_doc_meta / fetch_doc_meta to handle new fields (REPLACE signatures + SQL)
+# -----------------------------
+async def upsert_doc_meta(
+    source_id: str,
+    doi: Optional[str],
+    pmid: Optional[str],
+    url: Optional[str],
+    title: Optional[str],
+    journal: Optional[str],
+    year: Optional[int],
+    publication_type: Optional[str] = None,
+    organization: Optional[str] = None,
+) -> None:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        await con.execute(
+            """
+            INSERT INTO documents_meta(source_id, doi, pmid, url, title, journal, year, publication_type, organization, updated_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+            ON CONFLICT(source_id) DO UPDATE SET
+              doi=COALESCE(EXCLUDED.doi, documents_meta.doi),
+              pmid=COALESCE(EXCLUDED.pmid, documents_meta.pmid),
+              url=COALESCE(EXCLUDED.url, documents_meta.url),
+              title=COALESCE(EXCLUDED.title, documents_meta.title),
+              journal=COALESCE(EXCLUDED.journal, documents_meta.journal),
+              year=COALESCE(EXCLUDED.year, documents_meta.year),
+              publication_type=COALESCE(EXCLUDED.publication_type, documents_meta.publication_type),
+              organization=COALESCE(EXCLUDED.organization, documents_meta.organization),
+              updated_at=now()
+            """,
+            source_id, doi, pmid, url, title, journal, year, publication_type, organization
+        )
+
+async def fetch_doc_meta(source_id: str) -> Optional[Dict[str, Any]]:
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        row = await con.fetchrow(
+            """
+            SELECT source_id, doi, pmid, url, title, journal, year, publication_type, organization
+            FROM documents_meta WHERE source_id=$1
+            """,
+            source_id
+        )
+    return dict(row) if row else None
+
+# -----------------------------
+# (F) Upgrade /ingest/doi to populate publication_type (EDIT your existing ingest_doi)
+# -----------------------------
+# Inside ingest_doi(body): after pmid is determined, add:
+#
+# pub_type = None
+# if pmid:
+#     try:
+#         summ = await pubmed_summary(pmid)
+#         pub_type = infer_pubtype_from_pubmed_summary(summ)
+#     except Exception:
+#         pub_type = None
+#
+# await upsert_doc_meta(body.source_id, doi, pmid, url, title, journal, year, publication_type=pub_type, organization=None)
+
+# -----------------------------
+# (G) Enrich sources with evidence_type + tiers + ENGINE ACI and send to UI (EDIT ask_stream.gen())
+# -----------------------------
+# In /ask/stream gen(), after you build `sources` and before building header:
+# Replace your enrichment loop with this version (it uses documents_meta.publication_type):
+
+# ---- BEGIN replacement enrichment block ----
+# enriched = []
+# for s in sources:
+#     s2 = dict(s)
+#     # fill from meta if present
+#     meta = None
+#     if s2.get("source_id"):
+#         meta = await fetch_doc_meta(s2["source_id"])
+#     if meta:
+#         s2["doi"] = s2.get("doi") or meta.get("doi")
+#         s2["pmid"] = s2.get("pmid") or meta.get("pmid")
+#         s2["url"] = s2.get("url") or meta.get("url")
+#         s2["title"] = s2.get("title") or meta.get("title")
+#         s2["journal"] = s2.get("journal") or meta.get("journal")
+#         s2["year"] = s2.get("year") or meta.get("year")
+#         s2["publication_type"] = s2.get("publication_type") or meta.get("publication_type")
+#         s2["organization_or_journal"] = s2.get("organization_or_journal") or meta.get("organization")
+#
+#     et = infer_evidence_type(
+#         publication_type=s2.get("publication_type"),
+#         document_type=s2.get("document_type"),
+#         journal_or_org=s2.get("organization_or_journal") or s2.get("journal"),
+#         title=s2.get("title"),
+#     )
+#     s2["evidence_type"] = et
+#     s2["evidence_rank"] = evidence_rank(et)
+#     s2["source_tier"] = source_tier_from_evidence(et, s2.get("organization_or_journal") or s2.get("journal"))
+#     s2 = _ensure_source_links(s2)
+#     enriched.append(s2)
+#
+# # Evidence-first rerank: stronger evidence then newer
+# enriched.sort(key=lambda x: (int(x.get("evidence_rank") or 9), -int(x.get("year") or 0)))
+#
+# # ENGINE ACI (never from LLM)
+# aci = compute_aci_engine(enriched)
+# header = build_authority_header(enriched, aci)
+#
+# # In sources event: show top 12 only, but report totals
+# ui_sources = enriched[:DISPLAY_SOURCES_UI]
+# intent = detect_intent_rules(q)
+# yield sse("sources", {
+#     "sources": ui_sources,
+#     "sources_used_total": len(enriched),
+#     "sources_hidden_count": max(0, len(enriched) - len(ui_sources)),
+#     "intent": intent,
+#     "aci": aci,  # <-- UI should use this
+#     "ms": int((t_r1 - t0) * 1000)
+# })
+#
+# # Continue streaming header/skeleton as before
+# yield sse("replace", {"channel": "final", "message": "Answer (streaming)…"})
+# yield sse("token", {"t": header, "channel": "final"})
+# yield sse("token", {"t": skeleton(ui_sources), "channel": "final"})
+# ---- END replacement enrichment block ----
+
+# -----------------------------
+# (H) Ensure LLM prompt uses intent + language (EDIT your prompt call)
+# -----------------------------
+# Replace:
+# prompt = build_single_call_prompt(q, ctx, chunks)
+# With:
+# lang = (getattr(body, "lang", None) or "").strip().lower() if getattr(body, "lang", None) else None
+# if lang not in ("en","fr","es","ar"):
+#     lang = detect_lang_from_text(q) if "detect_lang_from_text" in globals() else "en"
+# intent = detect_intent_rules(q)
+# prompt = build_single_call_prompt(q, ctx, chunks, lang=lang, intent=intent)
+
+# -----------------------------
+# (I) Follow-up specificity without extra LLM calls (EDIT build_single_call_prompt)
+# -----------------------------
+# Add this small block inside build_single_call_prompt() BEFORE returning the prompt string:
+#
+# followup_hint = ""
+# if intent == "complication":
+#     followup_hint = (
+#         "Follow-up questions should be protocol-specific (e.g., reassessment timing, repeat dosing interval, red-flag symptoms, urgent referral criteria).\n"
+#     )
+# elif intent == "dosing":
+#     followup_hint = (
+#         "Follow-up questions should clarify dosing protocol details (e.g., repeat dosing interval, dosing per area, reassessment criteria).\n"
+#     )
+# Then include {followup_hint} near the structure instructions.
+
+# ============================================================
+# End BACKEND patch.
+# ============================================================

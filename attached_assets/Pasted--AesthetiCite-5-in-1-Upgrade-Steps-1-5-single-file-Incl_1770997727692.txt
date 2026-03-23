@@ -1,0 +1,952 @@
+"""
+AesthetiCite “5-in-1” Upgrade (Steps 1–5) — single file
+
+✅ Includes in one code:
+1) Plug-in-ready llm_json / llm_text / retrieve_chunks (with safe fallbacks)
+2) Aesthetic-aware retriever (tagging + ranking boosts)
+3) execute_tool() with 3 starter tools (hyaluronidase, BoNT dilution, Fitzpatrick laser)
+4) Gold benchmark runner (30 questions starter set + metrics)
+5) UI endpoint that shows: ACI™ + Safety Layer + citations + debug
+
+How to run:
+  pip install fastapi uvicorn pydantic scikit-learn reportlab
+  uvicorn aestheticite_upgrade_5in1:app --reload --port 8000
+
+Then open:
+  http://127.0.0.1:8000
+
+Notes:
+- Replace the DEMO_CORPUS with your real chunks (or connect to your DB/index).
+- Replace the LLM stubs with your real model client in llm_json/llm_text.
+- This file is designed to be dropped into your repo and iterated.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional, Tuple
+import math
+import re
+import time
+import json
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from pydantic import BaseModel
+
+# -----------------------------
+# Data structures
+# -----------------------------
+
+@dataclass
+class Chunk:
+    text: str
+    title: str
+    source: str  # URL or doc id
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    journal: Optional[str] = None
+    evidence_type: Optional[str] = None  # guideline/meta-analysis/RCT/review/case-series...
+    tags: Optional[List[str]] = None      # aesthetic tags (injectable/device/complication/etc.)
+    score: Optional[float] = None         # retrieval score (filled later)
+
+
+@dataclass
+class Claim:
+    claim: str
+    rationale: str
+    needed: str
+    risk_level: str
+    topic_tags: List[str]
+
+
+@dataclass
+class EvidenceItem:
+    chunk: Chunk
+    excerpt: str
+    supports: List[str]
+    weight: float
+
+
+# -----------------------------
+# Step 2 — Aesthetic tagging + retrieval
+# -----------------------------
+
+EVIDENCE_WEIGHTS = {
+    "guideline": 1.00,
+    "meta-analysis": 0.95,
+    "systematic-review": 0.90,
+    "RCT": 0.85,
+    "cohort": 0.70,
+    "case-control": 0.65,
+    "review": 0.55,
+    "case-series": 0.45,
+    "case-report": 0.35,
+    "expert-opinion": 0.25,
+    None: 0.40,
+}
+
+INJECTABLE_TERMS = [
+    "filler", "hyaluronic", "hyaluronidase", "botulinum", "botox", "dysport",
+    "xeomin", "bocouture", "glabella", "tear trough", "nasolabial", "temple",
+    "cannula", "needle", "vascular occlusion", "embol", "blindness"
+]
+DEVICE_TERMS = [
+    "laser", "ipl", "rf", "radiofrequency", "hifu", "fractional", "co2", "erbium",
+    "nd:yag", "1064", "532", "picosecond", "microneedling"
+]
+COMPLICATION_TERMS = [
+    "occlusion", "ischemia", "necrosis", "blindness", "vision loss", "granuloma",
+    "tyndall", "infection", "burn", "hyperpigmentation"
+]
+REG_TERMS = ["fda", "ce mark", "ce-mark", "approved", "off-label", "label", "indication"]
+
+HIGH_RISK_ZONE_TERMS = ["glabella", "nose", "nasal", "tear trough", "forehead", "blindness", "vision loss"]
+
+def tag_chunk(chunk: Chunk) -> Chunk:
+    t = (chunk.text + " " + chunk.title).lower()
+    tags = set(chunk.tags or [])
+
+    if any(x in t for x in INJECTABLE_TERMS): tags.add("injectables")
+    if any(x in t for x in DEVICE_TERMS): tags.add("devices")
+    if any(x in t for x in COMPLICATION_TERMS): tags.add("complications")
+    if any(x in t for x in REG_TERMS): tags.add("regulatory")
+
+    # best-effort evidence_type inference if missing
+    if not chunk.evidence_type:
+        if "guideline" in t or "consensus" in t: chunk.evidence_type = "guideline"
+        elif "systematic review" in t: chunk.evidence_type = "systematic-review"
+        elif "meta-analysis" in t: chunk.evidence_type = "meta-analysis"
+        elif "randomized" in t or "randomised" in t: chunk.evidence_type = "RCT"
+        elif "case series" in t: chunk.evidence_type = "case-series"
+        elif "case report" in t: chunk.evidence_type = "case-report"
+        elif "review" in t: chunk.evidence_type = "review"
+
+    chunk.tags = sorted(tags)
+    return chunk
+
+def classify_query(query: str) -> Dict[str, Any]:
+    q = query.lower()
+    is_injectable = any(t in q for t in INJECTABLE_TERMS)
+    is_device = any(t in q for t in DEVICE_TERMS)
+    needs_reg = any(t in q for t in REG_TERMS) or is_injectable or is_device
+    risk_level = "high" if any(t in q for t in HIGH_RISK_ZONE_TERMS) else ("medium" if is_injectable else "low")
+    return {"is_injectable": is_injectable, "is_device": is_device, "needs_regulatory": needs_reg, "risk_level": risk_level}
+
+
+# ---- Demo corpus (replace with your real sources) ----
+# Put real guideline/RCT PDFs converted to text into this list.
+DEMO_CORPUS: List[Chunk] = [
+    Chunk(
+        title="Consensus guidance on filler complications and vascular occlusion management",
+        year=2021,
+        evidence_type="guideline",
+        source="demo://consensus_filler_complications_2021",
+        text=(
+            "Consensus recommendations describe early recognition of vascular compromise during dermal filler injection, "
+            "emphasizing immediate cessation, assessment of capillary refill, and rapid escalation when ocular symptoms occur. "
+            "Management sections discuss hyaluronidase use for HA fillers and the importance of clinic protocols and timely intervention."
+        ),
+        journal="Demo Journal",
+    ),
+    Chunk(
+        title="Systematic review: botulinum toxin A aesthetic indications and dosing patterns",
+        year=2022,
+        evidence_type="systematic-review",
+        source="demo://systematic_review_botox_2022",
+        text=(
+            "Systematic review summarizing aesthetic applications of botulinum toxin type A. "
+            "Discusses typical dilution practices varying by product and injector technique, and reports outcomes by facial region."
+        ),
+        journal="Demo Journal",
+    ),
+    Chunk(
+        title="Review: Laser parameter considerations by Fitzpatrick skin type",
+        year=2020,
+        evidence_type="review",
+        source="demo://review_laser_fitzpatrick_2020",
+        text=(
+            "Review discusses how higher Fitzpatrick skin types have increased risk of post-inflammatory hyperpigmentation with certain lasers "
+            "and may require conservative settings, longer pulse durations, test spots, and strict photoprotection."
+        ),
+        journal="Demo Journal",
+    ),
+]
+
+# Pre-tag corpus
+DEMO_CORPUS = [tag_chunk(c) for c in DEMO_CORPUS]
+
+
+# ---- Retrieval: TF-IDF + aesthetic boosts ----
+# This is intentionally simple. Swap it with your hybrid retriever later.
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+class AestheticRetriever:
+    def __init__(self, chunks: List[Chunk]):
+        self.chunks = chunks
+        self.vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
+        self.matrix = self.vectorizer.fit_transform([self._doc_text(c) for c in chunks])
+
+    def _doc_text(self, c: Chunk) -> str:
+        return f"{c.title}\n{c.text}"
+
+    def search(self, query: str, k: int = 8, filters: Optional[Dict[str, Any]] = None) -> List[Chunk]:
+        filters = filters or {}
+        qv = self.vectorizer.transform([query])
+        sims = cosine_similarity(qv, self.matrix)[0]
+
+        meta = classify_query(query)
+
+        scored: List[Tuple[float, Chunk]] = []
+        for i, c in enumerate(self.chunks):
+            s = float(sims[i])
+
+            # Aesthetic boosts
+            if meta["is_injectable"] and c.tags and "injectables" in c.tags: s *= 1.25
+            if meta["is_device"] and c.tags and "devices" in c.tags: s *= 1.20
+            if meta["needs_regulatory"] and c.tags and "regulatory" in c.tags: s *= 1.10
+            if meta["is_injectable"] and c.tags and "complications" in c.tags: s *= 1.20
+
+            # Evidence-type boost
+            et = c.evidence_type
+            s *= (0.9 + 0.2 * EVIDENCE_WEIGHTS.get(et, 0.4))  # gentle
+
+            # Filters (example)
+            prefer = set(filters.get("prefer", []))
+            if prefer and et and et not in prefer:
+                s *= 0.92  # slight penalty
+
+            scored.append((s, c))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out = []
+        for s, c in scored[:k]:
+            cc = Chunk(**asdict(c))
+            cc.score = round(s, 4)
+            out.append(cc)
+        return out
+
+
+retriever = AestheticRetriever(DEMO_CORPUS)
+
+
+# -----------------------------
+# Step 1 — Plug-in functions (LLM + retrieve)
+# -----------------------------
+# Replace llm_json/llm_text with your real model client. These are safe stubs.
+
+def retrieve_chunks(query: str, *, k: int, filters: Optional[Dict[str, Any]] = None) -> List[Chunk]:
+    return retriever.search(query, k=k, filters=filters)
+
+def llm_json(*, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Replace with your LLM structured output.
+    Stub: returns a conservative plan + simplistic evidence mapping.
+    """
+    # Planner stub
+    if "Planner" in system:
+        meta = classify_query(user)
+        claims = []
+        if meta["is_injectable"]:
+            claims = [
+                {
+                    "claim": "For suspected vascular compromise during HA filler injection, immediate cessation and rapid protocol escalation are emphasized.",
+                    "rationale": "High-stakes complication; need consensus guidance.",
+                    "needed": "Consensus/guideline or systematic review on filler vascular events.",
+                    "risk_level": meta["risk_level"],
+                    "topic_tags": ["injectables", "complications"],
+                },
+                {
+                    "claim": "Ocular symptoms after filler injection warrant urgent escalation according to established complication protocols.",
+                    "rationale": "Vision loss risk; act fast.",
+                    "needed": "Guideline/consensus on ocular symptoms in filler complications.",
+                    "risk_level": "high",
+                    "topic_tags": ["injectables", "complications"],
+                },
+            ]
+        elif meta["is_device"]:
+            claims = [
+                {
+                    "claim": "Higher Fitzpatrick skin types may require more conservative laser settings and risk mitigation to reduce PIH.",
+                    "rationale": "Common aesthetic device nuance.",
+                    "needed": "Review/guidance on Fitzpatrick-specific laser parameters.",
+                    "risk_level": meta["risk_level"],
+                    "topic_tags": ["devices"],
+                }
+            ]
+        else:
+            claims = [
+                {
+                    "claim": "Aesthetic recommendations should be contextualized to product class, technique, and patient factors.",
+                    "rationale": "General aesthetic best practice.",
+                    "needed": "Guideline/review support.",
+                    "risk_level": "low",
+                    "topic_tags": ["general"],
+                }
+            ]
+
+        return {
+            "claims": claims,
+            "search_queries": [
+                "dermal filler vascular occlusion consensus guideline",
+                "hyaluronic acid filler complication management hyaluronidase protocol",
+                "laser Fitzpatrick skin type parameter adjustment review",
+                "botulinum toxin A aesthetic dilution systematic review",
+            ],
+            "must_include": ["citations", "risk mitigation if injectables"],
+            "must_avoid": ["uncited dosing numbers", "marketing language"],
+        }
+
+    # Evidence mapper stub
+    if "Evidence Mapper" in system:
+        # Naively attach the best chunk excerpt that matches keywords
+        claim_lines = [ln.strip()[2:] for ln in user.splitlines() if ln.strip().startswith("- ")]
+        sources = DEMO_CORPUS
+        claim_maps = []
+        for cl in claim_lines:
+            support = []
+            for c in sources:
+                t = (c.title + " " + c.text).lower()
+                key = cl.lower()
+                # simple match
+                if ("vascular" in key and "vascular" in t) or ("laser" in key and "laser" in t) or ("ocular" in key and ("ocular" in t or "vision" in t)):
+                    excerpt = c.text[:240]
+                    support.append({"source_hint": c.source, "excerpt": excerpt, "evidence_type": c.evidence_type or "", "year": c.year or 0})
+            claim_maps.append({"claim": cl, "support": support})
+        return {"claim_maps": claim_maps}
+
+    return {}
+
+def llm_text(*, system: str, user: str) -> str:
+    """
+    Replace with your LLM free-text output.
+    Stub: generates a clear narrative following the spec.
+    """
+    # Extract the essentials
+    m_aci = re.search(r"OVERALL_ACI:\s*([0-9.]+)/10", user)
+    aci = m_aci.group(1) if m_aci else "?"
+
+    # Pull protocol if present
+    proto = ""
+    if "PROTOCOL_BLOCK_TITLE:" in user:
+        proto = "Safety Layer\n" + "\n".join([
+            "If an injectable complication is suspected, stop the procedure immediately, assess perfusion and symptoms, and follow your clinic’s established escalation pathway—especially for any visual symptoms.",
+            "This safety layer is a risk-awareness aid and does not replace formal training, IFUs, or local emergency protocols."
+        ]) + "\n"
+
+    # References list (already provided to writer)
+    refs = re.findall(r"^\[(\d+)\]\s(.+)$", user, flags=re.M)
+
+    # Compose
+    answer = []
+    answer.append("Clinical Summary\n")
+    answer.append("Based on the available sources in the current corpus, the most reliable guidance emphasizes risk recognition and protocol-driven response for high-stakes aesthetic scenarios, rather than improvising technique in real time.\n")
+
+    answer.append("Evidence & Rationale\n")
+    if any("consensus" in r[1].lower() or "guidance" in r[1].lower() for r in refs):
+        answer.append("Consensus-style guidance highlights early recognition of vascular compromise and immediate cessation with protocol escalation when concerning findings appear. [1]\n")
+    if any("laser" in r[1].lower() for r in refs):
+        answer.append("For energy devices, a recurring theme is Fitzpatrick-specific risk management, with conservative parameter selection and mitigation strategies for higher skin types to reduce pigmentary complications. [3]\n")
+
+    if proto:
+        answer.append(proto)
+
+    answer.append("Practical Considerations\n")
+    answer.append("If you want AesthetiCite to outperform general tools, keep answers anchored to: (1) procedure context, (2) product/device class, (3) complication-first safety logic, and (4) only-cited claims—then expose the calculators inline.\n")
+
+    return "\n".join(answer).strip()
+
+
+# -----------------------------
+# Step 3 — Tool registry (execute_tool)
+# -----------------------------
+
+def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    name = name.strip().lower()
+
+    if name == "hyaluronidase_helper":
+        # We intentionally avoid asserting authoritative dosing here.
+        # This tool outputs a structured checklist + “bring evidence” placeholders.
+        return {
+            "tool": "hyaluronidase_helper",
+            "region": args.get("region", "unknown"),
+            "output": {
+                "purpose": "Structure the emergency workflow for HA-related vascular compromise.",
+                "notes": [
+                    "Follow your local protocol and training; dosing must be supported by your cited guideline(s).",
+                    "Document time of onset and response.",
+                    "Escalate urgently for any ocular symptoms."
+                ],
+                "evidence_needed": "Consensus/guideline specifying hyaluronidase approach for HA filler vascular events."
+            }
+        }
+
+    if name == "botox_dilution_helper":
+        # Output a safe mixing calculator with units/ml; user supplies target dilution
+        # Example: 100U vial reconstituted with 2.5 mL => 40 U/mL
+        units = float(args.get("vial_units", 100))
+        ml = float(args.get("diluent_ml", 2.5))
+        u_per_ml = units / ml if ml > 0 else None
+        u_per_0_1ml = u_per_ml / 10.0 if u_per_ml is not None else None
+        return {
+            "tool": "botox_dilution_helper",
+            "input": {"vial_units": units, "diluent_ml": ml},
+            "output": {
+                "units_per_ml": round(u_per_ml, 2) if u_per_ml is not None else None,
+                "units_per_0_1ml": round(u_per_0_1ml, 2) if u_per_0_1ml is not None else None,
+                "note": "This is a math helper. Clinical dosing by region must be evidence-backed and product-specific."
+            }
+        }
+
+    if name == "fitzpatrick_laser_adjustment":
+        # Safe guidance scaffold: conservative adjustments, not prescriptive settings
+        ft = str(args.get("fitzpatrick", "")).strip().upper()
+        return {
+            "tool": "fitzpatrick_laser_adjustment",
+            "input": {"fitzpatrick": ft},
+            "output": {
+                "risk": "Higher types generally have higher PIH risk.",
+                "mitigation": [
+                    "Consider test spots and conservative starting parameters.",
+                    "Emphasize photoprotection and careful post-procedure care.",
+                    "Prefer approaches with lower epidermal injury when appropriate."
+                ],
+                "note": "Parameter selection must follow device IFU and evidence; this tool provides a conservative checklist."
+            }
+        }
+
+    return {"error": f"Unknown tool: {name}"}
+
+
+# -----------------------------
+# Core AesthetiCite upgrade pipeline
+# -----------------------------
+
+def _year_modifier(year: Optional[int], now_year: int = 2026) -> float:
+    if not year:
+        return 0.90
+    age = max(0, now_year - year)
+    if age <= 2: return 1.00
+    if age <= 5: return 0.95
+    if age <= 10: return 0.90
+    return 0.85
+
+def _consensus_modifier(n_supporting_sources: int) -> float:
+    if n_supporting_sources >= 4: return 1.00
+    if n_supporting_sources == 3: return 0.95
+    if n_supporting_sources == 2: return 0.90
+    if n_supporting_sources == 1: return 0.80
+    return 0.60
+
+def compute_aci(evidence_items: List[EvidenceItem], risk_level: str) -> float:
+    if not evidence_items:
+        return 0.0
+    base = sum(e.weight for e in evidence_items)
+    base = min(base, 4.0)
+    consensus = _consensus_modifier(len({e.chunk.source for e in evidence_items}))
+    risk_penalty = {"low": 0.0, "medium": 0.6, "high": 1.2}.get(risk_level, 0.6)
+    score = 10.0 * (1.0 - math.exp(-base)) * consensus
+    score = max(0.0, min(10.0, score - risk_penalty))
+    return round(score, 1)
+
+def complication_protocol_layer(query: str) -> Optional[Dict[str, Any]]:
+    meta = classify_query(query)
+    if not meta["is_injectable"]:
+        return None
+    return {
+        "title": "Complication Protocol Layer (Injectables)",
+        "red_flags": [
+            "Sudden severe pain, blanching, livedo/reticular discoloration",
+            "Cool skin, delayed capillary refill",
+            "Visual symptoms (blurred vision, scotoma), ptosis, ophthalmoplegia",
+        ],
+        "immediate_actions": [
+            "Stop injection immediately; do not continue in the area.",
+            "Assess perfusion and symptoms; document time of onset.",
+            "Initiate your clinic’s protocol; urgently escalate for any ocular symptoms.",
+        ],
+        "note": "Risk-awareness aid only. Follow IFUs, formal training, and local emergency protocols."
+    }
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {"type": "array"},
+        "search_queries": {"type": "array"},
+        "must_include": {"type": "array"},
+        "must_avoid": {"type": "array"},
+    },
+    "required": ["claims", "search_queries", "must_include", "must_avoid"],
+}
+
+def make_plan(query: str) -> Dict[str, Any]:
+    system = (
+        "You are AesthetiCite Planner. Create an answer plan specialized for aesthetic medicine. Output JSON only."
+    )
+    user = f"User query:\n{query}"
+    return llm_json(system=system, user=user, schema=PLAN_SCHEMA)
+
+def retrieve_evidence(plan: Dict[str, Any], query_meta: Dict[str, Any]) -> List[Chunk]:
+    filters = {
+        "domain": "aesthetic_medicine",
+        "prefer": ["guideline", "meta-analysis", "systematic-review", "RCT"],
+        "include_regulatory": query_meta["needs_regulatory"],
+    }
+    chunks: List[Chunk] = []
+    seen = set()
+    for q in (plan.get("search_queries") or [])[:10]:
+        for c in retrieve_chunks(q, k=8, filters=filters) or []:
+            key = (c.source, c.title, c.year or 0)
+            if key in seen:
+                continue
+            seen.add(key)
+            chunks.append(c)
+    return chunks[:30]
+
+def extract_supporting_excerpts(claims: List[Claim], chunks: List[Chunk]) -> Dict[str, Any]:
+    schema = {
+        "type": "object",
+        "properties": {"claim_maps": {"type": "array"}},
+        "required": ["claim_maps"],
+    }
+    ctx = []
+    for i, c in enumerate(chunks, 1):
+        ctx.append(
+            f"[{i}] {c.title} ({c.year or 'n.d.'}) {c.evidence_type or 'unknown'}\n"
+            f"SOURCE: {c.source}\n"
+            f"TEXT: {c.text[:1200]}\n"
+        )
+    system = "You are AesthetiCite Evidence Mapper. Output JSON only."
+    user = "CLAIMS:\n" + "\n".join([f"- {c.claim}" for c in claims]) + "\n\nSOURCES:\n" + "\n".join(ctx)
+    return llm_json(system=system, user=user, schema=schema)
+
+def gate_claims(claims: List[Claim], chunks: List[Chunk], claim_maps: Dict[str, Any]) -> Tuple[List[Claim], Dict[str, List[EvidenceItem]]]:
+    allowed: List[Claim] = []
+    evidence_by_claim: Dict[str, List[EvidenceItem]] = {}
+
+    for cl in claims:
+        supports = []
+        for cm in claim_maps.get("claim_maps", []):
+            if (cm.get("claim") or "").strip() == cl.claim.strip():
+                supports = cm.get("support", []) or []
+                break
+
+        items: List[EvidenceItem] = []
+        for s in supports:
+            excerpt = (s.get("excerpt") or "").strip()
+            if not excerpt:
+                continue
+
+            hint = (s.get("source_hint") or "").strip()
+            matched = None
+            for c in chunks:
+                if (c.source and c.source in hint) or (c.title and c.title in hint):
+                    matched = c
+                    break
+            if not matched:
+                continue
+
+            et = (s.get("evidence_type") or matched.evidence_type)
+            w = EVIDENCE_WEIGHTS.get(et, EVIDENCE_WEIGHTS[None]) * _year_modifier(matched.year)
+            items.append(EvidenceItem(chunk=matched, excerpt=excerpt, supports=[cl.claim], weight=w))
+
+        if items:
+            allowed.append(cl)
+            evidence_by_claim[cl.claim] = items
+
+    return allowed, evidence_by_claim
+
+def build_answer(query: str, allowed_claims: List[Claim], evidence_by_claim: Dict[str, List[EvidenceItem]], meta: Dict[str, Any], protocol: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    # Build ref list
+    refs = []
+    ref_ids = {}
+    idx = 1
+    for cl in allowed_claims:
+        for e in evidence_by_claim.get(cl.claim, []):
+            key = (e.chunk.source, e.chunk.title, e.chunk.year or 0)
+            if key in ref_ids:
+                continue
+            ref_ids[key] = idx
+            refs.append({
+                "id": idx,
+                "title": e.chunk.title,
+                "year": e.chunk.year,
+                "evidence_type": e.chunk.evidence_type,
+                "source": e.chunk.source,
+                "doi": e.chunk.doi,
+                "journal": e.chunk.journal,
+                "retrieval_score": e.chunk.score,
+                "tags": e.chunk.tags,
+            })
+            idx += 1
+
+    all_evidence = [ei for lst in evidence_by_claim.values() for ei in lst]
+    aci = compute_aci(all_evidence, risk_level=meta["risk_level"])
+
+    # Tool suggestions (Step 3) — inline helpers
+    tool_calls = []
+    if meta["is_injectable"]:
+        tool_calls.append({"name": "hyaluronidase_helper", "args": {"region": "auto_from_query", "query": query}})
+        tool_calls.append({"name": "botox_dilution_helper", "args": {"vial_units": 100, "diluent_ml": 2.5}})
+    if meta["is_device"]:
+        tool_calls.append({"name": "fitzpatrick_laser_adjustment", "args": {"fitzpatrick": "III"}})
+
+    tool_results = []
+    for tc in tool_calls:
+        tool_results.append(execute_tool(tc["name"], tc["args"]))
+
+    # Writer pack
+    pack_lines = []
+    for cl in allowed_claims:
+        eis = evidence_by_claim.get(cl.claim, [])
+        mapped = []
+        for ei in eis:
+            rid = ref_ids.get((ei.chunk.source, ei.chunk.title, ei.chunk.year or 0))
+            mapped.append(f"- Excerpt ({rid}): {ei.excerpt}")
+        pack_lines.append(
+            f"CLAIM: {cl.claim}\nRISK: {cl.risk_level}\n" + "\n".join(mapped) + "\n"
+        )
+
+    protocol_txt = ""
+    if protocol:
+        protocol_txt = (
+            f"\nPROTOCOL_BLOCK_TITLE: {protocol['title']}\n"
+            f"RED_FLAGS: {', '.join(protocol['red_flags'])}\n"
+            f"IMMEDIATE_ACTIONS: {', '.join(protocol['immediate_actions'])}\n"
+            f"NOTE: {protocol['note']}\n"
+        )
+
+    user = (
+        f"USER QUESTION:\n{query}\n\n"
+        f"OVERALL_ACI: {aci}/10\n"
+        f"QUERY_META: {meta}\n"
+        f"{protocol_txt}\n"
+        f"EVIDENCE_PACK:\n" + "\n".join(pack_lines) + "\n"
+        "REFERENCES:\n" + "\n".join([f"[{r['id']}] {r['title']} ({r.get('year','n.d.')}) {r['source']}" for r in refs])
+    )
+
+    answer_text = llm_text(system="You are AesthetiCite Writer.", user=user)
+
+    return {
+        "aci": aci,
+        "answer": f"Aesthetic Confidence Index (ACI™): {aci}/10\n\n{answer_text}",
+        "references": refs,
+        "tools": tool_results,
+        "meta": meta,
+    }
+
+def deepconsult(query: str) -> Dict[str, Any]:
+    t0 = time.time()
+    meta = classify_query(query)
+    plan = make_plan(query)
+
+    claims = [
+        Claim(
+            claim=c["claim"].strip(),
+            rationale=c.get("rationale", "").strip(),
+            needed=c.get("needed", "").strip(),
+            risk_level=(c.get("risk_level") or meta["risk_level"]).strip(),
+            topic_tags=c.get("topic_tags") or [],
+        )
+        for c in (plan.get("claims") or [])
+    ]
+
+    chunks = retrieve_evidence(plan, meta)
+    claim_maps = extract_supporting_excerpts(claims, chunks)
+    allowed, evidence_by_claim = gate_claims(claims, chunks, claim_maps)
+
+    protocol = complication_protocol_layer(query)
+
+    if not allowed:
+        return {
+            "ok": True,
+            "answer": (
+                "Aesthetic Confidence Index (ACI™): 0/10\n\n"
+                "I couldn’t find directly supporting evidence in the current corpus for the question as phrased. "
+                "Try specifying the exact procedure/product/device and the outcome (efficacy, longevity, complication management)."
+            ),
+            "aci": 0.0,
+            "references": [],
+            "tools": [],
+            "debug": {"meta": meta, "plan": plan, "n_chunks": len(chunks), "n_claims": len(claims), "n_allowed": 0, "latency_s": round(time.time() - t0, 2)},
+        }
+
+    built = build_answer(query, allowed, evidence_by_claim, meta, protocol)
+    return {
+        "ok": True,
+        **built,
+        "debug": {
+            "plan": plan,
+            "n_chunks": len(chunks),
+            "n_claims": len(claims),
+            "n_allowed": len(allowed),
+            "latency_s": round(time.time() - t0, 2),
+        }
+    }
+
+
+# -----------------------------
+# Step 4 — Gold benchmark runner
+# -----------------------------
+
+GOLD_QUESTIONS_30 = [
+    # Injectables — technique & safety
+    "What are the early signs of vascular compromise during HA filler injection and what should be done immediately?",
+    "Tear trough filler: what safety considerations and risk mitigation are emphasized in the literature?",
+    "Glabellar injections: what makes this zone higher risk and what precautions are recommended?",
+    "How should suspected ocular symptoms after filler injection be handled according to consensus guidance?",
+    "What does consensus guidance emphasize about protocol-driven response to filler vascular events?",
+    "How should a clinic structure an emergency response for suspected HA filler vascular compromise?",
+    "What does the evidence say about the role of hyaluronidase in HA filler complications?",
+    "When should an injector stop the procedure and escalate based on perfusion changes?",
+    "What are common complication patterns after dermal fillers and how are they generally approached?",
+    "How should complication risk be communicated to patients in high-risk injection zones?",
+
+    # Botulinum toxin — dilution/math vs clinical dosing (keep safe)
+    "How do common BoNT-A dilution practices vary and what should be considered when selecting a dilution strategy?",
+    "If a 100U vial is reconstituted with 2.5 mL, what is the concentration in U/mL and U per 0.1 mL?",
+    "What are typical factors that influence BoNT-A injection technique by facial region?",
+    "What does systematic evidence summarize about BoNT-A aesthetic outcomes across regions?",
+    "What cautions should be taken when generalizing dosing patterns across products and techniques?",
+
+    # Devices — Fitzpatrick, risk mitigation
+    "Laser treatments in Fitzpatrick IV–VI: what risk mitigation is commonly recommended to reduce PIH?",
+    "What does review-level evidence emphasize about conservative device parameter selection in higher Fitzpatrick types?",
+    "How should test spots and photoprotection be used to reduce pigmentary risk after laser procedures?",
+    "What are general considerations for balancing efficacy vs safety in energy-based devices?",
+    "What does the literature emphasize about post-procedure care for pigmentary risk reduction?",
+
+    # Regulatory / labeling nuance
+    "How should clinicians think about on-label vs off-label use in aesthetic medicine when communicating risk?",
+    "What does a cautious evidence-based answer include when regulatory alignment is unclear?",
+    "How should CE vs FDA language be handled in a clinical summary without overclaiming?",
+    "What should be avoided in an evidence-grounded answer about product indications?",
+
+    # General “vertical moat” behavior
+    "How should AesthetiCite structure an answer differently from a general medical AI tool in aesthetic medicine?",
+    "What is the role of complication-first logic in aesthetic decision support tools?",
+    "How should an evidence engine avoid hallucinating dosing values in high-stakes aesthetic scenarios?",
+    "What should an Aesthetic Confidence Index communicate to clinicians?",
+    "What elements should be always present in high-risk injectable answers?",
+
+    # Mixed queries
+    "Patient with Fitzpatrick III considering laser resurfacing: what safety considerations should be discussed?",
+    "HA filler in midface: what high-level evidence-grounded safety framing should be included?"
+]
+
+def run_benchmark() -> Dict[str, Any]:
+    results = []
+    n_cited_claims = 0
+    n_total = 0
+    n_zero_aci = 0
+
+    for q in GOLD_QUESTIONS_30:
+        out = deepconsult(q)
+        n_total += 1
+        if out.get("aci", 0.0) <= 0.0:
+            n_zero_aci += 1
+
+        # crude “citation presence” check in text: [1], [2]...
+        cited = bool(re.search(r"\[\d+\]", out.get("answer", "")))
+        if cited:
+            n_cited_claims += 1
+
+        results.append({
+            "query": q,
+            "aci": out.get("aci", 0.0),
+            "has_citations": cited,
+            "n_refs": len(out.get("references", [])),
+        })
+
+    return {
+        "n": n_total,
+        "avg_aci": round(sum(r["aci"] for r in results) / max(1, n_total), 2),
+        "pct_with_citations": round(100.0 * n_cited_claims / max(1, n_total), 1),
+        "n_zero_aci": n_zero_aci,
+        "results": results,
+    }
+
+
+# -----------------------------
+# Step 5 — Minimal UI
+# -----------------------------
+
+app = FastAPI(title="AesthetiCite 5-in-1 Upgrade")
+
+class QueryPayload(BaseModel):
+    query: str
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTMLResponse(
+        """
+        <html>
+          <head>
+            <title>AesthetiCite Upgrade</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 24px; max-width: 980px; }
+              textarea { width: 100%; height: 90px; font-size: 14px; }
+              button { padding: 10px 16px; font-size: 14px; margin-top: 8px; }
+              pre { white-space: pre-wrap; background: #f6f6f6; padding: 12px; border-radius: 8px; }
+              .row { display:flex; gap:12px; }
+              .card { background:#fafafa; border:1px solid #eee; border-radius:10px; padding:12px; margin-top:12px;}
+              .muted { color:#666; font-size:12px; }
+            </style>
+          </head>
+          <body>
+            <h2>AesthetiCite — 5-in-1 Upgrade</h2>
+            <div class="muted">Shows ACI™ + Safety Layer + citations + inline tools. Replace DEMO_CORPUS + LLM stubs with production components.</div>
+            <div class="card">
+              <textarea id="q" placeholder="Ask an aesthetic medicine question..."></textarea>
+              <div class="row">
+                <button onclick="ask()">DeepConsult</button>
+                <button onclick="bench()">Run Benchmark (30)</button>
+              </div>
+            </div>
+
+            <div id="out" class="card" style="display:none;"></div>
+
+            <script>
+              async function ask(){
+                const query = document.getElementById('q').value;
+                const res = await fetch('/deepconsult', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({query})
+                });
+                const data = await res.json();
+                document.getElementById('out').style.display='block';
+                document.getElementById('out').innerHTML =
+                  '<h3>Answer</h3><pre>'+escapeHtml(data.answer || '')+'</pre>' +
+                  '<h3>ACI™</h3><pre>'+escapeHtml(String(data.aci))+'</pre>' +
+                  '<h3>Safety + Tools</h3><pre>'+escapeHtml(JSON.stringify(data.tools || [], null, 2))+'</pre>' +
+                  '<h3>References</h3><pre>'+escapeHtml(JSON.stringify(data.references || [], null, 2))+'</pre>' +
+                  '<h3>Debug</h3><pre>'+escapeHtml(JSON.stringify(data.debug || {}, null, 2))+'</pre>';
+              }
+
+              async function bench(){
+                const res = await fetch('/benchmark', {method:'POST'});
+                const data = await res.json();
+                document.getElementById('out').style.display='block';
+                document.getElementById('out').innerHTML =
+                  '<h3>Benchmark Summary</h3><pre>'+escapeHtml(JSON.stringify({
+                    n: data.n, avg_aci: data.avg_aci, pct_with_citations: data.pct_with_citations, n_zero_aci: data.n_zero_aci
+                  }, null, 2))+'</pre>' +
+                  '<h3>Results</h3><pre>'+escapeHtml(JSON.stringify(data.results || [], null, 2))+'</pre>';
+              }
+
+              function escapeHtml(str){
+                return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+              }
+            </script>
+          </body>
+        </html>
+        """
+    )
+
+@app.post("/deepconsult")
+def deepconsult_api(payload: QueryPayload):
+    out = deepconsult(payload.query.strip())
+    return JSONResponse(out)
+
+@app.post("/benchmark")
+def benchmark_api():
+    return JSONResponse(run_benchmark())
+
+@app.post("/deepconsult/pdf/from-query")
+def deepconsult_pdf(payload: QueryPayload):
+    out = deepconsult(payload.query.strip())
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import cm
+        import io
+
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        width, height = A4
+
+        text = c.beginText(2 * cm, height - 2 * cm)
+        text.setFont("Helvetica", 11)
+
+        lines = (out.get("answer") or "").splitlines()
+        for line in lines:
+            for part in _wrap_line(line, max_chars=95):
+                if text.getY() < 2 * cm:
+                    c.drawText(text)
+                    c.showPage()
+                    text = c.beginText(2 * cm, height - 2 * cm)
+                    text.setFont("Helvetica", 11)
+                text.textLine(part)
+
+        # Append references
+        text.textLine("")
+        text.textLine("References")
+        for r in out.get("references", []):
+            line = f"[{r['id']}] {r['title']} ({r.get('year','n.d.')}) — {r.get('source','')}"
+            for part in _wrap_line(line, max_chars=95):
+                if text.getY() < 2 * cm:
+                    c.drawText(text); c.showPage()
+                    text = c.beginText(2 * cm, height - 2 * cm)
+                    text.setFont("Helvetica", 11)
+                text.textLine(part)
+
+        c.drawText(text)
+        c.showPage()
+        c.save()
+        pdf_bytes = buf.getvalue()
+        return Response(content=pdf_bytes, media_type="application/pdf")
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"PDF generation failed: {e}", "result": out}, status_code=500)
+
+def _wrap_line(s: str, max_chars: int = 95) -> List[str]:
+    if len(s) <= max_chars:
+        return [s]
+    words = s.split(" ")
+    lines = []
+    cur = ""
+    for w in words:
+        if len(cur) + len(w) + 1 <= max_chars:
+            cur = (cur + " " + w).strip()
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+# -----------------------------
+# What YOU do next (production steps)
+# -----------------------------
+"""
+NEXT ACTIONS TO MAKE THIS REAL (quickest path):
+
+A) Replace DEMO_CORPUS
+   - Convert your top 50–200 aesthetic sources (guidelines, systematic reviews, RCTs, device IFUs where allowed) to text chunks.
+   - Each chunk should have: title, year, evidence_type, source (url/pdf id), text.
+   - Keep chunks 600–1500 tokens.
+
+B) Replace the LLM stubs
+   - llm_json(): implement structured plan + evidence mapping with your model.
+   - llm_text(): implement final drafting with strict “no cite → no claim”.
+   (If your model supports JSON schema or tool calling, use it.)
+
+C) Replace the TF-IDF retriever
+   - Plug your hybrid retriever in retrieve_chunks().
+   - Keep the filters logic (prefer evidence_type; add tags).
+
+D) Add your real tools
+   - Keep these 3, then add:
+     - vascular_occlusion_timer
+     - product_rheology_lookup (your private database)
+     - device_ifu_lookup (metadata only, to avoid copyright issues)
+
+E) Expand GOLD_QUESTIONS_30 with YOUR clinic-facing questions
+   - Keep a regression test suite and run /benchmark on every change.
+
+When you’re ready, paste your current retrieve function + LLM client signatures,
+and I’ll transform this into a clean commit-style patch for your repo structure.
+"""

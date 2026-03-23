@@ -1,0 +1,186 @@
+import os, json, time, httpx, asyncio
+from typing import Any, Dict, List, AsyncGenerator, Optional
+
+# ----------------------------
+# Models (split)
+# ----------------------------
+PLAN_MODEL = os.getenv("PLAN_MODEL", "gpt-4.1-mini")      # try: gpt-4.1-mini, gpt-4.1-nano
+COMPOSE_MODEL = os.getenv("COMPOSE_MODEL", "gpt-4o-mini") # keep for prose + streaming
+
+# Replit proxy endpoint you described:
+AI_PROXY_URL = os.getenv("AI_PROXY_URL", "http://localhost:1106/modelfarm/openai/chat/completions")
+
+# ----------------------------
+# Prompt compression knobs
+# ----------------------------
+CHUNK_CHAR_CAP = int(os.getenv("CHUNK_CHAR_CAP", "650"))   # was ~1200; cut hard
+MAX_SOURCES_IN_PLAN = int(os.getenv("MAX_SOURCES_IN_PLAN", "10"))  # plan needs fewer
+MAX_CLAIMS = int(os.getenv("MAX_CLAIMS", "6"))             # plan becomes smaller/faster
+MAX_EVID_PER_CLAIM = int(os.getenv("MAX_EVID_PER_CLAIM", "2"))
+
+# ----------------------------
+# Minimal, high-signal plan schema
+# ----------------------------
+def build_compact_sources(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    compact = []
+    for i, c in enumerate(chunks[:MAX_SOURCES_IN_PLAN]):
+        txt = (c.get("text") or "")[:CHUNK_CHAR_CAP]
+        compact.append({
+            "sid": f"S{i+1}",
+            "t": (c.get("title") or "")[:180],
+            "y": c.get("year"),
+            "doi": c.get("doi"),
+            "u": c.get("url"),
+            "x": txt
+        })
+    return compact
+
+def plan_prompt(question: str, chunks: List[Dict[str, Any]]) -> str:
+    src = build_compact_sources(chunks)
+
+    # Tight schema + hard limits. No long narrative. No "why" fields.
+    # This cuts tokens and speeds JSON generation a lot.
+    return f"""
+Return STRICT JSON only.
+
+Schema:
+{{
+  "summary": "1-2 sentences, cautious",
+  "claims": [
+    {{
+      "c": "short factual claim",
+      "e": [{{"sid":"S1","q":"<=18 words quote"}}]
+    }}
+  ],
+  "limits": ["..."],
+  "next": ["...","..."]
+}}
+
+Rules:
+- MAX {MAX_CLAIMS} claims.
+- Each claim MUST have 1-{MAX_EVID_PER_CLAIM} evidence items from sources.
+- Quotes <= 18 words, copied from source text.
+- If evidence is weak/insufficient: reduce claims and say so in limits.
+- Do not add facts not supported by sources.
+
+Question: {question}
+
+Sources JSON:
+{json.dumps(src, ensure_ascii=False)}
+""".strip()
+
+def compose_prompt(question: str, plan: Dict[str, Any]) -> str:
+    return f"""
+Write final answer in concise clinical style.
+
+Use ONLY the plan JSON content. Do not add new facts.
+Add inline citations like [S1] based on plan.claims[*].e[*].sid.
+
+Structure:
+- Clinical summary (2-3 lines)
+- Key points (bullets)
+- Limitations (1-2 bullets)
+- Suggested follow-ups (1-2 bullets)
+
+Question: {question}
+
+Plan JSON:
+{json.dumps(plan, ensure_ascii=False)}
+""".strip()
+
+# ----------------------------
+# OpenAI-compatible calls via your proxy
+# ----------------------------
+async def llm_json_via_proxy(model: str, prompt: str) -> Dict[str, Any]:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        # JSON mode: ensure strict JSON
+        "response_format": {"type": "json_object"},
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(AI_PROXY_URL, json=payload)
+        r.raise_for_status()
+        data = r.json()
+        content = data["choices"][0]["message"]["content"]
+        try:
+            return json.loads(content)
+        except Exception:
+            # Fail closed: never invent
+            return {"summary": "Insufficient structured output.", "claims": [], "limits": ["JSON parse failed"], "next": []}
+
+async def llm_stream_via_proxy(model: str, prompt: str) -> AsyncGenerator[str, None]:
+    """
+    Streams text chunks. Assumes your proxy supports OpenAI-style SSE when stream=true.
+    If your proxy returns a different stream format, adapt parser accordingly.
+    """
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "stream": True
+    }
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", AI_PROXY_URL, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                # OpenAI SSE lines look like: "data: {...}" or "data: [DONE]"
+                if line.startswith("data: "):
+                    chunk = line[6:].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(chunk)
+                        delta = obj["choices"][0].get("delta", {})
+                        tok = delta.get("content")
+                        if tok:
+                            yield tok
+                    except Exception:
+                        continue
+
+# ----------------------------
+# The split pipeline (plan on PLAN_MODEL, compose on COMPOSE_MODEL)
+# ----------------------------
+async def run_plan_and_compose(question: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    t0 = time.perf_counter()
+
+    # PLAN (fast model + compact prompt)
+    p0 = time.perf_counter()
+    plan = await llm_json_via_proxy(PLAN_MODEL, plan_prompt(question, chunks))
+    p1 = time.perf_counter()
+
+    # COMPOSE (streaming model)
+    c0 = time.perf_counter()
+    stream = llm_stream_via_proxy(COMPOSE_MODEL, compose_prompt(question, plan))
+    c1 = time.perf_counter()
+
+    return {
+        "plan": plan,
+        "compose_stream": stream,
+        "timing_ms": {
+            "plan_ms": int((p1 - p0) * 1000),
+            "compose_startup_ms": int((c1 - c0) * 1000),
+            "total_setup_ms": int((time.perf_counter() - t0) * 1000),
+        }
+    }
+
+"""
+HOW TO INTEGRATE (2 lines in your existing endpoint):
+
+res = await run_plan_and_compose(q, chunks)
+plan = res["plan"]
+async for tok in res["compose_stream"]: yield tok
+
+ENV you set in Replit:
+PLAN_MODEL=gpt-4.1-mini   (or gpt-4.1-nano)
+COMPOSE_MODEL=gpt-4o-mini
+AI_PROXY_URL=http://localhost:1106/modelfarm/openai/chat/completions
+CHUNK_CHAR_CAP=650
+MAX_SOURCES_IN_PLAN=10
+MAX_CLAIMS=6
+MAX_EVID_PER_CLAIM=2
+"""

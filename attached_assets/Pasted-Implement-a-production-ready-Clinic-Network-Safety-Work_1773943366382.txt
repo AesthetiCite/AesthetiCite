@@ -1,0 +1,238 @@
+Implement a production-ready “Clinic Network Safety Workspace” for AesthetiCite using the existing stack (FastAPI backend + React/Vite frontend + current auth/db patterns). The goal is to transform AesthetiCite from a single-user evidence tool into deployable multi-clinic clinical infrastructure.
+
+BUILD THESE FEATURES END TO END:
+
+1) Multi-clinic / multi-user model
+- Add entities:
+  - Organization
+  - Clinic
+  - Membership
+  - UserRole
+- Roles:
+  - super_admin
+  - org_admin
+  - clinic_admin
+  - clinician
+  - reviewer
+- Each user can belong to one or more clinics.
+- Every case, saved answer, report, and analytics record must be scoped to clinic_id and org_id.
+- Add backend authorization checks for all routes.
+
+2) Clinic switcher in UI
+- Add a persistent clinic/network selector in the app header.
+- When a user belongs to multiple clinics, all dashboards and case logs must update instantly based on selected clinic.
+- Show current role and clinic name in the header.
+
+3) Safety Workspace main page
+Create a new route:
+- /network-safety-workspace
+
+This page should have 5 tabs:
+- Live Guidance
+- Case Log
+- Saved Protocols
+- Reports
+- Admin Dashboard
+
+4) Live Guidance tab
+- Reuse the current answer engine.
+- Add a structured intake form:
+  - complication type
+  - procedure
+  - region
+  - product type
+  - symptom onset
+  - pain
+  - blanching / livedo / nodules / edema / visual symptoms
+  - injector experience level
+- On submit:
+  - call the current evidence answer endpoint
+  - render output in a workflow-first format:
+    1. identify
+    2. immediate action
+    3. treatment
+    4. escalation
+    5. follow-up
+- Show evidence cards ranked by hierarchy:
+  - guidelines first
+  - consensus statements second
+  - reviews third
+  - RCTs after
+- Add visible citation badges and source metadata.
+- Add buttons:
+  - Save to Protocols
+  - Start Case Log
+  - Generate Safety Report
+
+5) Case Log tab
+- Build a full complication case logging form:
+  - patient_reference (non-identifiable string only)
+  - date/time
+  - clinic
+  - practitioner
+  - procedure
+  - region
+  - product
+  - complication type
+  - symptoms
+  - suspected diagnosis
+  - treatment given
+  - hyaluronidase dose
+  - follow-up plan
+  - outcome
+  - free notes
+- Save to database with created_by, clinic_id, org_id, timestamps.
+- Add list and detail views.
+- Add filters by:
+  - clinic
+  - practitioner
+  - complication type
+  - date range
+  - outcome
+- Add CSV export for admins.
+
+6) Saved Protocols tab
+- Let clinicians save any generated answer/protocol.
+- Saved protocol record must include:
+  - title
+  - source query
+  - structured answer JSON
+  - citations
+  - clinic_id
+  - org_id
+  - created_by
+  - tags
+- Add search, pin, duplicate, archive.
+- Allow clinic admins to mark a saved protocol as:
+  - clinic-approved
+- Show a badge for clinic-approved protocols.
+
+7) Reports tab
+- Generate a “Safety Report” from a case log or from a live guidance session.
+- Report sections:
+  - summary
+  - presenting problem
+  - immediate actions
+  - treatment used
+  - escalation triggers
+  - follow-up
+  - evidence references
+  - clinician notes
+- Add buttons:
+  - Copy
+  - Print
+  - Download PDF
+- Add a patient-readable summary mode with simpler language.
+
+8) Admin Dashboard tab
+For clinic_admin and org_admin only:
+- Show metrics:
+  - total queries
+  - total case logs
+  - saved protocols
+  - top complication categories
+  - top searched topics
+  - evidence distribution by type
+  - average response latency
+  - citation coverage rate
+- Add date filters: 7d / 30d / 90d / custom
+- Add charts for:
+  - searches over time
+  - complication categories
+  - protocol saves
+- Add “high-risk topics” list based on frequency of:
+  - vascular occlusion
+  - visual symptoms
+  - necrosis
+  - delayed inflammatory reactions
+
+9) Backend API routes
+Create or extend FastAPI routes:
+- GET /api/orgs/me
+- GET /api/clinics/me
+- POST /api/clinics/select
+- POST /api/network-guidance/query
+- POST /api/case-logs
+- GET /api/case-logs
+- GET /api/case-logs/{id}
+- PATCH /api/case-logs/{id}
+- POST /api/protocols
+- GET /api/protocols
+- PATCH /api/protocols/{id}
+- POST /api/reports/from-case/{id}
+- POST /api/reports/from-guidance
+- GET /api/admin/analytics/overview
+- GET /api/admin/analytics/trends
+
+10) Database changes
+Add migration(s) for:
+- organizations
+- clinics
+- memberships
+- case_logs
+- saved_protocols
+- safety_reports
+- analytics_events
+Use UUID primary keys.
+Include created_at and updated_at everywhere.
+
+11) Analytics event tracking
+Track these events:
+- guidance_query_submitted
+- evidence_result_opened
+- case_log_created
+- protocol_saved
+- report_generated
+- clinic_switched
+- admin_dashboard_opened
+Store org_id, clinic_id, user_id, event_type, metadata JSON, created_at.
+
+12) Ranking / evidence hierarchy layer
+Without breaking the current retrieval pipeline, add a reranking layer that boosts:
+- guidelines
+- consensus statements
+- society recommendations
+before reviews and RCTs.
+Expose evidence_type in the API response.
+Render evidence type badges in the UI.
+This must improve trust and reflect clinical hierarchy.
+
+13) UI requirements
+- Clean enterprise medical UI
+- Fast load
+- No unnecessary marketing language
+- Use cards, tabs, badges, and compact data tables
+- Add empty states for new clinics
+- Add skeleton loaders for async calls
+- Keep existing design language where possible
+
+14) Security / privacy
+- Do not store directly identifying patient data
+- patient_reference must be free text but clearly labeled as non-identifiable
+- enforce clinic/org scoping on every query
+- validate role access everywhere
+
+15) Deliverables
+Provide:
+- backend code
+- frontend code
+- schema migration(s)
+- seed/dev data for one organization with two clinics and sample users
+- at least 10 realistic sample case logs
+- one sample saved protocol for vascular occlusion
+- one sample generated safety report
+- concise setup instructions
+- concise list of files created/changed
+
+16) Success criteria
+When finished, I must be able to:
+- log in as a clinic user
+- switch clinic context
+- run a live complication query
+- save the protocol
+- create a case log
+- generate a safety report
+- view admin analytics
+- see evidence ranked with guidelines first
+
+Do not give placeholders or pseudo-implementation. Write the actual code and integrate it into the existing project structure.

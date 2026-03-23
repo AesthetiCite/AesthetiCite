@@ -1,0 +1,60 @@
+Honest answer: the architecture is operationally sound but there are five specific gaps that would cause problems in a real clinic deployment.
+
+What's genuinely healthy
+The startup sequence is properly ordered — env validation runs first, users table migration runs before the app accepts requests, the embedding cache warms in a background thread, and the async retrieval pool initialises cleanly with a shutdown hook.
+Rate limiting is in place at three tiers (search 60/min, safety 30/min, auth 10/15min). Auth is JWT with bcrypt, token expiry, and inactive user blocking. CORS is configured. The proxy layer has 3-retry logic with delays.
+The /health endpoint exists and /metrics-lite gives a quick sanity check on document, chunk, query, and user counts without auth. The growth engine's SQLite persistence is separate from the main PostgreSQL database, which is sensible — those two stores don't compete.
+
+The five gaps
+1. /health tells you the app is running, not whether it's working.
+The current health check returns {"status": "ok"} regardless of whether PostgreSQL is reachable, the embedding model is loaded, or the retrieval pool has connections. A clinic demo where the DB connection dropped silently would still return 200.
+You need a deep health check:
+python@app.get("/health/deep")
+async def health_deep():
+    checks = {}
+    # DB connectivity
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+    # Retrieval pool
+    checks["retrieval_pool"] = "ok" if _ar._pool is not None else "not_initialised"
+    # Document count sanity
+    try:
+        with SessionLocal() as db:
+            count = db.execute(text("SELECT COUNT(*) FROM chunks")).scalar_one()
+        checks["chunks"] = count
+        checks["chunks_ok"] = count > 1000
+    except Exception as e:
+        checks["chunks"] = f"error: {e}"
+
+    overall = "ok" if all(v == "ok" or isinstance(v, int) for v in checks.values()) else "degraded"
+    return {"status": overall, "checks": checks}
+2. The exports/ directory has no cleanup.
+Every PDF export — pre-procedure check, complication protocol, session report — writes a file to exports/. Nothing deletes them. On a shared host or small instance, this fills up over time. Add a simple cleanup on startup:
+pythonimport glob, os, time
+
+def cleanup_old_exports(export_dir: str, max_age_hours: int = 24):
+    cutoff = time.time() - (max_age_hours * 3600)
+    for f in glob.glob(os.path.join(export_dir, "*.pdf")):
+        if os.path.getmtime(f) < cutoff:
+            try: os.remove(f)
+            except: pass
+Call it from the startup event.
+3. The complication protocol case store is in-memory.
+CASE_STORE: List[LoggedCase] = [] in complication_protocol_engine.py. Every time the server restarts — deploy, crash, scale event — all logged cases are lost. The growth engine's case logging uses SQLite properly, but the complication engine doesn't. For a pilot clinic, losing logged cases is a trust problem.
+4. proxyToFastAPI swallows non-JSON responses silently.
+The proxy does await response.json() with no content-type check. If FastAPI returns a 500 with an HTML error page (uvicorn default), the Express layer throws a JSON parse error and returns a 502 with no useful detail. Clinicians see a blank error. Wrap it:
+typescriptconst text = await response.text();
+let data: any;
+try { data = JSON.parse(text); }
+catch { data = { detail: text.slice(0, 200) }; }
+res.status(response.status).json(data);
+5. No readiness vs liveness distinction.
+The single /health endpoint is used for both "is the process alive" and "is the process ready to serve traffic." On a cold start, the embedding cache is warming and the retrieval pool is initialising — but /health returns 200 immediately. If a load balancer or uptime monitor hits /health during that 5–10 second window, it looks healthy when it isn't. Add a separate /ready endpoint that checks the retrieval pool is actually initialised before returning 200.
+
+Summary
+AreaStatusStartup sequence✅ HealthyAuth and rate limiting✅ HealthyError handling on streams✅ HealthyHealth check depth⚠️ Surface onlyExport file accumulation⚠️ No cleanupComplication case logging⚠️ In-memory, lost on restartProxy error transparency⚠️ Silent JSON parse failuresReadiness vs liveness⚠️ Not distinguished
+The site is deployable and demo-safe. It is not yet production-hardened for a paying clinic that expects uptime guarantees and data persistence.

@@ -1,0 +1,73 @@
+Good utility. Before you apply it, three things to reconcile with your specific routes.ts structure:
+
+Issue 1 — Your streams use typed SSE events, not a single final payload
+The proxyStreamSafe function intercepts payload.answer || payload.response || payload.text — a flat JSON pattern. But your v2 stream emits typed event objects:
+json{ "type": "content", "data": "token..." }
+{ "type": "citations", "citations": [...] }
+{ "type": "done" }
+The sanitizer as written will pass the citations event through unchecked because it has no answer field. You need to intercept on type === "citations" instead:
+typescript// Replace the inner condition with this
+if (payload.type === "citations" || payload.type === "meta") {
+  const safe = sanitizeGroundedResponse(payload);
+  res.write(`data: ${JSON.stringify(safe)}\n\n`);
+} else if (payload.answer || payload.response || payload.text) {
+  // flat JSON fallback (covers /api/ask stream)
+  const safe = sanitizeGroundedResponse(payload);
+  res.write(`data: ${JSON.stringify(safe)}\n\n`);
+} else {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+```
+
+---
+
+### Issue 2 — `proxyStreamSafe` drops your auth header forwarding
+
+The current helper only forwards `Authorization` and `X-API-Key`. Your `proxyToFastAPI` also forwards:
+```
+x-admin-api-key
+X-Partner-Session
+Add them or partner preview and admin routes will silently fail:
+typescriptheaders: {
+  "Content-Type": "application/json",
+  ...(req.headers.authorization     ? { Authorization:      req.headers.authorization }     : {}),
+  ...(req.headers["x-api-key"]      ? { "X-API-Key":        req.headers["x-api-key"] }      : {}),
+  ...(req.headers["x-admin-api-key"]? { "x-admin-api-key":  req.headers["x-admin-api-key"] }: {}),
+  ...(req.headers["x-partner-session"]?{ "X-Partner-Session": req.headers["x-partner-session"] }:{}),
+},
+
+Issue 3 — Apply to the right routes only
+You have three stream routes. Here's exactly which ones get proxyStreamSafe and which stay as-is:
+RouteApply sanitizer?ReasonPOST /api/v2/stream✅ YesMain evidence stream — citations flow herePOST /api/search✅ YesLegacy stream — same riskPOST /api/ask/visual/stream❌ NoVisual counseling — no citation structurePOST /api/ask/stream✅ YesStandard ask stream
+
+Final drop-in for the two primary stream routes
+typescriptapp.post("/api/v2/stream", async (req, res) => {
+  await proxyStreamSafe(`${PYTHON_API_BASE}/v2/stream`, req, res);
+});
+
+app.post("/api/search", async (req, res) => {
+  try {
+    await storage.addSearchHistory(req.body?.query || "");
+  } catch { /* non-fatal */ }
+  await proxyStreamSafe(`${PYTHON_API_BASE}/v2/stream`, req, res);
+});
+
+app.post("/api/ask/stream", async (req, res) => {
+  await proxyStreamSafe(`${PYTHON_API_BASE}/ask/stream`, req, res);
+});
+```
+
+---
+
+### What your trust chain looks like after all three patches
+```
+FastAPI (retrieves evidence, generates tokens)
+        ↓
+proxyStreamSafe (intercepts citation events, rebuilds from evidence only)
+        ↓
+sanitizeGroundedResponse (strips inline markers with no backing source)
+        ↓  
+sanitizeGroundedResponseStrict (on non-stream routes — enforces empty = empty)
+        ↓
+Client (receives only grounded citations)
+That is a defensible architecture for a clinical product. Apply the typed-event fix first — without it the sanitizer silently does nothing on your v2 stream.

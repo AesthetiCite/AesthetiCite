@@ -1,0 +1,275 @@
+// src/pages/AppShell.tsx
+// OpenEvidence-style UI + Language selector (EN/FR/ES/AR) + sends language to backend
+// Assumes your /ask/stream accepts: { q, conversation_id, k, lang } (add lang to AskBody in backend)
+// If your backend currently doesn't support `lang`, still keep it client-side for display + future use.
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+type Lang = "en" | "fr" | "es" | "ar";
+
+const LANG_LABEL: Record<Lang, string> = {
+  en: "English",
+  fr: "Français",
+  es: "Español",
+  ar: "العربية",
+};
+
+function rtl(lang: Lang) {
+  return lang === "ar";
+}
+
+export default function AppShell() {
+  const [lang, setLang] = useState<Lang>("en");
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  // SSE streaming output
+  const [finalText, setFinalText] = useState("");
+  const [sources, setSources] = useState<any[]>([]);
+  const esRef = useRef<EventSource | null>(null);
+
+  // Conversation id placeholder (you likely already create/resume in your app)
+  const [conversationId, setConversationId] = useState<string>("");
+
+  const dir = useMemo(() => (rtl(lang) ? "rtl" : "ltr"), [lang]);
+
+  useEffect(() => {
+    // Create a conversation on mount (minimal; replace with your existing logic)
+    (async () => {
+      try {
+        const token = localStorage.getItem("token") || "";
+        const r = await fetch("/conversations/new", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const j = await r.json();
+        if (j?.conversation_id) setConversationId(j.conversation_id);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      if (esRef.current) esRef.current.close();
+    };
+  }, []);
+
+  async function handleAsk() {
+    const q = query.trim();
+    if (!q || !conversationId) return;
+
+    // reset UI
+    setLoading(true);
+    setFinalText("");
+    setSources([]);
+
+    // close previous SSE
+    if (esRef.current) esRef.current.close();
+
+    // POST to start stream; then connect SSE by using fetch + ReadableStream (more reliable than EventSource for POST)
+    // We'll implement streaming via fetch() and parse SSE manually.
+    const token = localStorage.getItem("token") || "";
+
+    const resp = await fetch("/ask/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        q,
+        conversation_id: conversationId,
+        k: 40,
+        lang, // << language selected
+      }),
+    });
+
+    if (!resp.ok || !resp.body) {
+      setLoading(false);
+      setFinalText("Error: failed to start stream.");
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    const append = (t: string) => setFinalText((prev) => prev + t);
+
+    // Minimal SSE parser
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // split on double newline (SSE event boundary)
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+
+        // parse event + data lines
+        let eventName = "message";
+        let dataStr = "";
+
+        for (const line of rawEvent.split("\n")) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim();
+          if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+        }
+
+        if (!dataStr) continue;
+
+        try {
+          const payload = JSON.parse(dataStr);
+
+          if (eventName === "sources") {
+            setSources(payload?.sources || []);
+          }
+
+          if (eventName === "replace") {
+            // optional: clear channel (your backend uses replace for UI)
+            if (payload?.channel === "final") setFinalText("");
+          }
+
+          if (eventName === "token") {
+            if (payload?.channel === "final" && payload?.t) append(payload.t);
+          }
+
+          if (eventName === "done") {
+            setLoading(false);
+          }
+
+          if (eventName === "error") {
+            setLoading(false);
+            setFinalText(payload?.message || "Error.");
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+    }
+
+    setLoading(false);
+  }
+
+  return (
+    <div className="min-h-screen bg-white text-slate-900" dir={dir} lang={lang}>
+      {/* Header */}
+      <header className="border-b border-slate-200">
+        <div className="mx-auto max-w-4xl px-4 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="text-lg font-semibold">AesthetiCite</div>
+            <div className="text-sm text-slate-500 hidden sm:block">Clinical Evidence Governance</div>
+          </div>
+
+          {/* Language selector */}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 hidden sm:block">Language</label>
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              aria-label="Select language"
+            >
+              {Object.entries(LANG_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </header>
+
+      {/* Main */}
+      <main className="mx-auto max-w-4xl px-4 py-10">
+        {/* Input */}
+        <div className="mb-6">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={
+                lang === "fr"
+                  ? "Entrez une question clinique (ex: prise en charge d’une occlusion vasculaire…)"
+                  : lang === "es"
+                  ? "Escriba una pregunta clínica (p. ej., manejo de oclusión vascular…)"
+                  : lang === "ar"
+                  ? "اكتب سؤالًا سريريًا (مثال: تدبير انسداد وعائي…)"
+                  : "Enter a clinical question (e.g., hyaluronic acid vascular occlusion management)"
+              }
+              className="flex-1 rounded-xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+            <button
+              onClick={handleAsk}
+              className="rounded-xl bg-slate-900 px-6 py-3 text-sm text-white hover:bg-slate-800"
+            >
+              {lang === "fr" ? "Demander" : lang === "es" ? "Preguntar" : lang === "ar" ? "اسأل" : "Ask"}
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-slate-500">
+            {lang === "fr"
+              ? "Sortie structurée avec citations en ligne. Pas de citation → pas d’affirmation."
+              : lang === "es"
+              ? "Salida estructurada con citas en línea. Sin cita → sin afirmación."
+              : lang === "ar"
+              ? "مخرجات منظمة مع إحالات داخل النص. بدون إحالة → بدون ادّعاء."
+              : "Structured output with inline citations. No cite → no claim."}
+          </div>
+        </div>
+
+        {/* Sources ribbon */}
+        {sources.length > 0 && (
+          <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs font-semibold text-slate-700">Sources</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {sources.slice(0, 10).map((s: any) => (
+                <a
+                  key={s.sid || s.source_id}
+                  href={s.url || "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                  title={`${s.title || ""} ${s.year ? `(${s.year})` : ""}`}
+                >
+                  <span className="font-mono">{s.sid || "S?"}</span>
+                  <span className="truncate max-w-[220px]">{s.title || "Untitled"}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Loading */}
+        {loading && (
+          <div className="text-sm text-slate-500">
+            {lang === "fr"
+              ? "Recherche des preuves et génération d’une réponse structurée…"
+              : lang === "es"
+              ? "Buscando evidencia y generando una respuesta estructurada…"
+              : lang === "ar"
+              ? "جارٍ استرجاع الأدلة وإنشاء إجابة منظمة…"
+              : "Retrieving evidence and generating structured response…"}
+          </div>
+        )}
+
+        {/* Answer */}
+        {finalText && (
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm whitespace-pre-wrap text-sm leading-6">
+            {finalText}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="mt-12 text-xs text-slate-500 border-t pt-6">
+          {lang === "fr"
+            ? "Outil éducatif d’aide à la décision. Ne remplace pas le jugement clinique."
+            : lang === "es"
+            ? "Herramienta educativa de apoyo a decisiones. No sustituye el juicio clínico."
+            : lang === "ar"
+            ? "أداة تعليمية لدعم القرار. لا تغني عن الحكم السريري."
+            : "Educational decision support. Not a substitute for clinical judgment."}
+        </div>
+      </main>
+    </div>
+  );
+}

@@ -1,0 +1,539 @@
+"""
+AesthetiCite — Fix the “Final 3” (single patch)
+1) Deterministic drug interactions (tool) via RxNav-in-a-Box (local) + cache + rate limit
+2) Sub-3s latency (embedding cache + HNSW ANN + hot-result cache)
+3) “Confidence UI” evidence badge (evidence_strength score + badge + explain)
+
+Run:
+  pip install fastapi uvicorn requests hnswlib cachetools
+  uvicorn aestheticite_fix3:app --host 0.0.0.0 --port 8000
+
+ENV you should set:
+  RXNAV_LOCAL_BASE=http://127.0.0.1:4000        # RxNav-in-a-Box base (you host locally)
+  EMBED_DIM=1536                                # your embedding dimension
+  HNSW_INDEX_PATH=./hnsw.bin
+  CACHE_TTL_SECONDS=172800
+"""
+
+from __future__ import annotations
+
+import os, time, json, hashlib, re, threading
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+from cachetools import TTLCache
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+try:
+    import hnswlib  # pip install hnswlib
+except Exception:
+    hnswlib = None
+
+
+# ---------------------------
+# YOU MUST PLUG THESE 2 IN
+# ---------------------------
+
+def llm_text(system: str, user: str, temperature: float = 0.2) -> str:
+    """Your LLM client."""
+    raise NotImplementedError("Plug in your LLM text client")
+
+def embed(text: str) -> List[float]:
+    """
+    Your embedding function. Must return a vector of size EMBED_DIM.
+    If you already have an embeddings endpoint, call it here.
+    """
+    raise NotImplementedError("Plug in your embed(text)->vector")
+
+
+# ---------------------------
+# CONFIG
+# ---------------------------
+
+APP_NAME = "AesthetiCite"
+
+RXNAV_LOCAL_BASE = os.getenv("RXNAV_LOCAL_BASE", "").rstrip("/")
+# Expect RxNav-in-a-Box to serve similar REST paths; we use:
+# - /REST/rxcui.json?name=...          (RxNorm concept lookup)
+# - /REST/interaction/list.json?rxcuis=...+...
+# NOTE: Public RxNav DDI API was discontinued; this is meant for local RxNav-in-a-Box.
+
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "172800"))  # 48h
+HNSW_INDEX_PATH = os.getenv("HNSW_INDEX_PATH", "./hnsw.bin")
+HNSW_MAX_ELEMENTS = int(os.getenv("HNSW_MAX_ELEMENTS", "200000"))
+HNSW_M = int(os.getenv("HNSW_M", "16"))
+HNSW_EF = int(os.getenv("HNSW_EF", "128"))
+
+# ---------------------------
+# CACHES (Phase-5 speed)
+# ---------------------------
+
+# Embedding cache (big win)
+embed_cache = TTLCache(maxsize=50_000, ttl=CACHE_TTL_SECONDS)
+
+# Hot final-answer cache (massive perceived speed win)
+answer_cache = TTLCache(maxsize=25_000, ttl=CACHE_TTL_SECONDS)
+
+# Interaction cache (deterministic tool should be fast)
+interaction_cache = TTLCache(maxsize=50_000, ttl=CACHE_TTL_SECONDS)
+
+# Rate limiting guard for RxNav local (protect your box and be polite)
+# NLM’s public guidance is 20 req/sec/IP; local can handle more, but keep sane.
+RXNAV_QPS = float(os.getenv("RXNAV_QPS", "10"))  # default 10 req/s
+_last_call = 0.0
+_rl_lock = threading.Lock()
+
+
+def _hash_obj(kind: str, obj: dict) -> str:
+    raw = kind + ":" + json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _rate_limit():
+    global _last_call
+    if RXNAV_QPS <= 0:
+        return
+    min_interval = 1.0 / RXNAV_QPS
+    with _rl_lock:
+        now = time.time()
+        wait = (_last_call + min_interval) - now
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.time()
+
+
+def get_embedding_cached(text: str) -> List[float]:
+    k = _hash_obj("emb", {"t": text})
+    v = embed_cache.get(k)
+    if v is not None:
+        return v
+    vec = embed(text)
+    if not isinstance(vec, list) or len(vec) != EMBED_DIM:
+        raise RuntimeError(f"embed() must return list[{EMBED_DIM}] floats")
+    embed_cache[k] = vec
+    return vec
+
+
+# ---------------------------
+# HNSW ANN INDEX (Phase-5 speed)
+# ---------------------------
+
+class HNSWStore:
+    def __init__(self):
+        if hnswlib is None:
+            self.ok = False
+            return
+        self.ok = True
+        self.idx = hnswlib.Index(space="cosine", dim=EMBED_DIM)
+        self.id_to_chunk: Dict[int, dict] = {}
+        self.next_id = 0
+
+        if os.path.exists(HNSW_INDEX_PATH):
+            self.idx.load_index(HNSW_INDEX_PATH)
+            # If you persist meta separately, load it here.
+            # For simplicity: rebuild meta by re-ingesting your corpus on boot if needed.
+        else:
+            self.idx.init_index(max_elements=HNSW_MAX_ELEMENTS, ef_construction=200, M=HNSW_M)
+        self.idx.set_ef(HNSW_EF)
+
+    def add(self, embedding: List[float], chunk: dict):
+        if not self.ok:
+            return
+        i = self.next_id
+        self.idx.add_items([embedding], [i])
+        self.id_to_chunk[i] = chunk
+        self.next_id += 1
+
+    def search(self, embedding: List[float], k: int = 12) -> List[dict]:
+        if not self.ok or self.next_id == 0:
+            return []
+        labels, distances = self.idx.knn_query([embedding], k=k)
+        out = []
+        for lab, dist in zip(labels[0], distances[0]):
+            ch = self.id_to_chunk.get(int(lab))
+            if ch:
+                out.append({**ch, "_distance": float(dist)})
+        return out
+
+    def save(self):
+        if not self.ok:
+            return
+        self.idx.save_index(HNSW_INDEX_PATH)
+
+hnsw = HNSWStore()
+
+
+# ---------------------------
+# YOUR RETRIEVAL HOOK
+# ---------------------------
+
+def retrieve_chunks(query: str, filters: Optional[dict] = None) -> List[dict]:
+    """
+    Replace with your existing hybrid retrieval.
+    BUT: For speed, do this:
+      - Try HNSW first for “vector candidates”
+      - Then optional rerank / BM25 blend
+    Return chunks:
+      {
+        "id": "...",
+        "text": "...",
+        "title": "...",
+        "source_type": "pi|guideline|rct|review|textbook|other",
+        "year": 2024,
+        "doi": "...",
+        "url": "...",
+        "authors": [...]
+      }
+    """
+    raise NotImplementedError("Plug in your existing retrieval here")
+
+
+# ---------------------------
+# FIX #1 — DETERMINISTIC DRUG INTERACTIONS TOOL
+# ---------------------------
+
+def rxnav_name_to_rxcui(name: str) -> Optional[str]:
+    if not RXNAV_LOCAL_BASE:
+        return None
+    _rate_limit()
+    url = f"{RXNAV_LOCAL_BASE}/REST/rxcui.json"
+    r = requests.get(url, params={"name": name}, timeout=6)
+    if r.status_code != 200:
+        return None
+    data = r.json()
+    # Typical shape: {"idGroup":{"name":"...","rxnormId":["12345"]}}
+    ids = (((data or {}).get("idGroup") or {}).get("rxnormId")) or []
+    return ids[0] if ids else None
+
+
+def rxnav_interactions_by_rxcuis(rxcuis: List[str]) -> dict:
+    """
+    Calls local RxNav-in-a-Box interactions endpoint.
+    """
+    if not RXNAV_LOCAL_BASE:
+        raise HTTPException(503, "RXNAV_LOCAL_BASE not set; run RxNav-in-a-Box locally")
+    if len(rxcuis) < 2:
+        return {"ok": True, "pairs": [], "note": "Need at least 2 drugs"}
+    if len(rxcuis) > 50:
+        raise HTTPException(400, "Max 50 drugs per request")
+
+    key = _hash_obj("ddi", {"rxcuis": sorted(rxcuis)})
+    cached = interaction_cache.get(key)
+    if cached is not None:
+        return cached
+
+    _rate_limit()
+    url = f"{RXNAV_LOCAL_BASE}/REST/interaction/list.json"
+    # RxNav convention uses + separated list in rxcuis parameter
+    r = requests.get(url, params={"rxcuis": "+".join(rxcuis)}, timeout=10)
+    if r.status_code != 200:
+        raise HTTPException(502, f"RxNav interaction error: HTTP {r.status_code}")
+
+    data = r.json() or {}
+    # Normalize into a clinician-usable structure (severity + description + evidence note)
+    pairs = []
+
+    # Common historical shape:
+    # interactionTypeGroup -> fullInteractionTypeGroup -> fullInteractionType -> interactionPair
+    groups = (data.get("interactionTypeGroup") or [])
+    for g in groups:
+        fig = (g.get("fullInteractionTypeGroup") or [])
+        for fg in fig:
+            fits = (fg.get("fullInteractionType") or [])
+            for ft in fits:
+                ip = (ft.get("interactionPair") or [])
+                for p in ip:
+                    desc = p.get("description") or p.get("interactionDescription") or ""
+                    # Severity might appear as "severity" or embedded; keep best effort.
+                    sev = (p.get("severity") or p.get("severityLevel") or "").lower().strip()
+                    # Try extract drug names if present
+                    concepts = (p.get("interactionConcept") or [])
+                    drugs = []
+                    for c in concepts:
+                        minc = c.get("minConcept") or {}
+                        if minc.get("name"):
+                            drugs.append(minc["name"])
+                    pairs.append({
+                        "drugs": drugs[:2],
+                        "severity": sev or "unknown",
+                        "description": desc.strip(),
+                        "source": "RxNav-in-a-Box"
+                    })
+
+    payload = {"ok": True, "pairs": pairs, "source": "RxNav-in-a-Box"}
+    interaction_cache[key] = payload
+    return payload
+
+
+class InteractionRequest(BaseModel):
+    drugs: List[str] = Field(..., min_items=2, max_items=50)  # names users type
+    normalize: bool = True
+
+
+def interaction_tool(req: InteractionRequest) -> dict:
+    # Normalize names -> rxcuis
+    rxcuis = []
+    unmapped = []
+    for d in req.drugs:
+        name = d.strip()
+        if not name:
+            continue
+        rx = rxnav_name_to_rxcui(name) if req.normalize else name
+        if rx:
+            rxcuis.append(rx)
+        else:
+            unmapped.append(name)
+    if len(rxcuis) < 2:
+        return {"ok": False, "reason": "insufficient_mapped_drugs", "unmapped": unmapped}
+
+    res = rxnav_interactions_by_rxcuis(rxcuis)
+    res["unmapped"] = unmapped
+    # Deterministic “severity bucket” for UI
+    res["summary"] = summarize_severity(res.get("pairs") or [])
+    return res
+
+
+def summarize_severity(pairs: List[dict]) -> dict:
+    # Very simple buckets (customize later)
+    counts = {"contraindicated": 0, "major": 0, "moderate": 0, "minor": 0, "unknown": 0}
+    for p in pairs:
+        s = (p.get("severity") or "unknown").lower()
+        if "contra" in s:
+            counts["contraindicated"] += 1
+        elif "major" in s or "high" in s:
+            counts["major"] += 1
+        elif "moder" in s or "med" in s:
+            counts["moderate"] += 1
+        elif "minor" in s or "low" in s:
+            counts["minor"] += 1
+        else:
+            counts["unknown"] += 1
+    overall = "none"
+    if sum(counts.values()) == 0:
+        overall = "none"
+    elif counts["contraindicated"] > 0:
+        overall = "contraindicated"
+    elif counts["major"] > 0:
+        overall = "major"
+    elif counts["moderate"] > 0:
+        overall = "moderate"
+    elif counts["minor"] > 0:
+        overall = "minor"
+    else:
+        overall = "unknown"
+    return {"overall": overall, "counts": counts}
+
+
+# ---------------------------
+# FIX #3 — EVIDENCE BADGE (Confidence UI)
+# ---------------------------
+
+def evidence_badge(chunks: List[dict]) -> dict:
+    """
+    Heuristic evidence scoring:
+      PI/guideline = strongest
+      RCT > review > other
+    Outputs a badge + numeric score + explanation for UI.
+    """
+    if not chunks:
+        return {"score": 0.10, "badge": "Low", "why": "No retrievable sources"}
+
+    weights = {"pi": 1.00, "guideline": 0.95, "rct": 0.80, "review": 0.55, "textbook": 0.45, "other": 0.35}
+    # Count unique sources by (doi/url/title)
+    seen = set()
+    strongest = 0.0
+    total = 0.0
+    type_counts = {}
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title") or c.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        t = (c.get("source_type") or "other").lower().strip()
+        w = weights.get(t, 0.30)
+        strongest = max(strongest, w)
+        total += w
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    n = max(1, len(seen))
+    avg = total / n
+    # Bias toward strongest evidence present, but reward breadth
+    score = min(0.99, 0.55 * strongest + 0.45 * avg + 0.05 * min(1.0, n / 6.0))
+    score = max(0.10, score)
+
+    if score >= 0.85:
+        badge = "High"
+    elif score >= 0.65:
+        badge = "Moderate"
+    else:
+        badge = "Low"
+
+    why = []
+    if type_counts.get("pi"):
+        why.append("Prescribing information available")
+    if type_counts.get("guideline"):
+        why.append("Guidelines available")
+    if not why:
+        why.append("Mostly secondary literature (reviews/other)")
+
+    return {
+        "score": round(score, 2),
+        "badge": badge,
+        "types": type_counts,
+        "why": "; ".join(why)
+    }
+
+
+# ---------------------------
+# FIX #2 — SPEED: HNSW candidates + answer caching
+# ---------------------------
+
+class QARequest(BaseModel):
+    query: str
+    filters: Optional[dict] = None
+    compact: bool = True  # mobile/tablet
+    include_evidence_badge: bool = True
+
+
+def compact_text(s: str, max_chars: int = 1800) -> str:
+    s = re.sub(r"\n{3,}", "\n\n", (s or "")).strip()
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars].rsplit(" ", 1)[0] + "…"
+
+
+def qa_answer(req: QARequest) -> dict:
+    # Hot final-answer cache (dominant speed gain)
+    key = _hash_obj("qa", {"q": req.query, "f": req.filters or {}, "c": req.compact})
+    cached = answer_cache.get(key)
+    if cached is not None:
+        return {**cached, "meta": {**cached.get("meta", {}), "cached": True}}
+
+    # Vector candidates via HNSW (if you loaded your corpus into hnsw)
+    # NOTE: This patch doesn’t auto-ingest your corpus; you can call hnsw.add(...) in your ingestion pipeline.
+    # If hnsw is empty, fallback to your retrieve_chunks implementation.
+    chunks = []
+    try:
+        qvec = get_embedding_cached(req.query)
+        ann = hnsw.search(qvec, k=12) if hnsw.ok else []
+        # If you have a reranker, you would blend ann + bm25 here.
+        # For now: if ann exists, use it; else call retrieve_chunks.
+        chunks = ann if ann else retrieve_chunks(req.query, req.filters)
+    except NotImplementedError:
+        chunks = retrieve_chunks(req.query, req.filters)
+
+    # Evidence badge for UI confidence cues
+    badge = evidence_badge(chunks) if req.include_evidence_badge else None
+
+    # Build minimal, fast prompt
+    system = (
+        f"You are {APP_NAME}, clinician-facing decision support for aesthetic medicine.\n"
+        "Rules:\n"
+        "- Be conservative.\n"
+        "- If evidence is weak/absent, say 'insufficient evidence'.\n"
+        "- Prefer prescribing information and guidelines.\n"
+        "- Return: Clinical Summary, Practical Steps, Safety/Contraindications.\n"
+    )
+    # Keep citations short to reduce tokens/latency
+    cite_lines = []
+    for c in chunks[:8]:
+        cite_lines.append(f"- {c.get('title','')} ({c.get('year','')}) {c.get('doi','') or c.get('url','')}".strip())
+
+    user = f"Question: {req.query}\n\nSources:\n" + "\n".join(cite_lines)
+
+    text = llm_text(system, user, temperature=0.2)
+    if req.compact:
+        text = compact_text(text)
+
+    payload = {
+        "answer": text,
+        "evidence": badge,
+        "citations": normalize_citations(chunks[:10]),
+        "meta": {"cached": False, "ann_used": bool(chunks and chunks[0].get("_distance") is not None)}
+    }
+    answer_cache[key] = payload
+    return payload
+
+
+def normalize_citations(chunks: List[dict]) -> List[dict]:
+    out = []
+    seen = set()
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title") or c.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+            "source_type": c.get("source_type"),
+        })
+        if len(out) >= 8:
+            break
+    return out
+
+
+# ---------------------------
+# FASTAPI
+# ---------------------------
+
+app = FastAPI(title=f"{APP_NAME} — Fix Final 3", version="1.0")
+
+@app.get("/health")
+def health():
+    return {"ok": True, "app": APP_NAME}
+
+# (1) Deterministic DDI tool endpoint
+@app.post("/tools/interactions")
+def interactions(req: InteractionRequest):
+    return interaction_tool(req)
+
+# (2) Fast QA with caching + ANN
+@app.post("/qa")
+def qa(req: QARequest):
+    try:
+        return qa_answer(req)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"QA error: {e}")
+
+# Optional: utility to ingest chunks into HNSW (call during your indexing pipeline)
+class IngestRequest(BaseModel):
+    chunks: List[dict] = Field(..., min_items=1, max_items=200)
+
+@app.post("/admin/hnsw/ingest")
+def hnsw_ingest(req: IngestRequest):
+    if not hnsw.ok:
+        raise HTTPException(503, "hnswlib not installed")
+    added = 0
+    for ch in req.chunks:
+        txt = (ch.get("text") or "").strip()
+        if not txt:
+            continue
+        vec = get_embedding_cached(txt[:3000])
+        hnsw.add(vec, ch)
+        added += 1
+    hnsw.save()
+    return {"ok": True, "added": added}
+
+"""
+Quick tests:
+
+# 1) Interactions (deterministic)
+curl -s http://localhost:8000/tools/interactions -H "Content-Type: application/json" -d '{
+  "drugs":["lidocaine","epinephrine"],
+  "normalize": true
+}' | jq .
+
+# 2) QA (fast)
+curl -s http://localhost:8000/qa -H "Content-Type: application/json" -d '{
+  "query":"Management of hyaluronic acid vascular occlusion",
+  "compact": true,
+  "include_evidence_badge": true
+}' | jq .
+"""

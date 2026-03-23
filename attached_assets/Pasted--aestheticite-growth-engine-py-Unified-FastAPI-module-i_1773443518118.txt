@@ -1,0 +1,1075 @@
+# aestheticite_growth_engine.py
+#
+# Unified FastAPI module implementing the 9 remaining roadmap items:
+#
+# 2. Saved answers / bookmarks
+# 3. Session safety report
+# 4. Clinic dashboard
+# 5. Patient-readable export
+# 6. Mobile PWA support
+# 7. Vector retrieval / HNSW-ready adapter
+# 8. Clinic API access with API keys
+# 9. New paper alerts
+# 10. Drug interaction checker
+#
+# Install:
+#   pip install fastapi uvicorn pydantic reportlab
+#
+# Run:
+#   uvicorn aestheticite_growth_engine:app --reload
+#
+# Notes:
+# - Uses sqlite3 for persistence to keep this single-file and easy to deploy.
+# - Replace the dummy adapters with your real PubMed / RxNav / pgvector stack.
+# - This file does not replace your Pre-Procedure Safety UI. It complements it.
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import sqlite3
+import statistics
+import textwrap
+import uuid
+from collections import Counter
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen import canvas
+
+app = FastAPI(title="AesthetiCite Growth Engine", version="1.0.0")
+
+DB_PATH = os.environ.get("AESTHETICITE_DB_PATH", "aestheticite_growth.db")
+EXPORT_DIR = os.environ.get("AESTHETICITE_EXPORT_DIR", "exports")
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+def normalize(text: str) -> str:
+    return " ".join(text.lower().strip().split())
+
+def db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db() -> None:
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS bookmarks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        question TEXT NOT NULL,
+        answer_json TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS session_reports (
+        id TEXT PRIMARY KEY,
+        clinic_id TEXT,
+        clinician_id TEXT,
+        title TEXT NOT NULL,
+        report_date TEXT,
+        notes TEXT,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS session_report_items (
+        id TEXT PRIMARY KEY,
+        report_id TEXT NOT NULL,
+        patient_label TEXT,
+        procedure TEXT NOT NULL,
+        region TEXT NOT NULL,
+        product_type TEXT NOT NULL,
+        technique TEXT,
+        injector_experience_level TEXT,
+        engine_response_json TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS query_logs (
+        id TEXT PRIMARY KEY,
+        clinic_id TEXT,
+        clinician_id TEXT,
+        query_text TEXT NOT NULL,
+        answer_type TEXT NOT NULL,
+        aci_score REAL,
+        response_time_ms REAL,
+        evidence_level TEXT,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS patient_exports (
+        id TEXT PRIMARY KEY,
+        clinic_id TEXT,
+        clinician_id TEXT,
+        source_title TEXT NOT NULL,
+        source_text TEXT NOT NULL,
+        patient_text TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS api_keys (
+        id TEXT PRIMARY KEY,
+        clinic_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        key_hash TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS paper_alert_subscriptions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        email TEXT,
+        last_checked_utc TEXT,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS paper_alert_items (
+        id TEXT PRIMARY KEY,
+        subscription_id TEXT NOT NULL,
+        paper_title TEXT NOT NULL,
+        paper_abstract TEXT,
+        source_url TEXT,
+        published_date TEXT,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_type TEXT,
+        source_ref TEXT,
+        tags_json TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# -----------------------------------------------------------------------------
+# Models
+# -----------------------------------------------------------------------------
+
+class BookmarkCreate(BaseModel):
+    user_id: str
+    title: str
+    question: str
+    answer_json: Dict[str, Any]
+    tags: List[str] = Field(default_factory=list)
+
+class BookmarkResponse(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    question: str
+    answer_json: Dict[str, Any]
+    tags: List[str]
+    created_at_utc: str
+
+class SessionReportCreate(BaseModel):
+    clinic_id: Optional[str] = None
+    clinician_id: Optional[str] = None
+    title: str
+    report_date: Optional[str] = None
+    notes: Optional[str] = None
+
+class SessionReportItemCreate(BaseModel):
+    patient_label: Optional[str] = None
+    procedure: str
+    region: str
+    product_type: str
+    technique: Optional[str] = None
+    injector_experience_level: Optional[str] = None
+    engine_response_json: Dict[str, Any]
+
+class SessionReportResponse(BaseModel):
+    id: str
+    clinic_id: Optional[str] = None
+    clinician_id: Optional[str] = None
+    title: str
+    report_date: Optional[str] = None
+    notes: Optional[str] = None
+    created_at_utc: str
+
+class SessionReportItemResponse(BaseModel):
+    id: str
+    report_id: str
+    patient_label: Optional[str] = None
+    procedure: str
+    region: str
+    product_type: str
+    technique: Optional[str] = None
+    injector_experience_level: Optional[str] = None
+    engine_response_json: Dict[str, Any]
+    created_at_utc: str
+
+class QueryLogCreate(BaseModel):
+    clinic_id: Optional[str] = None
+    clinician_id: Optional[str] = None
+    query_text: str
+    answer_type: str
+    aci_score: Optional[float] = None
+    response_time_ms: Optional[float] = None
+    evidence_level: Optional[str] = None
+
+class DashboardResponse(BaseModel):
+    total_queries: int
+    average_aci_score: Optional[float] = None
+    average_response_time_ms: Optional[float] = None
+    top_questions: List[Dict[str, Any]]
+    evidence_level_distribution: Dict[str, int]
+    answer_type_distribution: Dict[str, int]
+
+class PatientReadableRequest(BaseModel):
+    clinic_id: Optional[str] = None
+    clinician_id: Optional[str] = None
+    source_title: str
+    source_text: str
+
+class PatientReadableResponse(BaseModel):
+    id: str
+    patient_text: str
+    created_at_utc: str
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=5, ge=1, le=20)
+    use_hnsw: bool = True
+
+class SearchResultItem(BaseModel):
+    chunk_id: str
+    title: str
+    snippet: str
+    source_type: Optional[str] = None
+    source_ref: Optional[str] = None
+    score: float
+
+class SearchResponse(BaseModel):
+    mode: str
+    results: List[SearchResultItem]
+
+class APIKeyCreateRequest(BaseModel):
+    clinic_id: str
+    label: str
+
+class APIKeyCreateResponse(BaseModel):
+    id: str
+    clinic_id: str
+    label: str
+    api_key: str
+    created_at_utc: str
+
+class PaperAlertSubscribeRequest(BaseModel):
+    user_id: str
+    topic: str
+    email: Optional[str] = None
+
+class PaperAlertSubscriptionResponse(BaseModel):
+    id: str
+    user_id: str
+    topic: str
+    email: Optional[str] = None
+    last_checked_utc: Optional[str] = None
+    created_at_utc: str
+
+class PaperAlertDigestResponse(BaseModel):
+    subscription_id: str
+    topic: str
+    new_items: List[Dict[str, Any]]
+
+class DrugInteractionRequest(BaseModel):
+    medications: List[str] = Field(default_factory=list)
+    planned_products: List[str] = Field(default_factory=list)
+
+class DrugInteractionItem(BaseModel):
+    medication: str
+    product_or_context: str
+    severity: Literal["low", "moderate", "high"]
+    explanation: str
+    action: str
+
+class DrugInteractionResponse(BaseModel):
+    items: List[DrugInteractionItem]
+    summary: str
+
+# -----------------------------------------------------------------------------
+# PDF helper
+# -----------------------------------------------------------------------------
+
+class PDFWriter:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.c = canvas.Canvas(path, pagesize=A4)
+        self.width, self.height = A4
+        self.left = 18 * mm
+        self.right = self.width - 18 * mm
+        self.top = self.height - 18 * mm
+        self.bottom = 18 * mm
+        self.y = self.top
+
+    def new_page(self) -> None:
+        self.c.showPage()
+        self.y = self.top
+
+    def ensure_space(self, needed: float) -> None:
+        if self.y - needed < self.bottom:
+            self.new_page()
+
+    def line(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14) -> None:
+        self.ensure_space(leading)
+        self.c.setFont(font, size)
+        self.c.drawString(self.left, self.y, text[:180])
+        self.y -= leading
+
+    def wrapped(self, text: str, font: str = "Helvetica", size: int = 10, leading: int = 14, bullet: Optional[str] = None) -> None:
+        max_width = self.right - self.left
+        self.c.setFont(font, size)
+        prefix = f"{bullet} " if bullet else ""
+        indent_width = stringWidth(prefix, font, size) if bullet else 0
+        usable_width = max_width - indent_width
+
+        words = text.split()
+        current = ""
+        first = True
+
+        def flush(line_text: str, is_first: bool) -> None:
+            self.ensure_space(leading)
+            self.c.setFont(font, size)
+            if bullet:
+                if is_first:
+                    self.c.drawString(self.left, self.y, prefix + line_text)
+                else:
+                    self.c.drawString(self.left + indent_width, self.y, line_text)
+            else:
+                self.c.drawString(self.left, self.y, line_text)
+            self.y -= leading
+
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if stringWidth(candidate, font, size) <= usable_width:
+                current = candidate
+            else:
+                flush(current, first)
+                first = False
+                current = word
+        if current:
+            flush(current, first)
+
+    def section(self, title: str) -> None:
+        self.y -= 4
+        self.line(title, font="Helvetica-Bold", size=12, leading=16)
+
+    def save(self) -> None:
+        self.c.save()
+
+# -----------------------------------------------------------------------------
+# Dummy adapters
+# -----------------------------------------------------------------------------
+
+class HNSWRetriever:
+    """
+    This is a placeholder adapter.
+
+    In production:
+    - store embeddings in pgvector
+    - create HNSW index
+    - run ANN search using cosine distance
+    """
+    def search(self, query: str, top_k: int) -> List[SearchResultItem]:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM knowledge_chunks")
+        rows = cur.fetchall()
+        conn.close()
+
+        terms = set(normalize(query).split())
+        scored = []
+        for row in rows:
+            content = normalize(row["content"])
+            title = normalize(row["title"])
+            score = sum(1 for t in terms if t in content or t in title)
+            if score > 0:
+                snippet = row["content"][:240]
+                scored.append(SearchResultItem(
+                    chunk_id=row["id"],
+                    title=row["title"],
+                    snippet=snippet,
+                    source_type=row["source_type"],
+                    source_ref=row["source_ref"],
+                    score=float(score),
+                ))
+        scored.sort(key=lambda x: x.score, reverse=True)
+        return scored[:top_k]
+
+class PubMedAdapter:
+    """
+    Replace with real PubMed sync.
+    """
+    def search_new_papers(self, topic: str, since_utc: Optional[str]) -> List[Dict[str, Any]]:
+        topic_n = normalize(topic)
+        dummy: List[Dict[str, Any]] = []
+
+        if "vascular occlusion" in topic_n:
+            dummy.append({
+                "title": "Recent review of vascular occlusion management in aesthetic medicine",
+                "abstract": "A review of recognition and management pathways for filler-related vascular compromise.",
+                "url": "https://pubmed.ncbi.nlm.nih.gov/example-vascular-occlusion",
+                "published_date": "2026-03-10",
+            })
+        if "botulinum" in topic_n or "ptosis" in topic_n:
+            dummy.append({
+                "title": "Complication patterns after botulinum toxin injections in facial aesthetics",
+                "abstract": "Review of ptosis and diffusion-related adverse effects in aesthetic use.",
+                "url": "https://pubmed.ncbi.nlm.nih.gov/example-botulinum-ptosis",
+                "published_date": "2026-03-11",
+            })
+        if not dummy:
+            dummy.append({
+                "title": f"New paper alert placeholder for topic: {topic}",
+                "abstract": "Replace PubMed adapter with real search logic.",
+                "url": "https://pubmed.ncbi.nlm.nih.gov/",
+                "published_date": "2026-03-12",
+            })
+        return dummy
+
+class DrugInteractionAdapter:
+    """
+    Replace with RxNav/NIH integration.
+    """
+    HIGH = {"warfarin", "apixaban", "rivaroxaban", "dabigatran"}
+    MODERATE = {"aspirin", "clopidogrel", "ibuprofen", "naproxen", "sertraline", "fluoxetine", "escitalopram"}
+
+    def check(self, medications: List[str], planned_products: List[str]) -> List[DrugInteractionItem]:
+        items: List[DrugInteractionItem] = []
+        meds_n = [normalize(x) for x in medications]
+        prods_n = [normalize(x) for x in planned_products]
+
+        for med in meds_n:
+            if med in self.HIGH:
+                for prod in prods_n or ["injectable aesthetic procedure"]:
+                    items.append(DrugInteractionItem(
+                        medication=med,
+                        product_or_context=prod,
+                        severity="high",
+                        explanation="This medication can materially increase bruising or bleeding risk during injectable procedures.",
+                        action="Review bleeding risk, consider procedure planning adjustments, and document counselling."
+                    ))
+            elif med in self.MODERATE:
+                for prod in prods_n or ["injectable aesthetic procedure"]:
+                    items.append(DrugInteractionItem(
+                        medication=med,
+                        product_or_context=prod,
+                        severity="moderate",
+                        explanation="This medication may increase bruising, bleeding, or counselling needs in aesthetic procedures.",
+                        action="Use additional caution, discuss expected bruising, and assess whether timing or technique should be adjusted."
+                    ))
+        return items
+
+hnsw_retriever = HNSWRetriever()
+pubmed_adapter = PubMedAdapter()
+drug_adapter = DrugInteractionAdapter()
+
+# -----------------------------------------------------------------------------
+# Auth for clinic API access
+# -----------------------------------------------------------------------------
+
+def hash_api_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def get_api_key_record(x_api_key: Optional[str] = Header(default=None)) -> sqlite3.Row:
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM api_keys WHERE key_hash = ? AND is_active = 1", (hash_api_key(x_api_key),))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid API key.")
+    return row
+
+# -----------------------------------------------------------------------------
+# Seed knowledge chunks helper
+# -----------------------------------------------------------------------------
+
+@app.post("/internal/seed-knowledge")
+def seed_knowledge() -> Dict[str, Any]:
+    seed_rows = [
+        {
+            "title": "Vascular occlusion after HA filler",
+            "content": "High-dose pulsed hyaluronidase, territory-based treatment, rapid reassessment, and emergency escalation for visual symptoms.",
+            "source_type": "review",
+            "source_ref": "S1",
+            "tags": ["vascular occlusion", "hyaluronidase", "filler"]
+        },
+        {
+            "title": "Tyndall effect after superficial filler",
+            "content": "Blue-gray discoloration after superficial HA filler placement can often be treated with conservative targeted hyaluronidase.",
+            "source_type": "review",
+            "source_ref": "S20",
+            "tags": ["tyndall", "tear trough", "ha filler"]
+        },
+        {
+            "title": "Ptosis after botulinum toxin",
+            "content": "Botulinum toxin ptosis is usually temporary and linked to diffusion. Diplopia or atypical neurologic findings require escalation.",
+            "source_type": "review",
+            "source_ref": "S30",
+            "tags": ["ptosis", "botulinum toxin"]
+        },
+    ]
+    conn = db()
+    cur = conn.cursor()
+    count = 0
+    for row in seed_rows:
+        cur.execute("""
+            INSERT INTO knowledge_chunks (id, title, content, source_type, source_ref, tags_json, created_at_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (new_id(), row["title"], row["content"], row["source_type"], row["source_ref"], json.dumps(row["tags"]), now_utc_iso()))
+        count += 1
+    conn.commit()
+    conn.close()
+    return {"inserted": count}
+
+# -----------------------------------------------------------------------------
+# 2. Saved answers / bookmarks
+# -----------------------------------------------------------------------------
+
+@app.post("/bookmarks", response_model=BookmarkResponse)
+def create_bookmark(payload: BookmarkCreate) -> BookmarkResponse:
+    rec_id = new_id()
+    created = now_utc_iso()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bookmarks (id, user_id, title, question, answer_json, tags_json, created_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (rec_id, payload.user_id, payload.title, payload.question, json.dumps(payload.answer_json), json.dumps(payload.tags), created))
+    conn.commit()
+    conn.close()
+    return BookmarkResponse(
+        id=rec_id,
+        user_id=payload.user_id,
+        title=payload.title,
+        question=payload.question,
+        answer_json=payload.answer_json,
+        tags=payload.tags,
+        created_at_utc=created,
+    )
+
+@app.get("/bookmarks/{user_id}", response_model=List[BookmarkResponse])
+def list_bookmarks(user_id: str) -> List[BookmarkResponse]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM bookmarks WHERE user_id = ? ORDER BY created_at_utc DESC", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        BookmarkResponse(
+            id=r["id"],
+            user_id=r["user_id"],
+            title=r["title"],
+            question=r["question"],
+            answer_json=json.loads(r["answer_json"]),
+            tags=json.loads(r["tags_json"]),
+            created_at_utc=r["created_at_utc"],
+        ) for r in rows
+    ]
+
+@app.delete("/bookmarks/{bookmark_id}")
+def delete_bookmark(bookmark_id: str) -> Dict[str, Any]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "deleted_id": bookmark_id}
+
+# -----------------------------------------------------------------------------
+# 3. Session safety report
+# -----------------------------------------------------------------------------
+
+@app.post("/session-reports", response_model=SessionReportResponse)
+def create_session_report(payload: SessionReportCreate) -> SessionReportResponse:
+    rec_id = new_id()
+    created = now_utc_iso()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO session_reports (id, clinic_id, clinician_id, title, report_date, notes, created_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (rec_id, payload.clinic_id, payload.clinician_id, payload.title, payload.report_date, payload.notes, created))
+    conn.commit()
+    conn.close()
+    return SessionReportResponse(
+        id=rec_id,
+        clinic_id=payload.clinic_id,
+        clinician_id=payload.clinician_id,
+        title=payload.title,
+        report_date=payload.report_date,
+        notes=payload.notes,
+        created_at_utc=created,
+    )
+
+@app.post("/session-reports/{report_id}/items", response_model=SessionReportItemResponse)
+def add_session_report_item(report_id: str, payload: SessionReportItemCreate) -> SessionReportItemResponse:
+    item_id = new_id()
+    created = now_utc_iso()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM session_reports WHERE id = ?", (report_id,))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Report not found.")
+    cur.execute("""
+        INSERT INTO session_report_items (
+            id, report_id, patient_label, procedure, region, product_type,
+            technique, injector_experience_level, engine_response_json, created_at_utc
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        item_id, report_id, payload.patient_label, payload.procedure, payload.region,
+        payload.product_type, payload.technique, payload.injector_experience_level,
+        json.dumps(payload.engine_response_json), created
+    ))
+    conn.commit()
+    conn.close()
+    return SessionReportItemResponse(
+        id=item_id,
+        report_id=report_id,
+        patient_label=payload.patient_label,
+        procedure=payload.procedure,
+        region=payload.region,
+        product_type=payload.product_type,
+        technique=payload.technique,
+        injector_experience_level=payload.injector_experience_level,
+        engine_response_json=payload.engine_response_json,
+        created_at_utc=created,
+    )
+
+@app.get("/session-reports/{report_id}")
+def get_session_report(report_id: str) -> Dict[str, Any]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM session_reports WHERE id = ?", (report_id,))
+    report = cur.fetchone()
+    if not report:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Report not found.")
+    cur.execute("SELECT * FROM session_report_items WHERE report_id = ? ORDER BY created_at_utc ASC", (report_id,))
+    items = cur.fetchall()
+    conn.close()
+    return {
+        "report": dict(report),
+        "items": [
+            {
+                **dict(r),
+                "engine_response_json": json.loads(r["engine_response_json"])
+            } for r in items
+        ]
+    }
+
+@app.post("/session-reports/{report_id}/export-pdf")
+def export_session_report_pdf(report_id: str) -> Dict[str, Any]:
+    payload = get_session_report(report_id)
+    report = payload["report"]
+    items = payload["items"]
+
+    path = os.path.join(EXPORT_DIR, f"session_report_{report_id}.pdf")
+    pdf = PDFWriter(path)
+    pdf.line("AesthetiCite Session Safety Report", font="Helvetica-Bold", size=16, leading=20)
+    pdf.line(f"Title: {report['title']}", font="Helvetica-Bold")
+    pdf.line(f"Report ID: {report['id']}")
+    pdf.line(f"Date: {report.get('report_date') or ''}")
+    if report.get("notes"):
+        pdf.section("Notes")
+        pdf.wrapped(report["notes"])
+
+    for idx, item in enumerate(items, start=1):
+        eng = item["engine_response_json"]
+        pdf.section(f"Patient / Procedure {idx}")
+        pdf.wrapped(f"Patient label: {item.get('patient_label') or 'N/A'}", bullet="•")
+        pdf.wrapped(f"Procedure: {item['procedure']}", bullet="•")
+        pdf.wrapped(f"Region: {item['region']}", bullet="•")
+        pdf.wrapped(f"Product: {item['product_type']}", bullet="•")
+        if item.get("technique"):
+            pdf.wrapped(f"Technique: {item['technique']}", bullet="•")
+        if item.get("injector_experience_level"):
+            pdf.wrapped(f"Injector experience: {item['injector_experience_level']}", bullet="•")
+
+        if isinstance(eng, dict):
+            assessment = eng.get("safety_assessment", {})
+            pdf.wrapped(
+                f"Decision: {assessment.get('decision', 'N/A')} | "
+                f"Risk score: {assessment.get('overall_risk_score', 'N/A')}",
+                bullet="•"
+            )
+            for risk in eng.get("top_risks", [])[:5]:
+                pdf.wrapped(
+                    f"Risk: {risk.get('complication')} ({risk.get('risk_score')}/100)",
+                    bullet="•"
+                )
+            for step in eng.get("mitigation_steps", [])[:8]:
+                pdf.wrapped(f"Mitigation: {step}", bullet="•")
+
+    pdf.save()
+    return {"report_id": report_id, "pdf_path": path, "filename": os.path.basename(path)}
+
+# -----------------------------------------------------------------------------
+# 4. Clinic dashboard
+# -----------------------------------------------------------------------------
+
+@app.post("/query-logs")
+def create_query_log(payload: QueryLogCreate) -> Dict[str, Any]:
+    rec_id = new_id()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO query_logs (id, clinic_id, clinician_id, query_text, answer_type, aci_score, response_time_ms, evidence_level, created_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        rec_id, payload.clinic_id, payload.clinician_id, payload.query_text,
+        payload.answer_type, payload.aci_score, payload.response_time_ms,
+        payload.evidence_level, now_utc_iso()
+    ))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "id": rec_id}
+
+@app.get("/dashboard/{clinic_id}", response_model=DashboardResponse)
+def clinic_dashboard(clinic_id: str) -> DashboardResponse:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM query_logs WHERE clinic_id = ?", (clinic_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    total = len(rows)
+    aci_vals = [float(r["aci_score"]) for r in rows if r["aci_score"] is not None]
+    rt_vals = [float(r["response_time_ms"]) for r in rows if r["response_time_ms"] is not None]
+
+    top_questions = []
+    q_counter = Counter(r["query_text"] for r in rows)
+    for q, count in q_counter.most_common(10):
+        top_questions.append({"query": q, "count": count})
+
+    evidence_counter = Counter(r["evidence_level"] for r in rows if r["evidence_level"])
+    answer_counter = Counter(r["answer_type"] for r in rows if r["answer_type"])
+
+    return DashboardResponse(
+        total_queries=total,
+        average_aci_score=round(statistics.mean(aci_vals), 2) if aci_vals else None,
+        average_response_time_ms=round(statistics.mean(rt_vals), 2) if rt_vals else None,
+        top_questions=top_questions,
+        evidence_level_distribution=dict(evidence_counter),
+        answer_type_distribution=dict(answer_counter),
+    )
+
+# -----------------------------------------------------------------------------
+# 5. Patient-readable export
+# -----------------------------------------------------------------------------
+
+def simplify_for_patient(title: str, source_text: str) -> str:
+    clean = source_text.replace("\n", " ").strip()
+    clean = " ".join(clean.split())
+    short = textwrap.shorten(clean, width=1200, placeholder="...")
+    simplified = (
+        f"{title}\n\n"
+        "Patient summary:\n"
+        "This information explains the treatment or clinical point in simpler language.\n\n"
+        f"{short}\n\n"
+        "What this means for you:\n"
+        "- Your clinician is using this information to improve safety and decision-making.\n"
+        "- The exact treatment decision still depends on your own medical situation.\n"
+        "- Ask your clinician if you want the risks, benefits, and alternatives explained for your case."
+    )
+    return simplified
+
+@app.post("/patient-readable-export", response_model=PatientReadableResponse)
+def patient_readable_export(payload: PatientReadableRequest) -> PatientReadableResponse:
+    rec_id = new_id()
+    created = now_utc_iso()
+    patient_text = simplify_for_patient(payload.source_title, payload.source_text)
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO patient_exports (id, clinic_id, clinician_id, source_title, source_text, patient_text, created_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (rec_id, payload.clinic_id, payload.clinician_id, payload.source_title, payload.source_text, patient_text, created))
+    conn.commit()
+    conn.close()
+
+    return PatientReadableResponse(id=rec_id, patient_text=patient_text, created_at_utc=created)
+
+# -----------------------------------------------------------------------------
+# 6. Mobile PWA support
+# -----------------------------------------------------------------------------
+
+@app.get("/pwa/manifest.json")
+def pwa_manifest() -> Dict[str, Any]:
+    return {
+        "name": "AesthetiCite",
+        "short_name": "AesthetiCite",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f172a",
+        "theme_color": "#0f172a",
+        "description": "Clinical safety and evidence platform for aesthetic medicine.",
+        "icons": [
+            {
+                "src": "/icons/icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png"
+            },
+            {
+                "src": "/icons/icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png"
+            }
+        ]
+    }
+
+@app.get("/pwa/sw.js", response_class=PlainTextResponse)
+def service_worker() -> str:
+    return """
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', (event) => {
+  // Minimal pass-through service worker starter.
+});
+""".strip()
+
+# -----------------------------------------------------------------------------
+# 7. Vector retrieval / HNSW-ready search
+# -----------------------------------------------------------------------------
+
+@app.post("/search", response_model=SearchResponse)
+def search_knowledge(payload: SearchRequest) -> SearchResponse:
+    results = hnsw_retriever.search(payload.query, payload.top_k)
+    mode = "hnsw_adapter" if payload.use_hnsw else "keyword_fallback"
+    return SearchResponse(mode=mode, results=results)
+
+# -----------------------------------------------------------------------------
+# 8. Clinic API access with API keys
+# -----------------------------------------------------------------------------
+
+@app.post("/api-keys", response_model=APIKeyCreateResponse)
+def create_api_key(payload: APIKeyCreateRequest) -> APIKeyCreateResponse:
+    raw_key = "ac_" + secrets.token_urlsafe(32)
+    rec_id = new_id()
+    created = now_utc_iso()
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO api_keys (id, clinic_id, label, key_hash, created_at_utc, is_active)
+        VALUES (?, ?, ?, ?, ?, 1)
+    """, (rec_id, payload.clinic_id, payload.label, hash_api_key(raw_key), created))
+    conn.commit()
+    conn.close()
+
+    return APIKeyCreateResponse(
+        id=rec_id,
+        clinic_id=payload.clinic_id,
+        label=payload.label,
+        api_key=raw_key,
+        created_at_utc=created,
+    )
+
+@app.post("/clinic-api/search", response_model=SearchResponse)
+def clinic_api_search(payload: SearchRequest, key_row: sqlite3.Row = Depends(get_api_key_record)) -> SearchResponse:
+    results = hnsw_retriever.search(payload.query, payload.top_k)
+    return SearchResponse(mode="clinic_api", results=results)
+
+# -----------------------------------------------------------------------------
+# 9. New paper alerts
+# -----------------------------------------------------------------------------
+
+@app.post("/paper-alerts/subscribe", response_model=PaperAlertSubscriptionResponse)
+def subscribe_paper_alert(payload: PaperAlertSubscribeRequest) -> PaperAlertSubscriptionResponse:
+    rec_id = new_id()
+    created = now_utc_iso()
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO paper_alert_subscriptions (id, user_id, topic, email, last_checked_utc, created_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (rec_id, payload.user_id, payload.topic, payload.email, None, created))
+    conn.commit()
+    conn.close()
+
+    return PaperAlertSubscriptionResponse(
+        id=rec_id,
+        user_id=payload.user_id,
+        topic=payload.topic,
+        email=payload.email,
+        last_checked_utc=None,
+        created_at_utc=created,
+    )
+
+@app.get("/paper-alerts/{user_id}", response_model=List[PaperAlertSubscriptionResponse])
+def list_paper_alerts(user_id: str) -> List[PaperAlertSubscriptionResponse]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM paper_alert_subscriptions WHERE user_id = ? ORDER BY created_at_utc DESC", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        PaperAlertSubscriptionResponse(
+            id=r["id"],
+            user_id=r["user_id"],
+            topic=r["topic"],
+            email=r["email"],
+            last_checked_utc=r["last_checked_utc"],
+            created_at_utc=r["created_at_utc"],
+        ) for r in rows
+    ]
+
+@app.post("/paper-alerts/{subscription_id}/run", response_model=PaperAlertDigestResponse)
+def run_paper_alert(subscription_id: str) -> PaperAlertDigestResponse:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM paper_alert_subscriptions WHERE id = ?", (subscription_id,))
+    sub = cur.fetchone()
+    if not sub:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Subscription not found.")
+
+    papers = pubmed_adapter.search_new_papers(sub["topic"], sub["last_checked_utc"])
+    new_items = []
+    for p in papers:
+        item_id = new_id()
+        cur.execute("""
+            INSERT INTO paper_alert_items (id, subscription_id, paper_title, paper_abstract, source_url, published_date, created_at_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            item_id,
+            subscription_id,
+            p["title"],
+            p.get("abstract"),
+            p.get("url"),
+            p.get("published_date"),
+            now_utc_iso()
+        ))
+        new_items.append(p)
+
+    cur.execute("UPDATE paper_alert_subscriptions SET last_checked_utc = ? WHERE id = ?", (now_utc_iso(), subscription_id))
+    conn.commit()
+    conn.close()
+
+    return PaperAlertDigestResponse(subscription_id=subscription_id, topic=sub["topic"], new_items=new_items)
+
+# -----------------------------------------------------------------------------
+# 10. Drug interaction checker
+# -----------------------------------------------------------------------------
+
+@app.post("/drug-interactions", response_model=DrugInteractionResponse)
+def drug_interactions(payload: DrugInteractionRequest) -> DrugInteractionResponse:
+    items = drug_adapter.check(payload.medications, payload.planned_products)
+    if items:
+        summary = "Potential interaction or counselling issues were identified for the planned aesthetic treatment."
+    else:
+        summary = "No significant interactions were identified by the current ruleset."
+    return DrugInteractionResponse(items=items, summary=summary)
+
+# -----------------------------------------------------------------------------
+# Convenience export endpoints
+# -----------------------------------------------------------------------------
+
+@app.get("/patient-readable-export/{export_id}")
+def get_patient_export(export_id: str) -> Dict[str, Any]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM patient_exports WHERE id = ?", (export_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Export not found.")
+    return dict(row)
+
+# -----------------------------------------------------------------------------
+# Health
+# -----------------------------------------------------------------------------
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "time": now_utc_iso(),
+        "db_path": DB_PATH,
+        "export_dir": EXPORT_DIR
+    }
+
+# -----------------------------------------------------------------------------
+# Example usage
+# -----------------------------------------------------------------------------
+
+"""
+Suggested build order after dropping in this file:
+
+1. Bookmarks UI -> /bookmarks
+2. Session Safety Report UI -> /session-reports + /session-reports/{id}/items
+3. Dashboard UI -> /dashboard/{clinic_id}
+4. Patient-readable export UI -> /patient-readable-export
+5. PWA wiring -> /pwa/manifest.json + /pwa/sw.js
+6. Search UI -> /search
+7. Clinic enterprise API docs -> /api-keys + /clinic-api/search
+8. Alerts screen -> /paper-alerts/*
+9. Drug interaction page -> /drug-interactions
+
+What still needs real infrastructure:
+- HNSW true vector search: replace HNSWRetriever with pgvector/HNSW implementation
+- PubMed sync: replace PubMedAdapter
+- RxNav integration: replace DrugInteractionAdapter
+"""

@@ -1,0 +1,460 @@
+You are working on the AesthetiCite codebase. I need you to perform a complete 
+demo readiness check and fix everything that is broken or missing before a 
+clinical demo with Dr. Anju Mehta — an experienced aesthetic medicine doctor 
+who will test the platform critically.
+
+Work through every step below in order. Do not skip any step. 
+Report the result of each check before moving to the next.
+
+═══════════════════════════════════════════════════════════════
+PHASE 1 — DEPLOY NEW FILES FROM THIS SESSION
+═══════════════════════════════════════════════════════════════
+
+The following files were written in the current project session and need to 
+be deployed into the codebase. Check if each file exists. If it does not 
+exist, create it with the content from the outputs directory or 
+reconstruct from the instructions below.
+
+1.1 — client/src/pages/clinic-home.tsx
+   → The doctor homepage. "What do you want to do?" screen with 4 primary 
+     action cards: Evidence Search, Pre-Procedure Safety, Emergency Protocol, 
+     Session Safety Report. Plus quick protocol shortcuts and secondary tools grid.
+   → If missing: create it.
+
+1.2 — client/src/pages/emergency.tsx
+   → Dark-themed emergency protocol page at route /emergency
+   → Sidebar of protocol buttons (vascular occlusion, anaphylaxis, tyndall, 
+     ptosis, infection/biofilm, nodules, neuromodulator resistance, skin necrosis, 
+     vision change)
+   → Calls POST /api/complications/protocol with mode: "emergency"
+   → Shows immediate actions, dose guidance, red flags, escalation, live timer
+   → PDF export button calls POST /api/complications/export-pdf
+   → Supports URL param: /emergency?protocol=vascular_occlusion for deep-linking
+   → If missing: create it.
+
+1.3 — client/src/pages/case-log.tsx
+   → Case logging UI connecting to POST /api/complications/log-case 
+     and GET /api/complications/stats
+   → Slide-in form panel with complication type, region, product, symptoms, outcome
+   → Dataset stats with distribution bars
+   → If missing: create it.
+
+1.4 — client/src/App.tsx — UPDATE with new routes
+   Replace the current App.tsx router with this updated version:
+   
+   ADD these imports at the top:
+     import ClinicHomePage from "@/pages/clinic-home";
+     import EmergencyPage from "@/pages/emergency";
+     import CaseLogPage from "@/pages/case-log";
+   
+   CHANGE the "/" route from AskPage to ClinicHomePage:
+     <Route path="/">
+       {() => <ProtectedRoute component={ClinicHomePage} />}
+     </Route>
+   
+   ADD "/home" route:
+     <Route path="/home">
+       {() => <ProtectedRoute component={ClinicHomePage} />}
+     </Route>
+   
+   ADD "/emergency" route:
+     <Route path="/emergency">
+       {() => <ProtectedRoute component={EmergencyPage} />}
+     </Route>
+   
+   ADD "/case-log" route:
+     <Route path="/case-log">
+       {() => <ProtectedRoute component={CaseLogPage} />}
+     </Route>
+   
+   Keep all existing routes exactly as they are. Only add the new ones.
+
+1.5 — server/routes.ts — ADD missing proxy routes
+   Find the section around line 503 where complication and safety routes are 
+   proxied. Add these lines if they do not already exist:
+   
+     app.post("/api/complications/prescan-briefing", (req, res) => 
+       proxyToFastAPI(req, res, "/api/complications/prescan-briefing"));
+   
+   Also confirm these already exist (add if missing):
+     app.post("/api/safety/preprocedure-check", ...)
+     app.post("/api/safety/preprocedure-check/export-pdf", ...)
+     app.post("/api/complications/protocol", ...)
+     app.post("/api/complications/export-pdf", ...)
+     app.get("/api/complications/protocols", ...)
+     app.post("/api/complications/log-case", ...)
+     app.get("/api/complications/stats", ...)
+
+1.6 — app/api/preprocedure_safety_engine.py — ADD enhancements
+   Open this file and make these additions:
+   
+   a) In the PatientFactors model, add this field if not present:
+        glp1_patient: Optional[bool] = None
+   
+   b) In the ProcedureInsight model, add these fields if not present:
+        ultrasound_recommended: bool = False
+        ultrasound_note: Optional[str] = None
+   
+   c) In the adjust_score() function, add this block inside the 
+      "if pf:" section if not present:
+        if pf.glp1_patient:
+            score += 6
+            flags.append(
+                "GLP-1 medication (semaglutide/tirzepatide): rapid facial fat "
+                "loss alters volume distribution. Reassess filler quantities. "
+                "Facial anatomy may differ from prior assessments."
+            )
+   
+   d) Add this constant if not present:
+        ULTRASOUND_RECOMMENDED_REGIONS = {
+            "nose", "nasal", "temple", "temporal", "forehead", "frontal",
+            "tear trough", "infraorbital", "periorbital", "glabella"
+        }
+   
+   e) Add this function if not present:
+        def get_ultrasound_flag(region: str):
+            r = region.lower().strip()
+            for key in ULTRASOUND_RECOMMENDED_REGIONS:
+                if key in r:
+                    return True, f"Ultrasound guidance recommended for {region}. This region carries significant vascular complexity."
+            return False, None
+   
+   f) In build_response(), before constructing ProcedureInsight, add:
+        us_recommended, us_note = get_ultrasound_flag(request.region)
+      
+      Then pass to ProcedureInsight:
+        ultrasound_recommended=us_recommended,
+        ultrasound_note=us_note,
+
+1.7 — app/api/complication_protocol_engine.py — ADD neuromodulator resistance
+   
+   a) Find the PROTOCOLS dict or the protocol data structure. 
+      Add a new entry with key "neuromodulator_resistance" containing:
+      - name: "Neuromodulator Resistance / Treatment Failure"
+      - clinical_summary: explanation of true vs pseudo-resistance 
+        (CMAC 2025 framework)
+      - immediate_actions: 
+          1. Classify true resistance vs pseudo-resistance
+          2. Audit dose, dilution, storage, technique
+          3. Assess anatomy and patient expectations
+          4. For pseudo: adjust dose/depth/technique
+          5. For true: switch to IncobotulinumtoxinA (Xeomin)
+          6. Consider structured reset technique (CMAC 2025)
+      - dose_guidance for OnabotulinumtoxinA, IncobotulinumtoxinA, 
+        AbobotulinumtoxinA
+      - red_flags, escalation, monitoring, limitations
+      - severity: "moderate", urgency: "routine"
+   
+   b) In the protocol matching function, add these keywords that 
+      trigger "neuromodulator_resistance":
+        "resistance", "not working", "wearing off", "no response",
+        "shortened duration", "pseudo-resistance", "toxin failure",
+        "botox failure", "botox not working", "toxin not lasting",
+        "xeomin switch", "neuromodulator failure"
+   
+   c) Add a prescan_briefing endpoint:
+        POST /api/complications/prescan-briefing
+        Accepts: { region: str, injector_experience_level?: str }
+        Returns per-region ultrasound checklist with:
+          - structures_to_identify
+          - doppler_settings
+          - key_findings_to_document
+          - safe_windows
+          - abort_criteria
+          - evidence_note
+        Use region-specific data for: nose, temple, forehead, 
+        tear trough, glabella, nasolabial fold.
+
+═══════════════════════════════════════════════════════════════
+PHASE 2 — BACKEND HEALTH CHECKS
+═══════════════════════════════════════════════════════════════
+
+Run all of these API tests. Fix any that fail before continuing.
+
+2.1 — Health check
+   curl http://localhost:8000/health
+   Expected: {"status": "ok"}
+   If fails: check uvicorn is running, check for import errors in main.py
+
+2.2 — Evidence search (THE MOST IMPORTANT CHECK)
+   curl -X POST http://localhost:8000/v2/stream \
+     -H "Content-Type: application/json" \
+     -d '{"question": "what is the recommended hyaluronidase dose for vascular occlusion after filler", "domain": "aesthetic_medicine", "k": 12}'
+   Expected: streaming SSE response with citations and clinical content
+   If fails: check OpenAI API key, check pgvector database, check embedding model
+
+2.3 — Vascular occlusion protocol (DEMO SCENARIO 1)
+   curl -X POST http://localhost:8000/api/complications/protocol \
+     -H "Content-Type: application/json" \
+     -d '{"query": "vascular occlusion after lip filler", "mode": "emergency"}'
+   Expected: JSON with matched_protocol_name, immediate_actions array, 
+             dose_guidance, red_flags, escalation
+   If fails: check complication_protocol_engine.py imports and router registration
+
+2.4 — Nose filler safety check (DEMO SCENARIO 2)
+   curl -X POST http://localhost:8000/api/safety/preprocedure-check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "procedure": "nose filler",
+       "region": "nose",
+       "product_type": "hyaluronic acid filler",
+       "technique": "needle",
+       "injector_experience_level": "junior",
+       "patient_factors": {"prior_vascular_event": true}
+     }'
+   Expected: decision "high_risk", overall_risk_score above 80,
+             ultrasound_recommended true in procedure_insight,
+             danger zones including dorsal nasal artery
+   If fails: check preprocedure_safety_engine.py and its router
+
+2.5 — Pre-procedure PDF export
+   curl -X POST http://localhost:8000/api/safety/preprocedure-check/export-pdf \
+     -H "Content-Type: application/json" \
+     -d '{
+       "procedure": "nose filler",
+       "region": "nose", 
+       "product_type": "hyaluronic acid filler",
+       "technique": "needle",
+       "injector_experience_level": "junior"
+     }' \
+     --output test_safety.pdf
+   Expected: a PDF file is created
+   If fails: check reportlab is installed, check AESTHETICITE_EXPORT_DIR exists
+
+2.6 — Complication protocol PDF export
+   curl -X POST http://localhost:8000/api/complications/export-pdf \
+     -H "Content-Type: application/json" \
+     -d '{"query": "vascular occlusion", "mode": "emergency"}' \
+     --output test_protocol.pdf
+   Expected: a PDF file is created
+   If fails: check export function in complication_protocol_engine.py
+
+2.7 — Protocol list
+   curl http://localhost:8000/api/complications/protocols
+   Expected: JSON array of all available protocols
+   Confirm "neuromodulator_resistance" appears in the list
+
+2.8 — Drug interactions
+   curl -X POST http://localhost:8000/api/growth/drug-interactions \
+     -H "Content-Type: application/json" \
+     -d '{"medications": ["warfarin"], "planned_products": ["ha filler"]}'
+   Expected: JSON with items array containing interaction data
+   If fails: check growth_engine.py drug adapter
+
+2.9 — Case logging
+   curl -X POST http://localhost:8000/api/complications/log-case \
+     -H "Content-Type: application/json" \
+     -d '{
+       "protocol_key": "vascular_occlusion",
+       "region": "nose",
+       "procedure": "HA filler",
+       "symptoms": ["blanching", "severe pain"],
+       "outcome": "resolved_fully"
+     }'
+   Expected: {"status": "ok", "case_id": "..."}
+
+2.10 — Neuromodulator resistance protocol
+   curl -X POST http://localhost:8000/api/complications/protocol \
+     -H "Content-Type: application/json" \
+     -d '{"query": "botox not working resistance", "mode": "decision_support"}'
+   Expected: matched_protocol_key = "neuromodulator_resistance"
+   If it returns a different protocol or general response: 
+   fix the keyword matching in the protocol engine
+
+═══════════════════════════════════════════════════════════════
+PHASE 3 — FRONTEND CHECKS
+═══════════════════════════════════════════════════════════════
+
+Run the frontend and check each of these visually or via the browser.
+
+3.1 — Login and redirect
+   After login, confirm the user lands on /home (ClinicHomePage)
+   NOT the ask/search page
+   If still going to /ask: confirm App.tsx "/" route points to ClinicHomePage
+
+3.2 — Clinic homepage loads correctly
+   Navigate to /home
+   Confirm 4 cards are visible: Evidence Search, Pre-Procedure Safety,
+   Emergency Protocol, Session Safety Report
+   Confirm quick protocol shortcuts row is visible
+   Confirm secondary tools grid is visible
+
+3.3 — Emergency page
+   Navigate to /emergency
+   Confirm dark theme loads
+   Click "Vascular Occlusion" in the left sidebar
+   Confirm protocol content appears on the right within 3 seconds
+   Confirm timer starts counting
+   Confirm PDF export button is visible
+   
+   Navigate to /emergency?protocol=vascular_occlusion
+   Confirm it auto-loads the vascular occlusion protocol immediately
+
+3.4 — Pre-procedure safety check
+   Navigate to /safety-check
+   Fill in: Procedure = Nose Filler, Region = Nose, 
+   Product = Hyaluronic Acid Filler, Technique = Needle,
+   Experience = Junior, check Prior Vascular Event
+   Click Run Pre-Procedure Safety Check
+   Confirm: decision badge shows HIGH RISK in red
+   Confirm: risk score is above 80
+   Confirm: ultrasound recommended banner appears
+   Confirm: danger zones list includes nasal artery references
+   Confirm: PDF export button works
+
+3.5 — Evidence search
+   Navigate to /ask
+   Type: "hyaluronidase dosing for vascular occlusion filler emergency"
+   Press Enter
+   Confirm: streaming answer appears within 5 seconds
+   Confirm: citations appear with source names and evidence grades
+   Confirm: no error messages
+
+3.6 — Complication differential tab
+   Navigate to /safety-check
+   Click the "Complication Differential" tab
+   Select: Onset = Immediate, Appearance = Pale/Blanching, 
+   Pain = Severe/Intense, Location = nose tip
+   Click Generate Differential
+   Confirm: Vascular Occlusion appears as rank 1 with HIGH probability
+   Confirm: immediate actions list is shown
+
+3.7 — Drug interactions page
+   Navigate to /drug-interactions
+   Confirm page loads with drug cards
+   Search "warfarin"
+   Confirm warfarin card appears and expands with management guidance
+   Confirm GLP-1 spotlight banner is visible at top
+
+3.8 — Case log
+   Navigate to /case-log
+   Confirm page loads with dataset stats section
+   Click "Log New Case"
+   Confirm slide-in panel opens
+   Select Complication Type = Vascular Occlusion
+   Select Region = Nose
+   Click some symptom chips
+   Click Log Case
+   Confirm success message appears with case ID
+
+3.9 — Navigation header
+   On the /ask page, confirm:
+   - A red "Emergency" button is visible in the header
+   - "Safety Check" button has blue outline styling
+   - "More" dropdown contains Emergency, Case Log, Drug Interactions
+
+3.10 — PDF exports (critical for demo)
+   On the pre-procedure safety results page, click Export PDF
+   Confirm a PDF downloads with the correct filename format
+   Open the PDF and confirm it contains:
+   - AesthetiCite header
+   - Decision badge text (HIGH RISK / CAUTION / GO)
+   - Risk score
+   - Top risks listed
+   - Mitigation steps
+   - Disclaimer
+
+═══════════════════════════════════════════════════════════════
+PHASE 4 — DEMO SCENARIO REHEARSAL
+═══════════════════════════════════════════════════════════════
+
+Run these exact scenarios as Dr. Mehta will run them. Fix anything 
+that doesn't return a clean, clinically convincing result.
+
+SCENARIO A — The Emergency Test
+"A patient has just received nose filler. 2 minutes later 
+she reports severe pain and you notice blanching on the nasal tip."
+
+Steps to run:
+1. Go to /emergency
+2. Click Vascular Occlusion
+3. Verify: immediate step 1 is "STOP injection"
+4. Verify: hyaluronidase dose guidance appears
+5. Verify: red flags include visual symptoms
+6. Verify: escalation includes ophthalmology contact
+7. Click PDF export — confirm PDF downloads
+
+SCENARIO B — The Pre-Procedure Test
+"You are about to inject nose filler in a junior injector 
+clinic. The patient had a vascular event 2 years ago."
+
+Steps to run:
+1. Go to /safety-check
+2. Fill: nose filler, nose region, HA filler, needle, junior, 
+   check prior_vascular_event
+3. Verify: HIGH RISK decision in red
+4. Verify: risk score above 85
+5. Verify: ultrasound recommended banner appears
+6. Verify: danger zones include dorsal nasal artery and ophthalmic territory
+7. Verify: mitigation steps include hyaluronidase availability
+8. Export PDF — confirm download
+
+SCENARIO C — The Evidence Test
+"What does the evidence say about PLLA causing vascular events?"
+
+Steps to run:
+1. Go to /ask
+2. Type: "Can PLLA Sculptra cause vascular occlusion? What is the evidence?"
+3. Verify: answer streams within 5 seconds
+4. Verify: citations appear with journal names
+5. Verify: answer distinguishes PLLA from HA in terms of management
+
+SCENARIO D — The Resistance Test (she may test this)
+"A patient says Botox stopped working after 3 years of treatment."
+
+Steps to run:
+1. Go to /emergency (or search)
+2. Type or select: "botox resistance not working"
+3. Verify: neuromodulator resistance protocol loads
+4. Verify: true vs pseudo-resistance distinction is explained
+5. Verify: Xeomin switch recommendation appears
+
+═══════════════════════════════════════════════════════════════
+PHASE 5 — FINAL FIXES AND POLISH
+═══════════════════════════════════════════════════════════════
+
+5.1 — Response speed
+   All API calls must respond within 5 seconds for safety checks.
+   Evidence search streaming must start within 3 seconds.
+   If any endpoint is slow: check for missing database indexes, 
+   check embedding cache is warming on startup.
+
+5.2 — Error states
+   Test what happens when the backend is unreachable from the frontend.
+   Confirm error messages are clear and not raw stack traces.
+   The user should see "Service temporarily unavailable" not a Python error.
+
+5.3 — Mobile check
+   Open the app on a mobile browser or use browser dev tools responsive mode.
+   Confirm /emergency and /safety-check are usable on mobile.
+   Dr. Mehta may open it on her phone.
+
+5.4 — Disclaimer visibility
+   On every safety output, confirm the disclaimer text is visible:
+   "This output is clinical decision support only — not a substitute 
+   for clinician judgment."
+   Dr. Mehta will look for this specifically.
+
+5.5 — Knowledge base count
+   Confirm the "206,000+ papers" or similar count shown in the UI 
+   matches reality. Check with:
+   curl http://localhost:8000/metrics-lite
+   Update the UI display if the actual count differs significantly.
+
+═══════════════════════════════════════════════════════════════
+FINAL REPORT
+═══════════════════════════════════════════════════════════════
+
+After completing all phases, provide a summary in this format:
+
+DEMO READINESS REPORT
+=====================
+Phase 1 — Files deployed: [list which were created/updated]
+Phase 2 — Backend checks: [PASS/FAIL for each of 2.1–2.10]
+Phase 3 — Frontend checks: [PASS/FAIL for each of 3.1–3.10]
+Phase 4 — Demo scenarios: [PASS/FAIL for each of A–D]
+Phase 5 — Polish: [PASS/FAIL for each of 5.1–5.5]
+
+OVERALL STATUS: DEMO READY / NOT READY
+BLOCKERS (if any): [list anything that failed and could not be fixed]
+RECOMMENDED DEMO SEQUENCE: [confirm the A→B→C sequence works end to end]

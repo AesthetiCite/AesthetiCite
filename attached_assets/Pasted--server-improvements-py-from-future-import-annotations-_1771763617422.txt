@@ -1,0 +1,385 @@
+# server/improvements.py
+from __future__ import annotations
+
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+import math
+import re
+
+
+# -----------------------------
+# Data structures
+# -----------------------------
+
+@dataclass
+class Source:
+    id: str
+    title: str
+    journal: Optional[str] = None
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    url: Optional[str] = None
+
+    # raw metadata from your KB / retriever (pub types, tags, etc.)
+    publication_types: Optional[List[str]] = None  # e.g. ["Guideline", "Consensus", "Review"]
+    abstract: Optional[str] = None
+
+    # enriched fields (filled by this module)
+    evidence_type: str = "Other"     # Guideline | Consensus | SystematicReview | MetaAnalysis | RCT | Cohort | CaseControl | CaseSeries | NarrativeReview | CaseReport | Other
+    evidence_tier: str = "C"         # A | B | C
+    evidence_grade: str = "III"      # I | II | III | IV (optional/simple)
+
+
+@dataclass
+class ACIResult:
+    score_0_to_10: float
+    badge: str                 # High | Moderate | Low
+    components: Dict[str, float]
+    rationale: str
+
+
+# -----------------------------
+# Evidence classification + tiers
+# -----------------------------
+
+_GUIDELINE_HINTS = [
+    r"\bguideline(s)?\b", r"\bconsensus\b", r"\bposition statement\b",
+    r"\brecommendation(s)?\b", r"\bexpert panel\b", r"\bdelphi\b"
+]
+_SYSTEMATIC_HINTS = [r"\bsystematic review\b", r"\bmeta[- ]analysis\b", r"\bPRISMA\b"]
+_RCT_HINTS = [r"\brandomi[sz]ed\b", r"\btrial\b", r"\bdouble[- ]blind\b", r"\bplacebo\b"]
+_OBSERVATIONAL_HINTS = [r"\bcohort\b", r"\bcase[- ]control\b", r"\bcross[- ]sectional\b"]
+_CASESERIES_HINTS = [r"\bcase series\b", r"\bcase[- ]series\b"]
+_CASEREPORT_HINTS = [r"\bcase report\b"]
+_REVIEW_HINTS = [r"\bnarrative review\b", r"\breview\b"]
+
+
+def _norm_pubtypes(pubtypes: Optional[List[str]]) -> List[str]:
+    if not pubtypes:
+        return []
+    return [p.strip().lower() for p in pubtypes if p and p.strip()]
+
+
+def classify_evidence_type(src: Source) -> str:
+    """
+    Robustly infer evidence type using:
+      1) structured publication_types if available
+      2) title/journal textual hints (fallback)
+    """
+    pub = _norm_pubtypes(src.publication_types)
+    title = (src.title or "").lower()
+
+    # 1) publication_types priority
+    if any("guideline" in p for p in pub):
+        return "Guideline"
+    if any("consensus" in p for p in pub) or any("position statement" in p for p in pub):
+        return "Consensus"
+    if any("systematic" in p for p in pub):
+        return "SystematicReview"
+    if any("meta-analysis" in p for p in pub) or any("meta analysis" in p for p in pub):
+        return "MetaAnalysis"
+    if any("randomized controlled trial" in p for p in pub) or any("rct" in p for p in pub):
+        return "RCT"
+    if any("cohort" in p for p in pub):
+        return "Cohort"
+    if any("case-control" in p for p in pub) or any("case control" in p for p in pub):
+        return "CaseControl"
+    if any("case series" in p for p in pub):
+        return "CaseSeries"
+    if any("case report" in p for p in pub):
+        return "CaseReport"
+    if any("review" in p for p in pub):
+        # if not systematic/meta, treat as narrative by default
+        return "NarrativeReview"
+
+    # 2) title-based fallback (very effective in aesthetic medicine corpora)
+    def _match_any(patterns: List[str]) -> bool:
+        return any(re.search(p, title, flags=re.IGNORECASE) for p in patterns)
+
+    if _match_any(_SYSTEMATIC_HINTS):
+        return "SystematicReview" if "meta" not in title else "MetaAnalysis"
+    if _match_any(_GUIDELINE_HINTS):
+        return "Guideline" if "guideline" in title else "Consensus"
+    if _match_any(_RCT_HINTS):
+        return "RCT"
+    if _match_any(_OBSERVATIONAL_HINTS):
+        if "case-control" in title or "case control" in title:
+            return "CaseControl"
+        return "Cohort"
+    if _match_any(_CASESERIES_HINTS):
+        return "CaseSeries"
+    if _match_any(_CASEREPORT_HINTS):
+        return "CaseReport"
+    if _match_any(_REVIEW_HINTS):
+        return "NarrativeReview"
+
+    return "Other"
+
+
+def map_to_tier(evidence_type: str) -> str:
+    """
+    Simple, defensible tier mapping for governance:
+      A: Guidelines/Consensus/Systematic Review/Meta-analysis/RCT
+      B: Cohort/Case-control
+      C: Case series/Case report/Narrative/Other
+    """
+    if evidence_type in {"Guideline", "Consensus", "SystematicReview", "MetaAnalysis", "RCT"}:
+        return "A"
+    if evidence_type in {"Cohort", "CaseControl"}:
+        return "B"
+    return "C"
+
+
+def map_to_grade(evidence_type: str) -> str:
+    """
+    Optional 4-tier grade (I strongest -> IV weakest). Keep simple.
+    """
+    if evidence_type in {"Guideline", "Consensus"}:
+        return "I"
+    if evidence_type in {"SystematicReview", "MetaAnalysis", "RCT"}:
+        return "II"
+    if evidence_type in {"Cohort", "CaseControl", "CaseSeries"}:
+        return "III"
+    return "IV"
+
+
+def enrich_sources(sources: List[Source]) -> List[Source]:
+    for s in sources:
+        s.evidence_type = classify_evidence_type(s)
+        s.evidence_tier = map_to_tier(s.evidence_type)
+        s.evidence_grade = map_to_grade(s.evidence_type)
+    return sources
+
+
+# -----------------------------
+# Deterministic ACI engine
+# -----------------------------
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def compute_aci(topic: str, sources: List[Source], now_year: Optional[int] = None) -> ACIResult:
+    """
+    Deterministic ACI = weighted signal score (0..10)
+    Components:
+      - tier_quality (0..1)
+      - evidence_diversity (0..1)
+      - recency (0..1)
+      - source_count_sufficiency (0..1)
+      - guideline_presence (0..1)
+    """
+    if now_year is None:
+        now_year = datetime.utcnow().year
+
+    n = len(sources)
+    if n == 0:
+        return ACIResult(
+            score_0_to_10=0.0,
+            badge="Low",
+            components={"tier_quality": 0.0, "evidence_diversity": 0.0, "recency": 0.0, "source_count": 0.0, "guideline_presence": 0.0},
+            rationale="No supporting sources retrieved."
+        )
+
+    # Tier quality: A=1.0, B=0.6, C=0.3 (mean)
+    tier_map = {"A": 1.0, "B": 0.6, "C": 0.3}
+    tier_quality = sum(tier_map.get(s.evidence_tier, 0.3) for s in sources) / n
+
+    # Diversity: unique evidence types (cap at 6 meaningful categories)
+    types = {s.evidence_type for s in sources}
+    diversity = _clamp(len(types) / 6.0, 0.0, 1.0)
+
+    # Recency: weighted by how recent the sources are; missing year penalized slightly
+    recency_scores: List[float] = []
+    for s in sources:
+        if not s.year:
+            recency_scores.append(0.4)
+        else:
+            age = max(0, now_year - s.year)
+            # 0 years -> 1.0; 5y -> ~0.6; 10y -> ~0.35; 15y -> ~0.2
+            rec = 1.0 / (1.0 + (age / 6.0))
+            recency_scores.append(_clamp(rec, 0.15, 1.0))
+    recency = sum(recency_scores) / n
+
+    # Source count sufficiency: diminishing returns after ~12
+    # 1 -> 0.2, 5 -> ~0.55, 10 -> ~0.8, 20 -> ~0.93
+    source_count = 1.0 - math.exp(-n / 7.0)
+    source_count = _clamp(source_count, 0.0, 1.0)
+
+    # Guideline presence bonus
+    guideline_presence = 1.0 if any(s.evidence_type in {"Guideline", "Consensus"} for s in sources) else 0.0
+
+    # Topic-specific expectation: for vascular occlusion we really want at least one consensus/guideline
+    # If missing, apply a mild penalty even if many narrative reviews exist.
+    topic_lower = (topic or "").lower()
+    missing_guideline_penalty = 0.0
+    if any(k in topic_lower for k in ["vascular occlusion", "occlusion", "ischemia", "hyaluronidase"]) and guideline_presence < 0.5:
+        missing_guideline_penalty = 0.08  # 8% penalty
+
+    # Weighted score (tuned for “clinical trust”)
+    # Main weight: tier_quality and recency
+    raw = (
+        0.42 * tier_quality +
+        0.18 * diversity +
+        0.22 * recency +
+        0.12 * source_count +
+        0.06 * guideline_presence
+    )
+    raw = _clamp(raw - missing_guideline_penalty, 0.0, 1.0)
+
+    score_0_to_10 = round(raw * 10.0, 1)
+
+    if score_0_to_10 >= 8.5:
+        badge = "High"
+    elif score_0_to_10 >= 6.5:
+        badge = "Moderate"
+    else:
+        badge = "Low"
+
+    rationale = (
+        f"Computed from tier quality ({tier_quality:.2f}), diversity ({diversity:.2f}), "
+        f"recency ({recency:.2f}), source count ({source_count:.2f}), guideline presence ({guideline_presence:.0f})."
+    )
+    if missing_guideline_penalty > 0:
+        rationale += " Mild penalty applied due to missing guideline/consensus evidence for an emergency protocol topic."
+
+    return ACIResult(
+        score_0_to_10=score_0_to_10,
+        badge=badge,
+        components={
+            "tier_quality": round(tier_quality, 2),
+            "evidence_diversity": round(diversity, 2),
+            "recency": round(recency, 2),
+            "source_count": round(source_count, 2),
+            "guideline_presence": guideline_presence,
+        },
+        rationale=rationale
+    )
+
+
+# -----------------------------
+# Protocol-specific follow-ups (adds “clinical completeness” without hallucinating)
+# -----------------------------
+
+def protocol_followups(topic: str) -> List[str]:
+    t = (topic or "").lower()
+    if any(k in t for k in ["vascular occlusion", "occlusion", "ischemia", "hyaluronidase"]):
+        return [
+            "What repeat dosing interval is recommended (e.g., every 30–60 minutes) and when should dosing be escalated?",
+            "What are the key clinical signs that indicate worsening ischemia requiring urgent escalation or referral?",
+            "What adjunctive measures are recommended alongside hyaluronidase (e.g., massage, warming, antiplatelet considerations), and what is the evidence strength for each?",
+            "When ocular symptoms occur (visual changes, severe pain), what immediate emergency steps are recommended and which specialist referral pathway should be activated?",
+            "How do recommended approaches differ for impending versus established occlusion, and what is the evidence base for that distinction?"
+        ]
+    # default generic but still clinically useful
+    return [
+        "What is the highest-quality guideline or consensus statement on this topic and what does it recommend?",
+        "What are the main contraindications and safety monitoring requirements?",
+        "What factors change management (severity, comorbidities, timing) and how?",
+        "What evidence gaps remain and what research would most strengthen recommendations?"
+    ]
+
+
+# -----------------------------
+# Integration helpers (pre-LLM and post-LLM)
+# -----------------------------
+
+def enrich_and_score(topic: str, raw_sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Call this after retrieval to:
+      1) normalize and enrich sources
+      2) compute deterministic ACI
+      3) provide clean metadata to your frontend + LLM prompt
+    """
+    sources = [Source(**s) if not isinstance(s, Source) else s for s in raw_sources]
+    sources = enrich_sources(sources)
+    aci = compute_aci(topic=topic, sources=sources)
+
+    # Keep top sources ranked for display (Tier A first, then recency)
+    def _rank_key(s: Source) -> Tuple[int, int]:
+        tier_order = {"A": 0, "B": 1, "C": 2}
+        year = s.year or 0
+        return (tier_order.get(s.evidence_tier, 2), -year)
+
+    sources_sorted = sorted(sources, key=_rank_key)
+
+    return {
+        "sources": [asdict(s) for s in sources_sorted],
+        "aci": asdict(aci),
+        "followups": protocol_followups(topic),
+        "meta": {
+            "topic": topic,
+            "retrieved_source_count": len(sources_sorted),
+            "generated_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+    }
+
+
+def apply_post_answer_meta(
+    llm_answer_text: str,
+    precomputed: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Call this right after the LLM returns the answer.
+    Ensures the response metadata is authoritative (engine-computed),
+    and prevents the model from "inventing" ACI or tiers.
+    """
+    # Hard guarantee: ACI comes from engine
+    aci = precomputed.get("aci", {})
+    sources = precomputed.get("sources", [])
+    followups = precomputed.get("followups", [])
+
+    # Optional: if your UI shows only top citations by default:
+    # show top 8 by default, keep full list expandable
+    top_sources = sources[:8]
+    remaining_sources = sources[8:]
+
+    return {
+        "answer": llm_answer_text.strip(),
+        "evidence_strength": {
+            "badge": aci.get("badge", "Moderate"),
+            "aci_score_0_to_10": aci.get("score_0_to_10", 0.0),
+            "components": aci.get("components", {}),
+            "rationale": aci.get("rationale", ""),
+        },
+        "sources_top": top_sources,
+        "sources_all": sources,               # keep full list for transparency
+        "sources_more": remaining_sources,    # convenient for UI expand
+        "follow_up_questions": followups,
+        "meta": precomputed.get("meta", {}),
+    }
+
+
+# -----------------------------
+# Minimal example (for your reference)
+# -----------------------------
+if __name__ == "__main__":
+    # Example raw_sources format expected from your retriever
+    raw_sources = [
+        {
+            "id": "S1",
+            "title": "Guideline for the management of hyaluronic acid filler complications",
+            "journal": "Journal of Cosmetic Dermatology",
+            "year": 2025,
+            "publication_types": ["Guideline", "Consensus"],
+            "doi": "10.xxxx/xxxx",
+            "url": "https://example.com",
+        },
+        {
+            "id": "S2",
+            "title": "A narrative review of vascular occlusion management with hyaluronidase",
+            "journal": "Frontiers in Medicine",
+            "year": 2024,
+            "publication_types": ["Review"],
+        },
+    ]
+
+    topic = "What is the recommended hyaluronidase dose for vascular occlusion?"
+    pre = enrich_and_score(topic, raw_sources)
+    llm_answer = "Minimum dose of 500 IU per ischemic area is recommended..."
+    packaged = apply_post_answer_meta(llm_answer, pre)
+
+    print(packaged["evidence_strength"])
+    print("Top source tiers:", [s["evidence_tier"] for s in packaged["sources_top"]])
+    print("Follow-ups:", packaged["follow_up_questions"])

@@ -1,0 +1,260 @@
+# VERIDOC FRONTEND PATCH: Landing page with Login button + Request Access + Set Password page
+# Adds:
+# - / (landing) with Login button like OpenEvidence
+# - /request-access (name + email + practitioner number)
+# - /set-password (token from email)
+# - After login: header shows "Dr. Lastname" (fallback to full name / email)
+
+set -e
+cd veridoc-frontend
+mkdir -p pages
+
+echo "==> 1) Update API helper with new endpoints"
+cat > lib/api.js <<'JS'
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+export function getToken() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("veridoc_token");
+}
+export function setToken(token) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("veridoc_token", token);
+}
+export function clearToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("veridoc_token");
+}
+
+async function readJson(res) {
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { raw: text }; }
+}
+
+export async function requestAccess(full_name, email, practitioner_id) {
+  const res = await fetch(`${API_BASE}/auth/request-access`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name, email, practitioner_id })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Request failed");
+  return data;
+}
+
+export async function setPassword(token, password) {
+  const res = await fetch(`${API_BASE}/auth/set-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Set password failed");
+  return data;
+}
+
+export async function login(email, password) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Login failed");
+  return data.access_token;
+}
+
+export async function me(token) {
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Auth check failed");
+  return data;
+}
+
+export async function ask(token, question, domain="medicine", mode="clinic") {
+  const res = await fetch(`${API_BASE}/ask`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ question, domain, mode })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Ask failed");
+  return data;
+}
+JS
+
+echo "==> 2) Landing page like OpenEvidence: clean hero + Login button"
+cat > pages/index.js <<'JS'
+import Layout from "../components/Layout";
+import Link from "next/link";
+
+export default function Home() {
+  return (
+    <Layout hideNav>
+      <div className="h1">VeriDoc</div>
+      <p className="p">
+        The evidence-first AI for aesthetic medicine.
+        <br />
+        Structured answers with citations and supporting snippets — or no answer at all.
+      </p>
+
+      <div className="card">
+        <div className="row">
+          <Link href="/login"><button className="btn btnPrimary">Log in</button></Link>
+          <Link href="/request-access"><button className="btn">Get free access</button></Link>
+        </div>
+        <div className="hr" />
+        <p className="p" style={{ marginBottom: 0 }}>
+          Free access is available to verified practitioners. You’ll receive an email link to set your password.
+        </p>
+      </div>
+    </Layout>
+  );
+}
+JS
+
+echo "==> 3) Request Access page"
+cat > pages/request-access.js <<'JS'
+import { useState } from "react";
+import Layout from "../components/Layout";
+import Link from "next/link";
+import { requestAccess } from "../lib/api";
+
+export default function RequestAccessPage() {
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [practitionerId, setPractitionerId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr(""); setMsg(""); setBusy(true);
+    try {
+      const r = await requestAccess(fullName, email, practitionerId);
+      setMsg(r.message || "Check your email to set your password.");
+    } catch (e2) {
+      setErr(e2.message || "Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Layout hideNav>
+      <div className="h1">Get free access</div>
+      <p className="p">Enter your details. We’ll email you a secure link to set your password.</p>
+
+      <div className="card">
+        <form onSubmit={submit}>
+          <label className="label">Full name</label>
+          <input value={fullName} onChange={(e)=>setFullName(e.target.value)} placeholder="Dr. Firstname Lastname" />
+
+          <div style={{ height: 10 }} />
+
+          <label className="label">Professional email</label>
+          <input value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="doctor@clinic.com" />
+
+          <div style={{ height: 10 }} />
+
+          <label className="label">Practitioner number</label>
+          <input value={practitionerId} onChange={(e)=>setPractitionerId(e.target.value)} placeholder="License / Order number" />
+
+          <div style={{ height: 12 }} />
+          <button className="btn btnPrimary" disabled={busy}>
+            {busy ? "Sending email…" : "Send password link"}
+          </button>
+        </form>
+
+        {msg ? <div style={{ marginTop: 12 }} className="success">{msg}</div> : null}
+        {err ? <div style={{ marginTop: 12 }} className="error">{err}</div> : null}
+
+        <div className="hr" />
+        <Link href="/login"><span className="badge">Already have a password? Log in</span></Link>
+      </div>
+    </Layout>
+  );
+}
+JS
+
+echo "==> 4) Set Password page (token from email)"
+cat > pages/set-password.js <<'JS'
+import { useRouter } from "next/router";
+import { useEffect, useState } from "react";
+import Layout from "../components/Layout";
+import { setPassword } from "../lib/api";
+import Link from "next/link";
+
+export default function SetPasswordPage() {
+  const router = useRouter();
+  const [token, setToken] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (router.query.token) setToken(String(router.query.token));
+  }, [router.query.token]);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr(""); setMsg(""); setBusy(true);
+    try {
+      const r = await setPassword(token, pw);
+      setMsg(r.message || "Password set. You can now log in.");
+    } catch (e2) {
+      setErr(e2.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Layout hideNav>
+      <div className="h1">Set your password</div>
+      <p className="p">Use the secure link sent to your email. This link expires after a short time.</p>
+
+      <div className="card">
+        <form onSubmit={submit}>
+          <label className="label">New password</label>
+          <input type="password" value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="Minimum 8 characters" />
+          <div style={{ height: 12 }} />
+          <button className="btn btnPrimary" disabled={busy || !token}>
+            {busy ? "Saving…" : "Set password"}
+          </button>
+        </form>
+
+        {msg ? <div style={{ marginTop: 12 }} className="success">{msg}</div> : null}
+        {err ? <div style={{ marginTop: 12 }} className="error">{err}</div> : null}
+
+        <div className="hr" />
+        <Link href="/login"><span className="badge">Go to login</span></Link>
+      </div>
+    </Layout>
+  );
+}
+JS
+
+echo "==> 5) Update login page to add 'Get free access' link"
+python - <<'PY'
+from pathlib import Path
+p = Path("pages/login.js")
+txt = p.read_text()
+if "Get free access" not in txt:
+    txt = txt.replace(
+        '<p className="p">\n        Sign in to access evidence-backed answers with citations and supporting snippets.\n      </p>',
+        '<p className="p">\n        Sign in to access evidence-backed answers with citations and supporting snippets.\n      </p>\n      <a href="/request-access" className="badge" style={{ marginBottom: 12, display: "inline-flex" }}>Get free access</a>'
+    )
+p.write_text(txt)
+print("✅ login updated")
+PY
+
+echo "==> DONE. Restart frontend:"
+echo "npm run dev"

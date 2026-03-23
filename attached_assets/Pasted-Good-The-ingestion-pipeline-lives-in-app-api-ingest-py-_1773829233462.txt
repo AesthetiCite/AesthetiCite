@@ -1,0 +1,34 @@
+Good. The ingestion pipeline lives in app/api/ingest.py and app/api/sync.py. M5 needs to be a standalone script that runs independently — same pattern as M2/M4 — using the PubMed E-utilities API with the three strategies outlined. Building it now as a complete, runnable script.Thinking about identifying what "M5" refers to in a coding contextThinking about identifying what "M5" refers to in a coding contextDrop it at app/scripts/m5_ingest.py and run:
+bash# Check current state first
+python app/scripts/m5_ingest.py --status
+
+# Estimate yield before writing anything
+python app/scripts/m5_ingest.py --phase A --dry-run
+python app/scripts/m5_ingest.py --phase B --dry-run
+
+# Run in order
+python app/scripts/m5_ingest.py --phase A   # journal-targeted — highest yield
+python app/scripts/m5_ingest.py --phase B   # specialty gaps
+python app/scripts/m5_ingest.py --phase C   # multilingual
+
+# Or all at once
+python app/scripts/m5_ingest.py --all
+
+What each phase adds:
+Phase A — 15 journals by ISSN. Pulls every paper from Aesthetic Surgery Journal, JAMA Dermatology, British Journal of Dermatology, Lasers in Medical Science, and 11 others — directly by ISSN, not keyword. This is the highest-yield phase because keyword searches miss papers whose titles don't contain your trigger terms. Expected yield: 40K–80K new documents.
+Phase B — 42 specialty-gap queries. Topics structurally absent from M2/M4 — hyaluronidase pharmacology, facial artery anatomy, biofilm and late-onset nodules, wound healing, clinical governance, local anaesthetics, skincare actives, body contouring, PRP, thread lifts, scarring. These directly support AesthetiCite's clinical content. Expected yield: 30K–60K new documents.
+Phase C — 26 multilingual queries. French, Spanish, Portuguese, German, Italian, Arabic — aesthetic medicine literature that exists on PubMed but was largely untouched by M2/M4. Expected yield: 10K–25K new documents.
+Total projected: 80K–165K new documents, closing the gap to somewhere between 850K and 940K. Whether you reach 1M depends on duplication rates — the --dry-run flag on each phase tells you before you commit.
+
+Three things to verify before running:
+bash# 1. Confirm fastembed is installed
+pip show fastembed
+
+# 2. Get an NCBI API key — free, takes 2 minutes
+# https://www.ncbi.nlm.nih.gov/account/
+# Raises rate limit from 3 req/s to 10 req/s — cuts runtime by 3x
+export NCBI_API_KEY="your_key_here"
+
+# 3. After M5 completes, rebuild the HNSW index on the full corpus
+python app/scripts/hnsw_migration.py
+The script is fully idempotent — every insert uses ON CONFLICT DO NOTHING on the PMID. Safe to restart, safe to re-run any phase.

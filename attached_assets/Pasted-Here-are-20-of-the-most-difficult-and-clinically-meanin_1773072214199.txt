@@ -1,0 +1,134 @@
+Here are 20 of the most difficult and clinically meaningful questions in aesthetic medicine. These are the types of questions that truly stress-test a clinical AI like AesthetiCite because they involve complications, conflicting evidence, and nuanced decision-making rather than simple dosing or indications.
+
+I grouped them by complication type so you can benchmark systematically.
+
+1. Vascular Complications (Highest-risk scenarios)
+1
+
+What is the evidence-based protocol for managing hyaluronic acid filler–induced vascular occlusion, including optimal hyaluronidase dosing, injection technique, and repeat dosing intervals?
+
+2
+
+What clinical signs distinguish impending skin necrosis from benign post-injection blanching after dermal filler injection?
+
+3
+
+What is the recommended management algorithm when retinal artery occlusion occurs after facial filler injection, and what interventions must occur within the first 60–90 minutes?
+
+4
+
+Is there evidence that retrobulbar or peribulbar hyaluronidase injection improves visual outcomes after filler-induced blindness?
+
+2. Delayed Filler Complications
+5
+
+What is the evidence-based treatment algorithm for delayed inflammatory nodules after hyaluronic acid filler injections?
+
+6
+
+How should clinicians differentiate between biofilm infection and immune-mediated granuloma following dermal filler injections?
+
+7
+
+What pharmacologic regimen is recommended for treating foreign-body granulomas after dermal filler injections?
+
+3. Hyaluronidase Safety
+8
+
+What is the optimal hyaluronidase dosing strategy for dissolving dermal fillers while minimizing tissue damage?
+
+9
+
+What precautions are recommended when using hyaluronidase in patients with suspected hypersensitivity or bee venom allergy?
+
+4. Neurotoxin Complex Cases
+10
+
+Is botulinum toxin safe in patients taking anticoagulants or antiplatelet therapy, and what precautions are recommended?
+
+11
+
+What are the recommended strategies for managing eyelid ptosis after botulinum toxin injections?
+
+12
+
+What mechanisms explain resistance to botulinum toxin in aesthetic patients, and how should treatment be adjusted?
+
+5. Laser and Energy-Based Devices
+13
+
+What laser or energy-based treatments are safest for melasma in Fitzpatrick skin types IV–VI?
+
+14
+
+What is the evidence for combining fractional laser resurfacing with PRP to improve acne scars?
+
+15
+
+How should post-inflammatory hyperpigmentation be prevented when performing laser treatments in darker skin types?
+
+6. Combination Treatments
+16
+
+What interval should be respected between hyaluronic acid filler injections and laser treatments to minimize complications?
+
+17
+
+Is it safe to perform microneedling or RF microneedling shortly after dermal filler injection?
+
+7. Emerging Treatments
+18
+
+What is the current evidence supporting PRP for androgenetic alopecia?
+
+19
+
+What is the safety profile and clinical efficacy of deoxycholic acid injections for submental fat reduction?
+
+20
+
+What are the major complications associated with thread lift procedures and how should they be managed?
+
+Why these questions are extremely hard
+
+They are difficult because they involve:
+
+• conflicting literature
+• off-label treatments
+• emergency protocols
+• rare complications
+• evolving clinical guidelines
+
+These questions test whether a system can:
+
+synthesize evidence
+
+prioritize safety
+
+avoid hallucination
+
+cite proper literature
+
+How to score AesthetiCite
+
+Use a simple scoring table:
+
+Metric	Target
+Correct clinical guidance	≥90%
+Correct dosing/protocol	≥85%
+Proper citations	≥90%
+Safety warnings	≥95%
+Hallucinations	0
+If AesthetiCite answers these 20 questions correctly
+
+Then the system would be clinically credible.
+
+It would be competitive with tools like:
+
+OpenEvidence
+
+UpToDate
+
+VisualDx
+
+But with a major advantage: specialization in aesthetic medicine.

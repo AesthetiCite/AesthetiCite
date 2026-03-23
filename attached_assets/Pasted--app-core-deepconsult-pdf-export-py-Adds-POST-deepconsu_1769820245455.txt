@@ -1,0 +1,113 @@
+# app/core/deepconsult_pdf_export.py
+# Adds: POST /deepconsult/pdf/from-query
+# This endpoint calls your DeepConsult engine internally and returns the PDF in one step.
+
+from __future__ import annotations
+
+import io
+from typing import Optional, Dict, Any, List
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+# Reuse the existing builder from the same module
+# (assumes you already have build_pdf_bytes_from_deepconsult(payload_dict) defined above)
+# from .deepconsult_pdf_export import build_pdf_bytes_from_deepconsult
+
+router = APIRouter()
+
+# -----------------------------
+# 1) Define request model
+# -----------------------------
+class DeepConsultPDFQueryRequest(BaseModel):
+    question: str
+    filters: Optional[dict] = None
+    max_sources: int = 40
+    include_disagreement: bool = True
+
+
+# -----------------------------
+# 2) Wire to your DeepConsult engine
+# -----------------------------
+# IMPORTANT: Replace these imports with your actual DeepConsult functions.
+#
+# Option A (recommended): import your existing deepconsult_run() and disagreement_detector()
+# from app.core.deepconsult_upgrade_pack import deepconsult_run, disagreement_detector
+#
+# Option B: call your DeepConsult service via HTTP (if it's separate)
+# (not shown here since you asked for internal call)
+
+def deepconsult_run(question: str, filters: Optional[dict], max_sources: int) -> Dict[str, Any]:
+    """
+    Replace this stub with your real DeepConsult engine call.
+    Must return the SAME JSON shape you pasted:
+      { refused, analysis, evidence_table, citations, meta, disagreement? }
+    """
+    raise NotImplementedError("Import and call your DeepConsult engine here.")
+
+def disagreement_detector(question: str, chunks: List[dict]) -> Dict[str, Any]:
+    """
+    Replace this stub with your real disagreement detector.
+    """
+    raise NotImplementedError("Import and call your disagreement detector here.")
+
+def retrieve_adapter(query: str, filters: dict | None, k: int | None = None) -> list:
+    """
+    Replace this stub with your real retriever (you already have it).
+    Needed only if include_disagreement=True and your disagreement detector needs chunks.
+    """
+    raise NotImplementedError("Import your retrieve_adapter here.")
+
+
+# -----------------------------
+# 3) New endpoint: from-query → DeepConsult → PDF
+# -----------------------------
+@router.post("/deepconsult/pdf/from-query")
+async def deepconsult_pdf_from_query(req: DeepConsultPDFQueryRequest):
+    # 1) Run DeepConsult
+    result = deepconsult_run(req.question, req.filters, req.max_sources)
+
+    if result.get("refused"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"DeepConsult refused; cannot export PDF. Reason: {result.get('reason','insufficient evidence')}"
+        )
+
+    # 2) Optionally attach disagreement
+    if req.include_disagreement:
+        # If your deepconsult_run already adds disagreement, keep it.
+        if not result.get("disagreement"):
+            chunks = retrieve_adapter(req.question, req.filters, min(req.max_sources, 40))
+            # If your disagreement_detector returns pydantic, convert to dict; else keep as dict
+            dis = disagreement_detector(req.question, chunks)
+            # Normalize to dict
+            if hasattr(dis, "model_dump"):
+                dis = dis.model_dump()
+            result["disagreement"] = dis
+
+    # 3) Build PDF (calls your existing function in this module)
+    try:
+        pdf_bytes = build_pdf_bytes_from_deepconsult(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {e}")
+
+    # 4) Stream PDF back
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline; filename=deepconsult_report.pdf"}
+    )
+
+
+"""
+# Integration (app/main.py)
+from app.core.deepconsult_pdf_export import router as pdf_router
+app.include_router(pdf_router)
+
+# Test curl
+curl -s -X POST http://localhost:8000/deepconsult/pdf/from-query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the evidence comparing Botox vs Dysport vs Xeomin for glabellar lines?","max_sources":40,"include_disagreement":true}' \
+  --output deepconsult_report.pdf
+"""

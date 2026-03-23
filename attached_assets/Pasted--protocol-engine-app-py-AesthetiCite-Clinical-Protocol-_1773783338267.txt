@@ -1,0 +1,785 @@
+# protocol_engine_app.py
+# AesthetiCite Clinical Protocol Engine (single-file MVP)
+#
+# What this does:
+# - Detects likely complication / protocol-type queries
+# - Prioritizes guidelines / consensus / reviews in retrieval
+# - Builds a structured protocol instead of a generic answer
+# - Keeps citations strict and grounded only in retrieved evidence
+# - Serves a minimal built-in UI for testing
+#
+# Run:
+#   pip install fastapi uvicorn psycopg[binary] psycopg_pool python-multipart openai
+#   export DATABASE_URL="postgresql://..."
+#   export OPENAI_API_KEY="..."
+#   uvicorn protocol_engine_app:app --reload --port 8000
+#
+# Open:
+#   http://127.0.0.1:8000
+#
+# Assumptions:
+# - PostgreSQL + pgvector
+# - documents(id, title, abstract, url, journal, year, language, document_type, specialty_tag, publication_types)
+# - chunks(id, document_id, chunk_index, content, embedding vector(384), evidence_level)
+
+import os
+import re
+import json
+from typing import Any, Dict, List, Literal, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+from psycopg_pool import ConnectionPool
+from openai import OpenAI
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is required")
+
+POOL = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=8,
+    max_size=24,
+    timeout=30,
+    kwargs={"autocommit": True},
+)
+
+OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+app = FastAPI(title="AesthetiCite Protocol Engine")
+
+# ---------------------------
+# Models
+# ---------------------------
+
+ProtocolUrgency = Literal["Routine", "Review advised", "Urgent review", "Emergency"]
+ConfidenceLevel = Literal["High", "Moderate", "Low"]
+
+class AskRequest(BaseModel):
+    query: str
+    procedure: Optional[str] = None
+    region: Optional[str] = None
+    symptoms: Optional[str] = None
+    patient_factors: Optional[str] = None
+    top_k: int = 8
+
+class Citation(BaseModel):
+    id: str
+    title: str
+    locator: Optional[str] = None
+    snippet: Optional[str] = None
+    url: Optional[str] = None
+    level: Optional[str] = None
+    document_type: Optional[str] = None
+    year: Optional[int] = None
+    journal: Optional[str] = None
+
+class ProtocolResponse(BaseModel):
+    mode: Literal["protocol", "answer"]
+    query: str
+    protocol_title: str
+    urgency: ProtocolUrgency
+    confidence: ConfidenceLevel
+    recognition: List[str]
+    immediate_actions: List[str]
+    treatment: List[str]
+    escalation: List[str]
+    monitoring: List[str]
+    evidence_summary: str
+    answer: str
+    citations: List[Citation]
+    citations_grounded: bool
+    citation_mode: Literal["strict-server-grounded"]
+    retrieved_count: int
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+def detect_query_language(query: str) -> str:
+    if re.search(r"[àâçéèêëîïôûùüÿœ]", query.lower()):
+        return "French"
+    if re.search(r"[áéíóúñ¿¡]", query.lower()):
+        return "Spanish"
+    if re.search(r"[\u0600-\u06FF]", query):
+        return "Arabic"
+    return "English"
+
+def translate_for_retrieval(query: str) -> str:
+    if not OPENAI_CLIENT:
+        return query
+    prompt = (
+        "Translate this medical/aesthetic medicine query into concise professional English for retrieval.\n"
+        "Preserve procedure names, anatomy, drug names, devices, and symptoms exactly.\n"
+        "Return only the translated query.\n\n"
+        f"Query: {query}"
+    )
+    resp = OPENAI_CLIENT.responses.create(model="gpt-4.1-mini", input=prompt)
+    text = getattr(resp, "output_text", "") or query
+    return text.strip() or query
+
+def embed_query(text: str) -> List[float]:
+    if not OPENAI_CLIENT:
+        raise RuntimeError("OPENAI_API_KEY required for embeddings")
+    emb = OPENAI_CLIENT.embeddings.create(
+        model="text-embedding-3-small",
+        input=text,
+    )
+    return emb.data[0].embedding
+
+def is_protocol_query(payload: AskRequest) -> bool:
+    q = " ".join(filter(None, [
+        payload.query or "",
+        payload.procedure or "",
+        payload.region or "",
+        payload.symptoms or "",
+        payload.patient_factors or "",
+    ])).lower()
+
+    protocol_triggers = [
+        "vascular occlusion", "blanching", "livedo", "severe pain", "visual symptoms",
+        "hyaluronidase", "infection", "hematoma", "seroma", "capsular contracture",
+        "complication", "what should i do", "what would you do", "protocol", "urgent",
+        "emergency", "necrosis", "redness", "warmth", "asymmetry", "ptosis",
+        "post op", "post-op", "after filler", "after injection", "after augmentation",
+        "delayed healing", "blindness", "ischemia",
+    ]
+    return any(x in q for x in protocol_triggers)
+
+def sanitize_text_citations(answer: str, valid_ids: set[str]) -> str:
+    answer = re.sub(r"\[([^\[\]]+)\]", lambda m: m.group(0) if m.group(1).strip() in valid_ids else "", answer)
+    answer = re.sub(r"【([^】]+)】", lambda m: m.group(0) if m.group(1).strip() in valid_ids else "", answer)
+    answer = re.sub(r"\[\^([^\]]+)\]", lambda m: m.group(0) if m.group(1).strip() in valid_ids else "", answer)
+    answer = re.sub(r"[ \t]+(\n|$)", r"\1", answer)
+    answer = re.sub(r"\n{3,}", "\n\n", answer)
+    return answer.strip()
+
+def strict_citations(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    citations = []
+    for i, r in enumerate(rows):
+        citations.append({
+            "id": f"src_{i+1}",
+            "title": r.get("title") or f"Source {i+1}",
+            "locator": f"Chunk {r.get('chunk_index', 0)}",
+            "snippet": (r.get("content") or "")[:500],
+            "url": r.get("url"),
+            "level": f"Level {r.get('evidence_level', '?')}" if r.get("evidence_level") else None,
+            "document_type": r.get("document_type"),
+            "year": r.get("year"),
+            "journal": r.get("journal"),
+        })
+    return citations
+
+def confidence_from_rows(rows: List[Dict[str, Any]]) -> ConfidenceLevel:
+    if not rows:
+        return "Low"
+    top_types = [str(r.get("document_type", "")).lower() for r in rows[:3]]
+    top_levels = [str(r.get("evidence_level", "")).upper() for r in rows[:3]]
+    if any(t == "guideline" for t in top_types) or any(l == "I" for l in top_levels):
+        return "High"
+    if any(t == "review" for t in top_types) or any(l == "II" for l in top_levels):
+        return "Moderate"
+    return "Low"
+
+def urgency_from_query(payload: AskRequest) -> ProtocolUrgency:
+    text = " ".join(filter(None, [payload.query, payload.symptoms, payload.procedure, payload.region])).lower()
+    if any(x in text for x in ["vision", "visual", "blindness", "emergency"]):
+        return "Emergency"
+    if any(x in text for x in ["vascular occlusion", "blanching", "livedo", "severe pain", "necrosis"]):
+        return "Emergency"
+    if any(x in text for x in ["infection", "hematoma", "seroma", "capsular contracture", "urgent"]):
+        return "Urgent review"
+    if any(x in text for x in ["redness", "warmth", "asymmetry", "delayed healing", "pain"]):
+        return "Review advised"
+    return "Routine"
+
+# ---------------------------
+# Retrieval
+# ---------------------------
+
+def retrieve_evidence(payload: AskRequest) -> List[Dict[str, Any]]:
+    retrieval_query = translate_for_retrieval(payload.query)
+    vector = embed_query(retrieval_query)
+    query_text = re.sub(r"[^\w\s\-\/]", " ", retrieval_query)
+    protocol_mode = is_protocol_query(payload)
+
+    sql = """
+    SET LOCAL hnsw.ef_search = 32;
+
+    WITH params AS (
+      SELECT
+        %s::vector AS qvec,
+        plainto_tsquery('english', %s) AS tsq
+    ),
+    vector_hits AS (
+      SELECT
+        c.id AS chunk_id,
+        c.document_id,
+        c.chunk_index,
+        c.content,
+        c.evidence_level,
+        d.title,
+        d.abstract,
+        d.url,
+        d.journal,
+        d.year,
+        d.language,
+        d.document_type,
+        d.specialty_tag,
+        d.publication_types,
+        (c.embedding <=> (SELECT qvec FROM params)) AS vector_distance,
+        0.0::float AS text_rank
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      ORDER BY c.embedding <=> (SELECT qvec FROM params)
+      LIMIT 120
+    ),
+    text_hits AS (
+      SELECT
+        c.id AS chunk_id,
+        c.document_id,
+        c.chunk_index,
+        c.content,
+        c.evidence_level,
+        d.title,
+        d.abstract,
+        d.url,
+        d.journal,
+        d.year,
+        d.language,
+        d.document_type,
+        d.specialty_tag,
+        d.publication_types,
+        1.0::float AS vector_distance,
+        ts_rank_cd(
+          setweight(to_tsvector('english', coalesce(d.title, '')), 'A') ||
+          setweight(to_tsvector('english', coalesce(d.abstract, '')), 'B') ||
+          setweight(to_tsvector('english', coalesce(c.content, '')), 'C'),
+          (SELECT tsq FROM params)
+        ) AS text_rank
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      WHERE (
+        setweight(to_tsvector('english', coalesce(d.title, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(d.abstract, '')), 'B') ||
+        setweight(to_tsvector('english', coalesce(c.content, '')), 'C')
+      ) @@ (SELECT tsq FROM params)
+      LIMIT 120
+    ),
+    merged AS (
+      SELECT * FROM vector_hits
+      UNION
+      SELECT * FROM text_hits
+    ),
+    dedup AS (
+      SELECT DISTINCT ON (chunk_id) * FROM merged
+    ),
+    scored AS (
+      SELECT
+        *,
+        (1.0 - LEAST(vector_distance, 1.0)) AS vector_score,
+        LEAST(text_rank, 1.0) AS keyword_score,
+
+        CASE
+          WHEN document_type = 'guideline' THEN 5.2
+          WHEN lower(coalesce(title, '')) ~ '(consensus|position statement|recommendation|best practice|practice advisory)' THEN 4.8
+          WHEN document_type = 'review' AND lower(coalesce(title, '')) ~ '(systematic review|meta-analysis|meta analysis|umbrella review)' THEN 4.2
+          WHEN lower(coalesce(publication_types, '')) ~ '(randomized controlled trial|clinical trial|controlled clinical trial)' THEN 3.4
+          WHEN document_type = 'review' THEN 3.0
+          WHEN document_type = 'journal_article' THEN 2.2
+          WHEN document_type = 'case_series' THEN 1.5
+          WHEN document_type = 'case_report' THEN 1.1
+          WHEN document_type = 'prescribing_information' THEN 0.8
+          ELSE 1.0
+        END AS evidence_boost,
+
+        CASE
+          WHEN evidence_level = 'I' THEN 1.7
+          WHEN evidence_level = 'II' THEN 1.35
+          WHEN evidence_level = 'III' THEN 1.0
+          WHEN evidence_level = 'IV' THEN 0.7
+          ELSE 1.0
+        END AS level_boost,
+
+        CASE
+          WHEN year >= 2022 THEN 1.12
+          WHEN year >= 2018 THEN 1.06
+          WHEN year >= 2010 THEN 1.00
+          ELSE 0.92
+        END AS recency_boost,
+
+        CASE
+          WHEN lower(coalesce(specialty_tag, '')) ~ '(aesthetic|dermatology|injectables|skin procedures|energy devices|plastic surgery|body contouring)'
+          THEN 1.12
+          ELSE 1.0
+        END AS specialty_boost
+      FROM dedup
+    )
+    SELECT
+      chunk_id,
+      document_id,
+      chunk_index,
+      content,
+      evidence_level,
+      title,
+      abstract,
+      url,
+      journal,
+      year,
+      language,
+      document_type,
+      specialty_tag,
+      publication_types,
+      ROUND((
+        ((vector_score * 0.50) + (keyword_score * 0.50))
+        * evidence_boost
+        * level_boost
+        * recency_boost
+        * specialty_boost
+      )::numeric, 6) AS final_score
+    FROM scored
+    ORDER BY
+      final_score DESC,
+      CASE
+        WHEN %s THEN
+          CASE
+            WHEN document_type = 'guideline' THEN 0
+            WHEN lower(coalesce(title, '')) ~ '(consensus|position statement|recommendation|best practice|practice advisory)' THEN 1
+            WHEN document_type = 'review' AND lower(coalesce(title, '')) ~ '(systematic review|meta-analysis|meta analysis|umbrella review)' THEN 2
+            WHEN evidence_level = 'II' THEN 3
+            WHEN document_type = 'review' THEN 4
+            ELSE 5
+          END
+        ELSE 5
+      END,
+      year DESC NULLS LAST
+    LIMIT %s;
+    """
+
+    with POOL.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (vector, query_text, protocol_mode, payload.top_k))
+            rows = cur.fetchall()
+            cols = [d.name for d in cur.description]
+
+    return [dict(zip(cols, row)) for row in rows]
+
+# ---------------------------
+# Generation
+# ---------------------------
+
+def build_protocol_from_evidence(payload: AskRequest, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    citations = strict_citations(rows)
+    answer_language = detect_query_language(payload.query)
+    confidence = confidence_from_rows(rows)
+    urgency = urgency_from_query(payload)
+
+    if not OPENAI_CLIENT:
+        # Safe fallback without model
+        return {
+            "mode": "protocol",
+            "query": payload.query,
+            "protocol_title": "Structured Clinical Protocol",
+            "urgency": urgency,
+            "confidence": confidence,
+            "recognition": [
+                payload.symptoms or payload.query,
+                "Correlate symptoms with timing, region, and examination findings",
+            ],
+            "immediate_actions": [
+                "Stop any ongoing treatment if the event is acute",
+                "Assess symptoms, timing, skin/vascular signs, pain, and progression",
+                "Document product, site, side, and onset time",
+            ],
+            "treatment": [
+                "Follow clinic protocol and correlate with evidence hierarchy",
+                "Use emergency medication pathways when clinically indicated",
+            ],
+            "escalation": [
+                "Escalate urgently if visual symptoms, rapidly worsening pain, or progressive skin change are present",
+            ],
+            "monitoring": [
+                "Perform serial reassessment and documentation",
+            ],
+            "evidence_summary": "Grounded protocol generated from retrieved evidence only.",
+            "answer": "Protocol generated from grounded evidence.",
+            "citations": citations,
+            "citations_grounded": bool(citations),
+            "citation_mode": "strict-server-grounded",
+            "retrieved_count": len(rows),
+        }
+
+    evidence_block = "\n\n".join(
+        [
+            f"[{c['id']}] {c['title']} | {c.get('level','')} | {c.get('document_type','')} | "
+            f"{c.get('journal','')} {c.get('year','')}\n"
+            f"{c.get('snippet','')}"
+            for c in citations
+        ]
+    )
+
+    prompt = f"""
+You are the protocol engine for AesthetiCite.
+
+Task:
+Build a structured clinical protocol, not a generic paragraph answer.
+
+Rules:
+- Answer in {answer_language}.
+- Use ONLY the evidence below.
+- Prioritize guidelines and consensus statements first.
+- Then use systematic reviews/meta-analyses.
+- Then use RCTs/reviews.
+- Do NOT invent steps, studies, citations, or facts.
+- Cite only with the provided ids like [src_1].
+- If evidence is weak or mixed, state that clearly.
+- Keep sections concise and clinically actionable.
+
+Return strict JSON with these keys only:
+{{
+  "protocol_title": "string",
+  "recognition": ["string"],
+  "immediate_actions": ["string"],
+  "treatment": ["string"],
+  "escalation": ["string"],
+  "monitoring": ["string"],
+  "evidence_summary": "string",
+  "answer": "string"
+}}
+
+Case context:
+- Query: {payload.query}
+- Procedure: {payload.procedure or ""}
+- Region: {payload.region or ""}
+- Symptoms: {payload.symptoms or ""}
+- Patient factors: {payload.patient_factors or ""}
+
+Evidence:
+{evidence_block}
+""".strip()
+
+    resp = OPENAI_CLIENT.responses.create(model="gpt-4.1-mini", input=prompt)
+    raw = getattr(resp, "output_text", "") or ""
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = {
+            "protocol_title": "Structured Clinical Protocol",
+            "recognition": [payload.symptoms or payload.query],
+            "immediate_actions": ["Use the grounded evidence below to guide immediate action."],
+            "treatment": ["Treatment should follow the highest-priority retrieved evidence."],
+            "escalation": ["Escalate if signs suggest a high-risk complication or worsening status."],
+            "monitoring": ["Monitor clinically and document serial reassessment."],
+            "evidence_summary": "Evidence was retrieved but structured parsing failed.",
+            "answer": raw or "Grounded evidence retrieved.",
+        }
+
+    valid_ids = {c["id"] for c in citations}
+    parsed["answer"] = sanitize_text_citations(parsed.get("answer", ""), valid_ids)
+    parsed["evidence_summary"] = sanitize_text_citations(parsed.get("evidence_summary", ""), valid_ids)
+
+    return {
+        "mode": "protocol",
+        "query": payload.query,
+        "protocol_title": parsed.get("protocol_title", "Structured Clinical Protocol"),
+        "urgency": urgency,
+        "confidence": confidence,
+        "recognition": parsed.get("recognition", []),
+        "immediate_actions": parsed.get("immediate_actions", []),
+        "treatment": parsed.get("treatment", []),
+        "escalation": parsed.get("escalation", []),
+        "monitoring": parsed.get("monitoring", []),
+        "evidence_summary": parsed.get("evidence_summary", ""),
+        "answer": parsed.get("answer", ""),
+        "citations": citations,
+        "citations_grounded": bool(citations),
+        "citation_mode": "strict-server-grounded",
+        "retrieved_count": len(rows),
+    }
+
+def build_standard_grounded_answer(payload: AskRequest, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    citations = strict_citations(rows)
+    answer_language = detect_query_language(payload.query)
+    confidence = confidence_from_rows(rows)
+
+    if not OPENAI_CLIENT:
+        answer = "Grounded evidence retrieved. Model answer generation is unavailable because OPENAI_API_KEY is missing."
+    else:
+        evidence_block = "\n\n".join(
+            [
+                f"[{c['id']}] {c['title']} | {c.get('level','')} | {c.get('journal','')} {c.get('year','')}\n"
+                f"{c.get('snippet','')}"
+                for c in citations
+            ]
+        )
+        prompt = f"""
+You are AesthetiCite.
+
+Rules:
+- Answer in {answer_language}.
+- Use only the evidence below.
+- Prefer guidelines and consensus when available.
+- Cite only with the provided ids like [src_1].
+- Never invent citations or studies.
+
+Question:
+{payload.query}
+
+Evidence:
+{evidence_block}
+""".strip()
+        resp = OPENAI_CLIENT.responses.create(model="gpt-4.1-mini", input=prompt)
+        answer = getattr(resp, "output_text", "") or ""
+
+    valid_ids = {c["id"] for c in citations}
+    answer = sanitize_text_citations(answer, valid_ids)
+
+    return {
+        "mode": "answer",
+        "query": payload.query,
+        "protocol_title": "Grounded Clinical Answer",
+        "urgency": "Routine",
+        "confidence": confidence,
+        "recognition": [],
+        "immediate_actions": [],
+        "treatment": [],
+        "escalation": [],
+        "monitoring": [],
+        "evidence_summary": "Grounded answer generated from retrieved evidence.",
+        "answer": answer,
+        "citations": citations,
+        "citations_grounded": bool(citations),
+        "citation_mode": "strict-server-grounded",
+        "retrieved_count": len(rows),
+    }
+
+# ---------------------------
+# API
+# ---------------------------
+
+@app.post("/api/protocol-engine", response_model=ProtocolResponse)
+def protocol_engine(payload: AskRequest):
+    if not payload.query.strip():
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    rows = retrieve_evidence(payload)
+
+    if is_protocol_query(payload):
+        result = build_protocol_from_evidence(payload, rows)
+    else:
+        result = build_standard_grounded_answer(payload, rows)
+
+    return result
+
+# ---------------------------
+# UI
+# ---------------------------
+
+HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>AesthetiCite Protocol Engine</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 22px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .grid { display: grid; gap: 20px; }
+    .g2 { grid-template-columns: 380px 1fr; }
+    .g2b { grid-template-columns: 1fr 1fr; }
+    input, textarea, select, button { font: inherit; box-sizing: border-box; }
+    input, textarea, select { width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid #cbd5e1; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { background: #111827; color: white; border: 0; padding: 12px 16px; border-radius: 14px; cursor: pointer; }
+    .badge { display: inline-flex; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }
+    .red { background:#fef2f2; color:#b91c1c; border-color:#fecaca; }
+    .amber { background:#fffbeb; color:#b45309; border-color:#fde68a; }
+    .green { background:#ecfdf5; color:#047857; border-color:#a7f3d0; }
+    .blue { background:#eff6ff; color:#1d4ed8; border-color:#bfdbfe; }
+    .section { border: 1px solid #e2e8f0; border-radius: 18px; padding: 16px; background: white; }
+    .muted { color: #64748b; font-size: 14px; }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+    li { margin: 6px 0; }
+    .cit { border:1px solid #e2e8f0; border-radius: 16px; padding: 12px; background:#fff; }
+    @media (max-width: 980px) { .g2, .g2b { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap grid">
+    <div class="card">
+      <h1 style="margin:0 0 8px;">AesthetiCite Protocol Engine</h1>
+      <div class="muted">
+        Guideline-first protocol assembly for aesthetic medicine. The system builds
+        structured protocols from grounded evidence instead of generic answers.
+      </div>
+    </div>
+
+    <div class="grid g2">
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:12px;">Clinical input</div>
+        <div class="grid" style="gap:12px;">
+          <textarea id="query">vascular occlusion after filler with blanching and severe pain</textarea>
+          <select id="procedure">
+            <option>HA filler</option>
+            <option>Botulinum toxin</option>
+            <option>Breast augmentation</option>
+            <option>Laser treatment</option>
+          </select>
+          <select id="region">
+            <option>Nasolabial fold</option>
+            <option>Lips</option>
+            <option>Tear trough</option>
+            <option>Nose</option>
+            <option>Glabella</option>
+            <option>Cheek</option>
+            <option>Forehead</option>
+            <option>Temple</option>
+            <option>Jawline</option>
+          </select>
+          <input id="symptoms" value="blanching, severe pain, livedo"/>
+          <input id="patient_factors" value="prior filler in the area"/>
+          <button id="runBtn">Build protocol</button>
+        </div>
+      </div>
+
+      <div class="grid" style="gap:20px;">
+        <div class="card">
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+            <span id="modeBadge" class="badge blue">Protocol</span>
+            <span id="urgencyBadge" class="badge amber">Review advised</span>
+            <span id="confidenceBadge" class="badge green">Moderate confidence</span>
+          </div>
+          <h2 id="protocolTitle" style="margin:0 0 10px;">Protocol will appear here</h2>
+          <div id="evidenceSummary" class="muted">Grounded protocol summary will appear here.</div>
+        </div>
+
+        <div class="grid g2b">
+          <div class="section">
+            <div style="font-weight:700;">Recognition</div>
+            <ul id="recognition"></ul>
+          </div>
+          <div class="section">
+            <div style="font-weight:700;">Immediate actions</div>
+            <ul id="actions"></ul>
+          </div>
+          <div class="section">
+            <div style="font-weight:700;">Treatment</div>
+            <ul id="treatment"></ul>
+          </div>
+          <div class="section">
+            <div style="font-weight:700;">Escalation</div>
+            <ul id="escalation"></ul>
+          </div>
+        </div>
+
+        <div class="section">
+          <div style="font-weight:700;">Monitoring</div>
+          <ul id="monitoring"></ul>
+        </div>
+
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:10px;">Grounded answer</div>
+          <div id="answerText" style="white-space:pre-wrap; line-height:1.65;"></div>
+        </div>
+
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:10px;">Grounded citations</div>
+          <div id="citations" class="grid" style="gap:10px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const byId = (id) => document.getElementById(id);
+
+  function setBadge(el, text, klass) {
+    el.textContent = text;
+    el.className = "badge " + klass;
+  }
+
+  function urgencyClass(u) {
+    if (u === "Emergency" || u === "Urgent review") return "red";
+    if (u === "Review advised") return "amber";
+    return "green";
+  }
+
+  function confidenceClass(c) {
+    if (c === "High") return "green";
+    if (c === "Moderate") return "blue";
+    return "amber";
+  }
+
+  function renderList(id, items) {
+    byId(id).innerHTML = (items || []).map(x => `<li>${x}</li>`).join("");
+  }
+
+  async function run() {
+    const payload = {
+      query: byId("query").value,
+      procedure: byId("procedure").value,
+      region: byId("region").value,
+      symptoms: byId("symptoms").value,
+      patient_factors: byId("patient_factors").value,
+      top_k: 8
+    };
+
+    const btn = byId("runBtn");
+    btn.disabled = true;
+    btn.textContent = "Building...";
+
+    try {
+      const res = await fetch("/api/protocol-engine", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      setBadge(byId("modeBadge"), data.mode === "protocol" ? "Protocol" : "Answer", "blue");
+      setBadge(byId("urgencyBadge"), data.urgency, urgencyClass(data.urgency));
+      setBadge(byId("confidenceBadge"), data.confidence + " confidence", confidenceClass(data.confidence));
+
+      byId("protocolTitle").textContent = data.protocol_title;
+      byId("evidenceSummary").textContent = data.evidence_summary || "";
+      renderList("recognition", data.recognition || []);
+      renderList("actions", data.immediate_actions || []);
+      renderList("treatment", data.treatment || []);
+      renderList("escalation", data.escalation || []);
+      renderList("monitoring", data.monitoring || []);
+      byId("answerText").textContent = data.answer || "";
+
+      byId("citations").innerHTML = (data.citations || []).map(c => `
+        <div class="cit">
+          <div style="font-weight:700;">${c.title}</div>
+          <div class="muted" style="margin:4px 0;">
+            ${c.level || ""}${c.locator ? " • " + c.locator : ""}${c.year ? " • " + c.year : ""}${c.journal ? " • " + c.journal : ""}
+          </div>
+          <div style="font-size:14px; line-height:1.5;">${c.snippet || ""}</div>
+          ${c.url ? `<div style="margin-top:8px;"><a href="${c.url}" target="_blank" rel="noreferrer">Open source</a></div>` : ""}
+        </div>
+      `).join("");
+    } catch (e) {
+      alert("Protocol generation failed.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Build protocol";
+    }
+  }
+
+  byId("runBtn").addEventListener("click", run);
+  run();
+</script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML

@@ -1,0 +1,100 @@
+We need to change the ingestion/retrieval roadmap and execution order for the AesthetiCite corpus engine.
+
+Context
+There is one ingestion engine with 4 sequential phases:
+
+M1 = quality cleanup on existing corpus
+M2 = guideline-first ingestion
+M3 = multilingual ingestion
+M4 = full breadth sweep
+
+Current state
+- Corpus already has ~266k docs
+- M1 exists and runs quickly
+- M3 is currently running
+- M2 was skipped because corpus size already exceeded the 250k target
+- Audit findings show:
+  1. multilingual retrieval is broken because French/Spanish are being treated like native retrieval against a 99.8% English corpus
+  2. retrieval is slow
+  3. ACI is low because guideline docs are not being surfaced strongly enough
+  4. 8,618 docs are mislabeled
+  5. citation URLs are not being populated correctly
+
+Goal
+Do NOT optimize for raw volume first.
+Optimize for corpus quality, evidence hierarchy, retrieval relevance, and safe multilingual behavior first.
+
+What I want changed
+1. Reorder the practical execution priority:
+   - M1 quality cleanup must remain first and must run fully
+   - M2 guideline-first ingestion must be run even though we already exceeded 250k docs
+   - M3 multilingual ingestion should be paused or deprioritized until multilingual retrieval logic is fixed
+   - M4 full breadth sweep should remain last
+
+2. Update the engine logic/documentation so that phase goals are:
+   - M1 = clean corpus
+   - M2 = authoritative corpus
+   - M3 = globally usable corpus
+   - M4 = broad and defensible corpus
+
+3. Add a guardrail:
+   - corpus size alone must never be used as the reason to skip M2
+   - M2 is about corpus shape and evidence quality, not just count
+
+4. Add or update the retrieval roadmap documentation to reflect:
+   - multilingual success should come from language detection + translation-to-English retrieval + answer translation
+   - not from pretending the corpus is natively multilingual
+   - guideline and consensus documents must be explicitly prioritized in ranking
+
+Implementation tasks
+A. Update whichever config / constants / orchestration file controls phase order and skip logic
+- Remove any logic that says “skip M2 if doc_count > 250k”
+- Replace it with logic that allows M2 to run unless there is an explicit completed flag for M2
+- If phases can resume, preserve resumability
+
+B. Add clear phase status fields, if missing:
+- m1_completed
+- m2_completed
+- m3_completed
+- m4_completed
+- current_phase
+- current_query_index
+- total_queries
+- last_run_at
+
+C. Add a note in code comments and docs:
+- M2 is mandatory for evidence hierarchy and guideline density
+- M3 should only run after multilingual retrieval logic is corrected
+- M4 should only run after ranking and data hygiene are stable
+
+D. If there is a retrieval strategy doc or README, update it with this exact priority order:
+   1. M1 cleanup
+   2. M2 guideline-first ingestion
+   3. SQL ranking improvements for guideline priority
+   4. multilingual retrieval rewrite
+   5. M3 multilingual ingestion
+   6. M4 full breadth sweep
+
+E. If there is an execution script currently running M3, modify it so:
+- it can safely stop after the current batch/query
+- it does not continue all 300 multilingual queries automatically
+- next recommended phase becomes M2
+
+F. Add a warning in logs if someone tries to start M3 before:
+- M1 completed
+- M2 completed
+- multilingual retrieval strategy marked fixed
+
+Desired output from you
+1. Show me the files you changed
+2. Show me the exact logic you changed for phase skipping/reordering
+3. Show me the updated execution order
+4. Show me any new config flags / state fields added
+5. Do not just describe the plan — actually implement it
+
+Success criteria
+- M2 is no longer skipped just because corpus size is high
+- M3 is no longer treated as the natural next step before retrieval fixes
+- The engine state clearly reflects which phases are completed
+- The docs/comments match the new strategy
+- The next recommended run after current M3 batch is M2

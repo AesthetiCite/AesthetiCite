@@ -1,0 +1,26 @@
+All 3 files delivered. Here's the full implementation summary across all 4 sessions:
+
+All Congress Innovations — Implementation Complete
+This session: 3 new files
+neuromodulator_and_prescan_additions.py
+Add to complication_protocol_engine.py.
+Two additions:
+
+Neuromodulator Resistance Protocol — Full protocol covering true resistance vs pseudo-resistance (the CMAC 2025 distinction). Includes the "reset technique", switching to Xeomin (lowest immunogenic protein load), dose recalibration, and EMG guidance pathway. Triggers on keywords: "resistance", "not working", "wearing off", "no response", "shortened duration".
+Pre-Scan Briefing endpoint (POST /api/complications/prescan-briefing) — Takes a region and returns a structured ultrasound checklist: which structures to identify, Doppler settings, safe injection windows, and abort criteria. Covers nose, temple, forehead, tear trough, glabella, and nasolabial fold — all based on RSNA 2025 and Journal of Cosmetic Dermatology 2025 protocols.
+
+case-log.tsx
+Drop into client/src/pages/case-log.tsx. Add route /case-log in App.tsx.
+Full case logging UI connecting to the existing /api/complications/log-case and /api/complications/stats endpoints. Slide-in log form with complication type, region, product, symptom chip selector, and outcome. Live dataset stats with distribution bars by protocol, region, and procedure. Positioned with the "your proprietary dataset" messaging.
+drug-interactions.tsx
+Drop into client/src/pages/drug-interactions.tsx. Already routed.
+Complete replacement of the existing drug interactions page. Full aesthetic-medicine-specific database with 16 drug entries across: warfarin, all 3 DOACs, aspirin, clopidogrel, ibuprofen/NSAIDs, SSRIs/SNRIs, semaglutide, tirzepatide, liraglutide, methotrexate, biologics, corticosteroids, isotretinoin. Each card has mechanism, aesthetic impact, clinical management, and procedure-specific flags. GLP-1 spotlight banner at top. Filterable by drug class and severity.
+
+App.tsx — add this import and route for case log
+tsximport CaseLogPage from "@/pages/case-log";
+
+// In Router():
+<Route path="/case-log">
+  {() => <ProtectedRoute component={CaseLogPage} />}
+</Route>
+Also add /prescan-briefing proxy in server/routes.ts:

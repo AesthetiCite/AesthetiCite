@@ -1,0 +1,250 @@
+# ============================
+# AesthetiCite corpus.yaml
+# ============================
+version: 1
+project: "AesthetiCite PubMed Corpus"
+goal:
+  target_total_pmids: 1000000
+  date_created: "2026-01-30"
+
+ncbi:
+  # Conservative defaults; agent may tune, but should respect NCBI etiquette
+  tool: "aestheticite-pipeline"
+  email: "CHANGE_ME@yourdomain.com"
+  api_key_env: "NCBI_API_KEY"        # optional
+  throttle:
+    qps: 8                           # safe default
+    max_retries: 6
+    backoff_base_seconds: 0.5
+    backoff_max_seconds: 20
+
+global_filters:
+  # Apply to ALL queries unless overridden
+  humans_only: true
+  languages: ["eng", "fre"]          # keep FR for Morocco/Francophone clinics; remove if you want only English
+  date_range:
+    from: "2000/01/01"
+    to: "3000/01/01"                 # "today" effectively; agent should replace with today's date
+  # Use PubMed query syntax; these are appended with AND unless group overrides
+  include_terms:
+    - "humans[MeSH Terms]"
+  exclude_terms:
+    - "animals[MeSH Terms] NOT humans[MeSH Terms]"
+    - "veterinary[MeSH Terms]"
+    - "plant*[Title/Abstract]"
+    - "in vitro[Title/Abstract]"     # keep; remove if you want lab-method papers
+    - "mouse[Title/Abstract]"
+    - "mice[Title/Abstract]"
+    - "rat[Title/Abstract]"
+    - "rats[Title/Abstract]"
+    - "murine[Title/Abstract]"
+
+planning:
+  # The agent should slice each query by year blocks for reliability + parallelism
+  year_slicing:
+    enabled: true
+    block_years: 2                    # 2-year slices keeps API calls manageable
+  pmid_cap_per_query_slice: 120000     # if slice exceeds this, split further (e.g., by month or add extra constraints)
+  dedup_keys:
+    - "pmid"
+    - "doi"                           # secondary dedup when DOI available
+  storage:
+    db: "postgres"                    # "postgres" preferred; allow "sqlite" for MVP
+    tables:
+      publications: "publications"
+      ingestion_runs: "ingestion_runs"
+      pmid_queue: "pmid_queue"
+      pmc_fulltext: "pmc_fulltext"
+
+tiers:
+  # ============================
+  # Tier 1: High-precision aesthetics core (10k–50k)
+  # ============================
+  - name: "tier1_aesthetics_core"
+    target_pmids: 50000
+    priority: 1
+    description: "Injectables + key cosmetic indications + core complications"
+    groups:
+      - id: "t1_botulinum"
+        label: "Botulinum toxins aesthetics"
+        query_any:
+          - "(Botulinum Toxins[MeSH Terms] OR botulinum toxin[Title/Abstract] OR onabotulinumtoxinA[Title/Abstract] OR abobotulinumtoxinA[Title/Abstract] OR incobotulinumtoxinA[Title/Abstract] OR \"botox\"[Title/Abstract] OR \"dysport\"[Title/Abstract] OR \"xeomin\"[Title/Abstract])"
+        query_all:
+          - "(cosmetic[Title/Abstract] OR aesthetics[Title/Abstract] OR facial[Title/Abstract] OR glabellar[Title/Abstract] OR forehead[Title/Abstract] OR crow's feet[Title/Abstract] OR rhytid*[Title/Abstract])"
+
+      - id: "t1_fillers"
+        label: "Dermal fillers core"
+        query_any:
+          - "(Dermal Fillers[MeSH Terms] OR soft tissue filler*[Title/Abstract] OR dermal filler*[Title/Abstract] OR hyaluronic acid filler*[Title/Abstract] OR \"hyaluronic acid\"[Title/Abstract] OR poly-L-lactic acid[Title/Abstract] OR PLLA[Title/Abstract] OR calcium hydroxylapatite[Title/Abstract] OR CaHA[Title/Abstract] OR polymethylmethacrylate[Title/Abstract] OR PMMA[Title/Abstract])"
+        query_all:
+          - "(cosmetic[Title/Abstract] OR aesthetics[Title/Abstract] OR facial[Title/Abstract] OR nasolabial[Title/Abstract] OR tear trough[Title/Abstract] OR lip*[Title/Abstract] OR cheek*[Title/Abstract] OR periorbital[Title/Abstract])"
+
+      - id: "t1_core_complications"
+        label: "High-stakes complications"
+        query_any:
+          - "(vascular occlusion[Title/Abstract] OR emboli*[Title/Abstract] OR ischemia[Title/Abstract] OR skin necrosis[Title/Abstract] OR retinal artery occlusion[Title/Abstract] OR vision loss[Title/Abstract] OR blindness[Title/Abstract] OR ophthalmic artery[Title/Abstract] OR \"Tyndall\"[Title/Abstract] OR delayed nodule*[Title/Abstract] OR granuloma*[Title/Abstract] OR biofilm*[Title/Abstract])"
+        query_all:
+          - "(dermal filler*[Title/Abstract] OR soft tissue filler*[Title/Abstract] OR hyaluronic acid[Title/Abstract] OR cosmetic[Title/Abstract] OR aesthetics[Title/Abstract])"
+
+      - id: "t1_hyaluronidase"
+        label: "Hyaluronidase & filler reversal"
+        query_any:
+          - "(hyaluronidase[Title/Abstract] OR Hyaluronidase[MeSH Terms])"
+        query_all:
+          - "(dermal filler*[Title/Abstract] OR hyaluronic acid[Title/Abstract] OR vascular occlusion[Title/Abstract] OR aesthetics[Title/Abstract])"
+
+  # ============================
+  # Tier 2: Adjacent safety, anatomy, anesthesia, infection (100k–300k)
+  # ============================
+  - name: "tier2_adjacent_safety_anatomy"
+    target_pmids: 250000
+    priority: 2
+    description: "Cross-specialty safety evidence that directly informs injectables practice"
+    groups:
+      - id: "t2_facial_anatomy_vascular"
+        label: "Facial vascular anatomy (relevant to injectables)"
+        query_any:
+          - "(Facial Muscles[MeSH Terms] OR Face[MeSH Terms] OR facial anatomy[Title/Abstract] OR facial artery[Title/Abstract] OR angular artery[Title/Abstract] OR supraorbital[Title/Abstract] OR supratrochlear[Title/Abstract] OR dorsal nasal artery[Title/Abstract] OR infraorbital[Title/Abstract])"
+        query_all:
+          - "(artery[Title/Abstract] OR vascular[Title/Abstract] OR anatomic*[Title/Abstract])"
+
+      - id: "t2_local_anesthesia_safety"
+        label: "Local anesthetic dosing & toxicity"
+        query_any:
+          - "(Lidocaine[MeSH Terms] OR lidocaine[Title/Abstract] OR bupivacaine[Title/Abstract] OR prilocaine[Title/Abstract] OR local anesthetic*[Title/Abstract] OR nerve block[Title/Abstract])"
+        query_all:
+          - "(toxicity[Title/Abstract] OR adverse[Title/Abstract] OR maximum dose[Title/Abstract] OR safety[Title/Abstract] OR epinephrine[Title/Abstract])"
+
+      - id: "t2_infection_biofilm_nodules"
+        label: "Infection prevention, biofilm, delayed nodules"
+        query_any:
+          - "(biofilm*[Title/Abstract] OR delayed inflammatory reaction[Title/Abstract] OR delayed nodule*[Title/Abstract] OR granuloma*[Title/Abstract] OR atypical mycobacter*[Title/Abstract] OR infection prevention[Title/Abstract] OR antisepsis[Title/Abstract])"
+        query_all:
+          - "(injection*[Title/Abstract] OR cosmetic[Title/Abstract] OR dermal filler*[Title/Abstract] OR aesthetics[Title/Abstract])"
+
+      - id: "t2_wound_necrosis_management"
+        label: "Skin necrosis, ischemia, wound management"
+        query_any:
+          - "(skin necrosis[Title/Abstract] OR ischemic[Title/Abstract] OR livedo[Title/Abstract] OR wound care[Title/Abstract] OR tissue necrosis[Title/Abstract])"
+        query_all:
+          - "(face[Title/Abstract] OR facial[Title/Abstract] OR cosmetic[Title/Abstract] OR injection*[Title/Abstract])"
+
+  # ============================
+  # Tier 3: Broad biomedical safety net to reach 1M (controlled expansion)
+  # ============================
+  - name: "tier3_broad_controlled"
+    target_pmids: 700000
+    priority: 3
+    description: "Broad but constrained: dermatology/plastics/ophthalmology/ENT/EM safety + therapeutics"
+    groups:
+      - id: "t3_dermatology_plastics"
+        label: "Dermatology + plastic surgery (humans, 2000+)"
+        query_any:
+          - "(Dermatology[MeSH Terms] OR Plastic Surgery[MeSH Terms] OR cosmetic dermatology[Title/Abstract] OR aesthetic surgery[Title/Abstract])"
+        query_all:
+          - "(humans[MeSH Terms])"
+
+      - id: "t3_ophthalmology_vascular_events"
+        label: "Ophthalmology vascular events relevant to filler complications"
+        query_any:
+          - "(Ophthalmology[MeSH Terms] OR retinal artery occlusion[MeSH Terms] OR ophthalmic artery[Title/Abstract] OR vision loss[Title/Abstract] OR blindness[Title/Abstract])"
+        query_all:
+          - "(embol*[Title/Abstract] OR occlusion[Title/Abstract] OR ischemia[Title/Abstract] OR vascular[Title/Abstract])"
+
+      - id: "t3_emergency_medicine_safety"
+        label: "Emergency medicine safety signals"
+        query_any:
+          - "(Emergency Medicine[MeSH Terms] OR emergency department[Title/Abstract])"
+        query_all:
+          - "(adverse event*[Title/Abstract] OR complication*[Title/Abstract] OR toxicity[Title/Abstract] OR management[Title/Abstract])"
+
+      - id: "t3_antiinfective_soft_tissue"
+        label: "Soft tissue infection / anti-infective relevance"
+        query_any:
+          - "(Skin Diseases, Bacterial[MeSH Terms] OR Soft Tissue Infections[MeSH Terms] OR cellulitis[Title/Abstract] OR abscess[Title/Abstract])"
+        query_all:
+          - "(treatment[Title/Abstract] OR guideline*[Title/Abstract] OR consensus[Title/Abstract])"
+
+export:
+  jsonl_schema:
+    id: "pubmed:{pmid}"
+    fields:
+      - pmid
+      - title
+      - abstract
+      - journal
+      - year
+      - doi
+      - authors
+      - language
+      - mesh_terms
+      - publication_types
+      - url
+      - source
+      - source_type
+      - quality_rank
+      - freshness_years
+
+# ============================
+# Bonus Performance Hooks (to be implemented by agent)
+# ============================
+performance_hooks:
+  # Hook 1: Source-type classifier (heuristic, fast)
+  source_type_classifier:
+    # order matters: first match wins
+    rules:
+      - if_publication_type_any: ["Practice Guideline", "Guideline"]
+        then_source_type: "guideline"
+      - if_title_or_abstract_regex: "(consensus|recommendation|position statement|guideline)"
+        then_source_type: "guideline"
+      - if_publication_type_any: ["Randomized Controlled Trial"]
+        then_source_type: "rct"
+      - if_publication_type_any: ["Systematic Review", "Meta-Analysis"]
+        then_source_type: "meta_analysis"
+      - if_publication_type_any: ["Review"]
+        then_source_type: "review"
+      - if_publication_type_any: ["Case Reports"]
+        then_source_type: "case_series"
+      - else_source_type: "other"
+
+  # Hook 2: Quality rank (for reranking + UI confidence)
+  quality_rank:
+    # Higher = better; used by reranker to prefer PI/guideline/RCT
+    mapping:
+      pi: 100          # PI won't come from PubMed usually; keep for unified schema
+      guideline: 95
+      meta_analysis: 85
+      rct: 80
+      case_series: 55
+      review: 50
+      other: 35
+
+  # Hook 3: Freshness years
+  freshness:
+    compute: "freshness_years = max(0, current_year - year) if year else null"
+
+  # Hook 4: Dedup & merge
+  dedup:
+    prefer_if_conflict:
+      - "has_abstract"
+      - "has_mesh_terms"
+      - "newer_year"
+      - "has_doi"
+
+  # Hook 5: Export shaping for retrieval
+  export_shaping:
+    normalize_text:
+      - "collapse_whitespace"
+      - "strip_html"
+    drop_if:
+      - abstract_missing_and_title_too_short: 20
+    tags:
+      # these become retrieval filters
+      - "tier"
+      - "source_type"
+      - "quality_rank"
+      - "year_bucket"
+
+# ============================
+# End corpus.yaml
+# ============================

@@ -1,0 +1,165 @@
+# FRONTEND PATCH:
+# - Request access page: user selects Clinician or Student (OpenEvidence-style gate)
+# - Header greeting: "Dr. Lastname" for clinicians, "Student Lastname" for students
+# - Keeps it clean and professional
+
+set -e
+cd veridoc-frontend
+
+echo "==> 1) Add greeting formatter and use it in Layout header (top-left)"
+python - <<'PY'
+from pathlib import Path
+
+layout = Path("components/Layout.js").read_text()
+
+# Replace header email badge area to show greeting if provided
+# We'll pass greeting via right prop (already exists) — simplest.
+# Instead: update Ask page to include greeting badge.
+
+print("✅ No Layout change needed (we’ll handle greeting in Ask page badge).")
+PY
+
+echo "==> 2) Update Request Access page to include role selector"
+cat > pages/request-access.js <<'JS'
+import { useState } from "react";
+import Layout from "../components/Layout";
+import Link from "next/link";
+import { requestAccess } from "../lib/api";
+
+export default function RequestAccessPage() {
+  const [role, setRole] = useState("clinician");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [idNumber, setIdNumber] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr(""); setMsg(""); setBusy(true);
+    try {
+      const r = await requestAccess(fullName, email, idNumber, role);
+      setMsg(r.message || "Check your email to set your password.");
+    } catch (e2) {
+      setErr(e2.message || "Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Layout hideNav>
+      <div className="h1">Get free access</div>
+      <p className="p">
+        Free access is available to clinicians and students. You’ll receive a secure email link to set your password.
+      </p>
+
+      <div className="card">
+        <form onSubmit={submit}>
+          <label className="label">I am a</label>
+          <select value={role} onChange={(e)=>setRole(e.target.value)}>
+            <option value="clinician">Clinician</option>
+            <option value="student">Student</option>
+          </select>
+
+          <div style={{ height: 10 }} />
+
+          <label className="label">Full name</label>
+          <input value={fullName} onChange={(e)=>setFullName(e.target.value)} placeholder="Firstname Lastname" />
+
+          <div style={{ height: 10 }} />
+
+          <label className="label">{role === "student" ? "Institutional email" : "Professional email"}</label>
+          <input value={email} onChange={(e)=>setEmail(e.target.value)} placeholder={role==="student" ? "name@university.edu" : "doctor@clinic.com"} />
+
+          <div style={{ height: 10 }} />
+
+          <label className="label">{role === "student" ? "Student/registration number" : "Practitioner number"}</label>
+          <input value={idNumber} onChange={(e)=>setIdNumber(e.target.value)} placeholder={role==="student" ? "Student ID" : "License / Order number"} />
+
+          <div style={{ height: 12 }} />
+          <button className="btn btnPrimary" disabled={busy}>
+            {busy ? "Sending email…" : "Send password link"}
+          </button>
+        </form>
+
+        {msg ? <div style={{ marginTop: 12 }} className="success">{msg}</div> : null}
+        {err ? <div style={{ marginTop: 12 }} className="error">{err}</div> : null}
+
+        <div className="hr" />
+        <Link href="/login"><span className="badge">Already have a password? Log in</span></Link>
+      </div>
+    </Layout>
+  );
+}
+JS
+
+echo "==> 3) Update lib/api.js to pass role for requestAccess"
+python - <<'PY'
+from pathlib import Path
+p = Path("lib/api.js")
+txt = p.read_text()
+
+if "requestAccess(full_name" not in txt:
+    raise SystemExit("lib/api.js does not look like the expected version. Paste it and I'll patch precisely.")
+
+# Replace requestAccess signature + body
+import re
+txt = re.sub(
+    r'export async function requestAccess\((.*?)\)\s*\{[\s\S]*?\n\}\n',
+    """export async function requestAccess(full_name, email, practitioner_id, role="clinician") {
+  const res = await fetch(`${API_BASE}/auth/request-access`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name, email, practitioner_id, role })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Request failed");
+  return data;
+}\n""",
+    txt,
+    count=1
+)
+p.write_text(txt)
+print("✅ lib/api.js updated")
+PY
+
+echo "==> 4) Update Ask page badge greeting to show Dr. Lastname (or Student Lastname)"
+python - <<'PY'
+from pathlib import Path
+p = Path("pages/ask.js")
+txt = p.read_text()
+
+# Insert greeting helper + use it in right badge
+if "function greetUser" not in txt:
+    insert = """
+function greetUser(user){
+  const role = user?.role || "clinician";
+  const full = (user?.full_name || "").trim();
+  const email = (user?.email || "").trim();
+
+  const last = full ? full.split(/\s+/).slice(-1)[0] : "";
+  if (role === "student") {
+    return last ? `Student ${last}` : (full ? `Student ${full}` : "Student");
+  }
+  // clinician
+  return last ? `Dr. ${last}` : (full ? `Dr. ${full}` : "Doctor");
+}
+"""
+    # place after imports
+    parts = txt.split("\n\n", 1)
+    txt = parts[0] + "\n\n" + insert + "\n" + parts[1]
+
+# Replace the badge content for user display
+txt = txt.replace(
+    '<span className="badge">{user?.email || "…"}</span>',
+    '<span className="badge">{user ? greetUser(user) : "…"}</span>'
+)
+
+p.write_text(txt)
+print("✅ pages/ask.js greeting updated")
+PY
+
+echo "==> DONE. Restart frontend:"
+echo "npm run dev"

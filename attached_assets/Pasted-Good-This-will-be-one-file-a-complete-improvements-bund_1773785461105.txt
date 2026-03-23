@@ -1,0 +1,14 @@
+Good. This will be one file — a complete improvements bundle. All five high-impact features in a single drop-in.Created a file, ran a command, read a fileCreated a file, ran a command, read a fileOne file. Five complete implementations. Here is exactly what each contains and where it goes:
+
+FILE 1 — landing.tsx → client/src/pages/landing.tsx
+Public-facing marketing page. The /welcome route already points to this file — just replace it. Shows the three safety features as cards, a trust bar with corpus stats, a CTA section, and a footer. A medical director visiting after your LinkedIn message sees a clinical product, not a chat interface.
+FILE 2 — clinic-dashboard.tsx → client/src/pages/clinic-dashboard.tsx
+Complete admin panel wired to GET /api/growth/dashboard/{clinic_id}. Stat cards for total queries, average ACI score, average response time, and citations retrieved. Top questions ranked list with usage counts. Evidence level distribution with colour-coded progress bars. Answer type distribution. A small clinic ID input in the header so the clinician can set their clinic identifier. The /clinic-dashboard route already exists in App.tsx.
+FILE 3 — drug-interactions.tsx → client/src/pages/drug-interactions.tsx
+Complete drug interaction checker. Quick-add chips for 14 common medications and 7 procedure types. Free-text medication input with add/remove. Wired to POST /api/growth/drug-interactions. Results show severity badges, explanation, and clinical action per interaction. The /drug-interactions route already exists.
+FILE 4 — hyaluronidase-calc.tsx → client/src/components/hyaluronidase-calc.tsx
+Region-specific hyaluronidase dosing calculator for 6 injection regions. Select region, confirm HA filler, get: initial dose in IU, repeat interval, technique guidance, monitoring checklist, and red flags. The glabella protocol correctly flags the highest emergency threshold. Import HyaluronidaseCalc into ClinicalToolsPanel or add a /hyaluronidase route.
+FILE 5 — onboarding-dialog.tsx → client/src/components/onboarding-dialog.tsx
+Three-step first-run onboarding. Shows only once per device using localStorage. Step 1: Pre-Procedure Safety Check. Step 2: Complication Protocols. Step 3: Session Safety Report. Each step has a "Try it now" button that navigates directly to the feature and dismisses the dialog. Already imported and used in ask.tsx — just replace the file.
+
+How to extract each file: copy the content between each pair of /* ... */ comment blocks. Remove the outer /* and */ markers. Save to the path shown in the header comment.

@@ -1,0 +1,529 @@
+"""
+AesthetiCite — DeepConsult Upgrade Pack (ALL 3 features)
+========================================================
+Implements:
+A) Automatic routing (/qa → /deepconsult) when query is complex multi-study analysis
+B) Citation-grade PDF export (ReportLab) for DeepConsult results (and optionally /qa)
+C) Literature disagreement detector (flags conflicts across sources + outputs a conflict report)
+
+Designed for multi-module FastAPI architecture.
+
+Install:
+  pip install reportlab openai cachetools
+
+Env:
+  OPENAI_API_KEY="..."
+  OPENAI_MODEL_FAST="gpt-4.1-mini"
+  OPENAI_MODEL_DEEP="gpt-4.1"
+
+You must provide:
+  retrieve_adapter(query: str, filters: dict|None, k: int|None=None) -> list[dict]
+  Each chunk dict must include at least: title, year, source_type, text, doi/url optional.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import io
+import json
+import time
+import math
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Callable
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from cachetools import TTLCache
+from openai import OpenAI
+
+# PDF (citation-grade)
+from reportlab.lib.pagesizes import LETTER
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+
+
+# ==========================
+# 0) Wiring
+# ==========================
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+MODEL_FAST = os.getenv("OPENAI_MODEL_FAST", "gpt-4.1-mini")
+MODEL_DEEP = os.getenv("OPENAI_MODEL_DEEP", "gpt-4.1")
+
+CACHE_TTL = int(os.getenv("CACHE_TTL_SECONDS", "172800"))
+route_cache = TTLCache(maxsize=50_000, ttl=CACHE_TTL)
+
+# --------------------------
+# You must import your retriever
+# --------------------------
+# from app.core.retrieval import retrieve_adapter
+# Here we assume it exists in the runtime.
+def retrieve_adapter(query: str, filters: dict | None, k: int | None = None) -> list:
+    raise NotImplementedError("Import your retrieve_adapter here")
+
+
+# ==========================
+# 1) Automatic routing (/qa → /deepconsult)
+# ==========================
+@dataclass
+class RoutingThresholds:
+    # Trigger DeepConsult if query looks like multi-study synthesis
+    keyword_trigger: bool = True
+    min_high_level_sources: int = 2    # meta_analysis + guideline + rct threshold
+    min_total_sources: int = 10        # retrieved sources threshold
+    query_length_trigger: int = 140    # long analytic prompts
+    complexity_score_trigger: float = 0.62  # classifier score threshold
+
+
+DEEP_KEYWORDS = [
+    "systematic review", "meta-analysis", "meta analysis", "multiple studies",
+    "compare studies", "conflicting", "heterogeneity", "bias", "risk of bias",
+    "evidence synthesis", "literature", "trial", "rct", "observational",
+    "guideline comparison", "what does the evidence say", "overall evidence"
+]
+
+def _st(c: dict) -> str:
+    return (c.get("source_type") or "other").lower().strip()
+
+def _uniq_sources(chunks: List[dict]) -> List[dict]:
+    seen = set()
+    out = []
+    for c in chunks:
+        key = c.get("doi") or c.get("url") or c.get("title") or c.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+def classify_need_deepconsult_fast(query: str, chunks: List[dict], th: RoutingThresholds) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Deterministic router (fast, no extra LLM call).
+    Use LLM classifier only if you want, but this is usually enough.
+    """
+    q = (query or "").lower()
+    u = _uniq_sources(chunks)
+    total = len(u)
+
+    hi = sum(1 for c in u if _st(c) in ("meta_analysis", "guideline", "rct"))
+    kw = any(k in q for k in DEEP_KEYWORDS) if th.keyword_trigger else False
+    longq = len(query) >= th.query_length_trigger
+
+    # simple "complexity score"
+    score = 0.0
+    score += 0.35 if kw else 0.0
+    score += 0.20 if longq else 0.0
+    score += 0.30 * min(1.0, hi / max(1, th.min_high_level_sources))
+    score += 0.15 * min(1.0, total / max(1, th.min_total_sources))
+
+    use_deep = (score >= th.complexity_score_trigger) or (kw and hi >= 1) or (hi >= th.min_high_level_sources and total >= th.min_total_sources)
+
+    return use_deep, {
+        "router_score": round(score, 3),
+        "has_deep_keywords": kw,
+        "query_length": len(query),
+        "high_level_sources": hi,
+        "unique_sources": total,
+        "threshold": th.complexity_score_trigger,
+    }
+
+
+# ==========================
+# 2) Literature disagreement detector
+# ==========================
+class DisagreementResult(BaseModel):
+    conflict_found: bool
+    conflict_score: float
+    topics: List[str]
+    conflicting_claims: List[dict]
+    notes: str
+
+def disagreement_detector(query: str, chunks: List[dict]) -> DisagreementResult:
+    """
+    Hybrid approach:
+    - Deterministic heuristics to *suspect* disagreement
+    - Then a single LLM pass to extract conflict statements (PhD-level, cautious)
+    This avoids heavy multi-call chains.
+    """
+    u = _uniq_sources(chunks)
+    texts = [(c.get("text") or "")[:1800] for c in u[:18]]
+    joined = "\n\n---\n\n".join(texts).lower()
+
+    # Heuristic conflict cues
+    cue_hits = 0
+    cues = [
+        "conflict", "inconsistent", "mixed results", "heterogeneity",
+        "no difference", "significant", "increased risk", "decreased risk",
+        "not significant", "however", "whereas"
+    ]
+    cue_hits = sum(1 for w in cues if w in joined)
+    conflict_score = min(1.0, cue_hits / 10.0)
+
+    # If very low, we can return quickly
+    if conflict_score < 0.25:
+        return DisagreementResult(
+            conflict_found=False,
+            conflict_score=round(conflict_score, 2),
+            topics=[],
+            conflicting_claims=[],
+            notes="No strong disagreement signals detected in retrieved evidence."
+        )
+
+    # LLM extraction for conflicts (single pass)
+    system = (
+        "You are a biomedical research analyst. Detect literature disagreement across studies.\n"
+        "Return STRICT JSON only with schema:\n"
+        "{"
+        "\"conflict_found\": boolean,"
+        "\"topics\": [string],"
+        "\"conflicting_claims\": ["
+        " {\"claim_a\": string, \"supporting_source_a\": string, "
+        "  \"claim_b\": string, \"supporting_source_b\": string, "
+        "  \"why_conflict\": string, \"possible_explanations\": [string]} ],"
+        "\"notes\": string"
+        "}\n"
+        "Rules:\n"
+        "- Be conservative: only mark conflict if claims truly diverge.\n"
+        "- Cite sources by title/year when possible.\n"
+        "- If evidence is just 'uncertain' rather than conflicting, say so.\n"
+    )
+
+    # Minimal evidence table to ground it
+    evidence_rows = []
+    for c in u[:18]:
+        evidence_rows.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "type": _st(c),
+            "snippet": (c.get("text") or "")[:420],
+        })
+
+    user = f"Question: {query}\n\nEvidence snippets:\n{json.dumps(evidence_rows, ensure_ascii=False)}"
+    data = client.responses.create(
+        model=MODEL_DEEP,
+        input=[{"role":"system","content":system},{"role":"user","content":user}],
+        temperature=0.1,
+    ).output_text
+
+    # Parse JSON robustly
+    m = re.search(r"\{.*\}", data, re.S)
+    if m:
+        data = m.group(0)
+    obj = json.loads(data)
+
+    return DisagreementResult(
+        conflict_found=bool(obj.get("conflict_found")),
+        conflict_score=round(conflict_score, 2),
+        topics=obj.get("topics") or [],
+        conflicting_claims=obj.get("conflicting_claims") or [],
+        notes=obj.get("notes") or ""
+    )
+
+
+# ==========================
+# 3) DeepConsult core + citation-grade PDF export
+# ==========================
+class DeepConsultRequest(BaseModel):
+    question: str
+    filters: Optional[dict] = None
+    max_sources: int = 40
+    include_disagreement: bool = True
+
+class QARequest(BaseModel):
+    query: str
+    filters: Optional[dict] = None
+    auto_route: bool = True
+    # If true, force DeepConsult even if router says no
+    force_deep: bool = False
+
+def deepconsult_run(question: str, filters: Optional[dict], max_sources: int) -> Dict[str, Any]:
+    chunks = retrieve_adapter(question, filters, max_sources)
+    u = _uniq_sources(chunks)
+    if len(u) < 6:
+        return {
+            "refused": True,
+            "reason": "Insufficient literature retrieved for multi-study synthesis.",
+            "citations": format_citations(u),
+            "evidence_table": [],
+            "analysis": None,
+        }
+
+    # Require higher-level evidence for PhD-style synthesis when possible
+    metas = [c for c in u if _st(c) == "meta_analysis"]
+    rcts  = [c for c in u if _st(c) == "rct"]
+    gls   = [c for c in u if _st(c) == "guideline"]
+
+    # Build evidence table (compact)
+    evidence_table = []
+    for c in u[:max_sources]:
+        evidence_table.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "type": _st(c),
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+            "snippet": (c.get("text") or "")[:520],
+        })
+
+    system = (
+        "You are DeepConsult, a PhD-level biomedical research analyst for aesthetic medicine.\n"
+        "Synthesize multiple studies conservatively.\n"
+        "Do NOT guess dosing or specifics not supported.\n"
+        "Use academic tone.\n\n"
+        "Required sections:\n"
+        "1. Research Question\n"
+        "2. Evidence Summary Table (describe tiers: guideline/meta/RCT/observational)\n"
+        "3. Study-by-Study Analysis\n"
+        "4. Synthesis & Consensus\n"
+        "5. Limitations & Bias\n"
+        "6. Practical Implications\n"
+        "7. References\n"
+    )
+
+    user = f"Research question:\n{question}\n\nEvidence table:\n{json.dumps(evidence_table, ensure_ascii=False)}"
+    analysis = client.responses.create(
+        model=MODEL_DEEP,
+        input=[{"role":"system","content":system},{"role":"user","content":user}],
+        temperature=0.1,
+    ).output_text
+
+    return {
+        "refused": False,
+        "analysis": analysis,
+        "evidence_table": evidence_table,
+        "citations": format_citations(u),
+        "meta": {
+            "model": MODEL_DEEP,
+            "unique_sources": len(u),
+            "meta_analyses": len(metas),
+            "rcts": len(rcts),
+            "guidelines": len(gls),
+        }
+    }
+
+def format_citations(chunks: List[dict], max_items: int = 25) -> List[dict]:
+    out = []
+    for c in _uniq_sources(chunks)[:max_items]:
+        out.append({
+            "title": c.get("title"),
+            "year": c.get("year"),
+            "source_type": c.get("source_type"),
+            "doi": c.get("doi"),
+            "url": c.get("url"),
+        })
+    return out
+
+# --------------------------
+# Citation-grade PDF export
+# --------------------------
+def make_citation_pdf(
+    *,
+    title: str,
+    subtitle: str,
+    body_text: str,
+    citations: List[dict],
+    evidence_table: Optional[List[dict]] = None,
+    conflict: Optional[DisagreementResult] = None,
+) -> bytes:
+    """
+    Creates a clean, citation-grade PDF:
+    - Title + subtitle
+    - Body (analysis)
+    - Optional evidence table summary
+    - Optional conflict section
+    - References numbered (Vancouver-style-ish)
+    """
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    width, height = LETTER
+
+    # Basic typography
+    left = 0.85 * inch
+    right = width - 0.85 * inch
+    top = height - 0.85 * inch
+    y = top
+
+    def draw_wrapped(text: str, font="Times-Roman", size=11, leading=14):
+        nonlocal y
+        c.setFont(font, size)
+        max_w = right - left
+        # naive wrap
+        words = (text or "").split()
+        line = ""
+        for w in words:
+            test = (line + " " + w).strip()
+            if c.stringWidth(test, font, size) <= max_w:
+                line = test
+            else:
+                if y < 1.0 * inch:
+                    c.showPage()
+                    y = top
+                    c.setFont(font, size)
+                c.drawString(left, y, line)
+                y -= leading
+                line = w
+        if line:
+            if y < 1.0 * inch:
+                c.showPage()
+                y = top
+                c.setFont(font, size)
+            c.drawString(left, y, line)
+            y -= leading
+
+    # Title
+    c.setFont("Times-Bold", 16)
+    c.drawString(left, y, title[:120])
+    y -= 18
+    c.setFont("Times-Italic", 11)
+    c.drawString(left, y, subtitle[:140])
+    y -= 22
+
+    # Body
+    draw_wrapped(body_text, font="Times-Roman", size=11, leading=14)
+
+    # Optional conflict
+    if conflict and conflict.conflict_found:
+        y -= 10
+        draw_wrapped("Literature Disagreement Detected", font="Times-Bold", size=12, leading=16)
+        draw_wrapped(f"Conflict score: {conflict.conflict_score}. Topics: {', '.join(conflict.topics)[:200]}", font="Times-Roman")
+        for item in conflict.conflicting_claims[:5]:
+            draw_wrapped(f"- Claim A: {item.get('claim_a','')}", font="Times-Roman")
+            draw_wrapped(f"  vs Claim B: {item.get('claim_b','')}", font="Times-Roman")
+            draw_wrapped(f"  Why: {item.get('why_conflict','')}", font="Times-Italic")
+
+    # Optional evidence table summary
+    if evidence_table:
+        y -= 10
+        draw_wrapped("Evidence Summary (top sources)", font="Times-Bold", size=12, leading=16)
+        for r in evidence_table[:10]:
+            t = (r.get("type") or "other").upper()
+            yr = r.get("year") or ""
+            draw_wrapped(f"- [{t}] {r.get('title','')[:160]} ({yr})", font="Times-Roman")
+
+    # References
+    y -= 10
+    draw_wrapped("References", font="Times-Bold", size=12, leading=16)
+    for i, ref in enumerate(citations[:30], start=1):
+        yr = ref.get("year") or ""
+        st = ref.get("source_type") or ""
+        doi = ref.get("doi") or ""
+        url = ref.get("url") or ""
+        line = f"[{i}] {ref.get('title','') or 'Untitled'} ({yr}). {st}. {doi} {url}".strip()
+        draw_wrapped(line, font="Times-Roman", size=10, leading=13)
+
+    c.save()
+    return buf.getvalue()
+
+
+# ==========================
+# 4) FastAPI routers
+# ==========================
+router = APIRouter()
+
+@router.post("/deepconsult")
+async def deepconsult_endpoint(req: DeepConsultRequest):
+    result = deepconsult_run(req.question, req.filters, req.max_sources)
+    if not result.get("refused") and req.include_disagreement:
+        # run disagreement detector on the same evidence
+        chunks = retrieve_adapter(req.question, req.filters, min(req.max_sources, 40))
+        result["disagreement"] = disagreement_detector(req.question, chunks).model_dump()
+    return result
+
+@router.post("/qa")
+async def qa_endpoint(req: QARequest):
+    """
+    Automatic routing:
+    - If auto_route and classifier says "complex", return deepconsult response instead of normal.
+    - Otherwise return your normal QA output (placeholder here).
+    """
+    # ---- Your existing fast QA call goes here ----
+    # For routing we need a small retrieval sample, not the full wide_k.
+    filters = req.filters or {"domain": "aesthetic_medicine"}
+    sample = retrieve_adapter(req.query, filters, 20)
+    th = RoutingThresholds()
+
+    use_deep, why = classify_need_deepconsult_fast(req.query, sample, th)
+    if req.force_deep:
+        use_deep = True
+        why["forced"] = True
+
+    if req.auto_route and use_deep:
+        deep = deepconsult_run(req.query, filters, max_sources=40)
+        deep["meta"] = deep.get("meta", {})
+        deep["meta"]["auto_routed"] = True
+        deep["meta"]["router"] = why
+        # optional disagreement detector
+        chunks = retrieve_adapter(req.query, filters, 40)
+        deep["disagreement"] = disagreement_detector(req.query, chunks).model_dump()
+        return deep
+
+    # If not routed, return "fast QA" placeholder:
+    # Replace the below with your actual fast /qa implementation
+    return {
+        "refused": False,
+        "answer": "FAST QA PLACEHOLDER — replace with your existing /qa pipeline output.",
+        "meta": {"auto_routed": False, "router": why}
+    }
+
+@router.post("/deepconsult/pdf")
+async def deepconsult_pdf(req: DeepConsultRequest):
+    """
+    Citation-grade PDF export of DeepConsult analysis.
+    Returns application/pdf stream.
+    """
+    result = deepconsult_run(req.question, req.filters, req.max_sources)
+    if result.get("refused"):
+        raise HTTPException(400, f"DeepConsult refused: {result.get('reason')}")
+
+    conflict = None
+    if req.include_disagreement:
+        chunks = retrieve_adapter(req.question, req.filters, min(req.max_sources, 40))
+        conflict = disagreement_detector(req.question, chunks)
+
+    pdf_bytes = make_citation_pdf(
+        title="AesthetiCite DeepConsult Report",
+        subtitle=req.question,
+        body_text=result.get("analysis") or "",
+        citations=result.get("citations") or [],
+        evidence_table=result.get("evidence_table") or [],
+        conflict=conflict
+    )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline; filename=deepconsult_report.pdf"}
+    )
+
+
+# ==========================
+# 5) Integration instructions (multi-module FastAPI)
+# ==========================
+"""
+In your main FastAPI app (e.g., app/main.py):
+
+from fastapi import FastAPI
+from app.core.deepconsult_upgrade_pack import router as deep_router
+
+app = FastAPI()
+app.include_router(deep_router)
+
+If you already have /qa in another router:
+- Replace that /qa endpoint with the one here OR
+- Keep yours and add only the routing function:
+    classify_need_deepconsult_fast(...)
+  then call deepconsult_run(...) when needed.
+
+IMPORTANT:
+- The routing endpoint above uses only a 20-source retrieval sample for speed.
+- DeepConsult uses up to 40 sources.
+- /deepconsult/pdf creates a citation-grade PDF suitable for sharing.
+
+Frontend:
+- If /qa returns payload with meta.auto_routed=True, show it as "DeepConsult" view.
+- Add a "Download PDF" button calling POST /deepconsult/pdf with same question/filters.
+"""

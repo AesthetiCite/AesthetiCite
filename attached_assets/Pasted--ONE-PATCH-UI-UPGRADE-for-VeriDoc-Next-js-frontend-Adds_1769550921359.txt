@@ -1,0 +1,531 @@
+# ONE-PATCH UI UPGRADE for VeriDoc (Next.js frontend)
+# ✅ Adds the new logo in the header + login
+# ✅ Aligns the whole UI style with the logo (teal/blue, clean medical aesthetic)
+# ✅ Makes answers readable (markdown rendering), with citation cards like OpenEvidence
+# ✅ Adds better layout, spacing, typography, and “Evidence-only” cues
+#
+# IMPORTANT (logo):
+# 1) Upload your chosen logo PNG to Replit: veridoc-frontend/public/veridoc-logo.png
+# 2) Keep the exact filename: veridoc-logo.png
+#
+# Paste into Replit AI Agent in the *frontend* Replit (veridoc-frontend project), then run:
+#   npm install
+#   npm run dev
+
+set -e
+
+cd veridoc-frontend
+
+echo "==> 1) Add dependencies for nicer rendering"
+node - <<'NODE'
+const fs = require('fs');
+const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+pkg.dependencies = pkg.dependencies || {};
+pkg.dependencies["react-markdown"] = "9.0.1";
+pkg.dependencies["remark-gfm"] = "4.0.0";
+fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+NODE
+
+echo "==> 2) Create a modern design system CSS aligned with your logo"
+mkdir -p styles components
+
+cat > styles/globals.css <<'CSS'
+:root{
+  --bg0:#f7fbff;
+  --bg1:#ffffff;
+  --text:#0f172a;
+  --muted:#475569;
+  --border:#e2e8f0;
+
+  --brand0:#0ea5e9; /* sky */
+  --brand1:#14b8a6; /* teal */
+  --brand2:#2563eb; /* blue */
+
+  --shadow: 0 10px 30px rgba(2,6,23,.08);
+}
+
+html, body { padding: 0; margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: var(--text); background: radial-gradient(1200px 600px at 20% 0%, rgba(14,165,233,.12), transparent 60%),
+radial-gradient(900px 500px at 80% 10%, rgba(20,184,166,.10), transparent 55%),
+linear-gradient(180deg, var(--bg0), #fff 35%); }
+* { box-sizing: border-box; }
+
+a { color: inherit; text-decoration: none; }
+.container { max-width: 980px; margin: 0 auto; padding: 26px 18px 40px; }
+
+.header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 14px 18px; border:1px solid var(--border);
+  background: rgba(255,255,255,.80);
+  backdrop-filter: blur(10px);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  position: sticky; top: 12px; z-index: 10;
+}
+.brand { display:flex; align-items:center; gap:12px; }
+.brand img { width: 44px; height: 44px; object-fit: contain; border-radius: 12px; }
+.brand .title { font-weight: 800; letter-spacing: -0.02em; font-size: 18px; line-height: 1.1; }
+.brand .subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.nav { display:flex; align-items:center; gap:10px; }
+.badge {
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 7px 10px;
+  border:1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,.7);
+  color: var(--muted);
+  font-size: 12px;
+}
+.dot { width:8px; height:8px; border-radius:999px; background: linear-gradient(90deg, var(--brand0), var(--brand1)); box-shadow: 0 0 0 4px rgba(14,165,233,.12); }
+
+.btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  padding: 10px 14px; border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.9);
+  cursor: pointer;
+}
+.btn:hover { transform: translateY(-1px); box-shadow: 0 10px 22px rgba(2,6,23,.08); }
+.btnPrimary{
+  border: none;
+  color: white;
+  background: linear-gradient(90deg, var(--brand0), var(--brand1));
+}
+.btnPrimary:hover{ box-shadow: 0 14px 30px rgba(14,165,233,.18); }
+
+.grid { display:grid; gap: 14px; grid-template-columns: 1fr; margin-top: 16px; }
+@media (min-width: 980px) { .grid { grid-template-columns: 1.2fr .8fr; } }
+
+.card {
+  border:1px solid var(--border);
+  background: rgba(255,255,255,.86);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+.h1 { font-size: 28px; font-weight: 900; letter-spacing: -0.03em; margin: 18px 0 6px; }
+.p { color: var(--muted); margin: 0 0 14px; line-height: 1.55; }
+
+.label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display:block; }
+input, select, textarea{
+  width:100%;
+  padding: 12px 12px;
+  border:1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255,255,255,.92);
+  outline: none;
+}
+textarea{ resize: vertical; min-height: 110px; }
+
+.row { display:flex; gap:12px; flex-wrap: wrap; }
+.row > * { flex: 1; min-width: 220px; }
+
+.hr { height:1px; background: var(--border); margin: 14px 0; }
+
+.answerBox{
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.95);
+  padding: 14px;
+}
+.metaLine{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 10px; }
+.kpi{
+  padding: 7px 10px; border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.7);
+  font-size: 12px; color: var(--muted);
+}
+
+.citation {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255,255,255,.92);
+}
+.citationTitle { font-weight: 800; letter-spacing: -0.01em; }
+.citationMeta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.snippet { font-size: 13px; color: #334155; margin-top: 8px; line-height: 1.45; }
+
+.error { color: #b91c1c; background: rgba(185,28,28,.08); border: 1px solid rgba(185,28,28,.22); padding: 10px 12px; border-radius: 14px; }
+.success { color: #065f46; background: rgba(6,95,70,.08); border: 1px solid rgba(6,95,70,.22); padding: 10px 12px; border-radius: 14px; }
+
+footer { margin-top: 18px; color: var(--muted); font-size: 12px; text-align:center; }
+CSS
+
+echo "==> 3) Add a reusable Layout with logo + OpenEvidence-like positioning"
+cat > components/Layout.js <<'JS'
+import Link from "next/link";
+
+export default function Layout({ children, right, hideNav }) {
+  return (
+    <div className="container">
+      <div className="header">
+        <div className="brand">
+          {/* Upload your chosen logo to: public/veridoc-logo.png */}
+          <img src="/veridoc-logo.png" alt="VeriDoc logo" />
+          <div>
+            <div className="title">VeriDoc</div>
+            <div className="subtitle">Evidence-backed answers for clinicians • citations required</div>
+          </div>
+        </div>
+
+        {!hideNav ? (
+          <div className="nav">
+            <span className="badge"><span className="dot" /> Evidence-only</span>
+            {right}
+          </div>
+        ) : null}
+      </div>
+
+      {children}
+
+      <footer>
+        VeriDoc provides evidence summaries with citations and short supporting snippets. It does not replace clinical judgment.
+      </footer>
+    </div>
+  );
+}
+JS
+
+echo "==> 4) Update _app.js"
+cat > pages/_app.js <<'JS'
+import "../styles/globals.css";
+export default function App({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+JS
+
+echo "==> 5) Update lib/api.js (slightly nicer errors)"
+mkdir -p lib
+cat > lib/api.js <<'JS'
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+export function getToken() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("veridoc_token");
+}
+export function setToken(token) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("veridoc_token", token);
+}
+export function clearToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("veridoc_token");
+}
+
+async function readJson(res) {
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { raw: text }; }
+}
+
+export async function login(email, password) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Login failed");
+  return data.access_token;
+}
+
+export async function me(token) {
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Auth check failed");
+  return data;
+}
+
+export async function ask(token, question, domain="medicine", mode="clinic") {
+  const res = await fetch(`${API_BASE}/ask`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ question, domain, mode })
+  });
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data?.detail || data?.raw || "Ask failed");
+  return data;
+}
+JS
+
+echo "==> 6) Update pages/index.js (clean redirect)"
+cat > pages/index.js <<'JS'
+import { useEffect } from "react";
+import { getToken } from "../lib/api";
+import { useRouter } from "next/router";
+
+export default function Home() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace(getToken() ? "/ask" : "/login");
+  }, [router]);
+  return <div className="container">Loading…</div>;
+}
+JS
+
+echo "==> 7) Improve Login page with better layout"
+cat > pages/login.js <<'JS'
+import { useState } from "react";
+import { login, setToken, me } from "../lib/api";
+import { useRouter } from "next/router";
+import Layout from "../components/Layout";
+
+export default function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const router = useRouter();
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    setMsg("");
+    setBusy(true);
+    try {
+      const token = await login(email, password);
+      setToken(token);
+      await me(token);
+      router.push("/ask");
+    } catch (err) {
+      setMsg(err.message || "Login failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Layout hideNav>
+      <div className="h1">Welcome back</div>
+      <p className="p">
+        Sign in to access evidence-backed answers with citations and supporting snippets.
+      </p>
+
+      <div className="grid">
+        <div className="card">
+          <form onSubmit={onSubmit}>
+            <label className="label">Email</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="doctor@example.com" />
+
+            <div style={{ height: 10 }} />
+
+            <label className="label">Password</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+
+            <div style={{ height: 12 }} />
+
+            <button className={"btn btnPrimary"} disabled={busy} type="submit">
+              {busy ? "Signing in…" : "Sign in"}
+            </button>
+
+            {msg ? (
+              <div style={{ marginTop: 12 }} className="error">{msg}</div>
+            ) : null}
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="badge"><span className="dot" /> How VeriDoc answers</div>
+          <div className="hr" />
+          <p className="p" style={{ marginBottom: 10 }}>
+            VeriDoc retrieves relevant evidence from your curated library, then generates a summary
+            that is bounded by the retrieved content.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--muted)", lineHeight: 1.6 }}>
+            <li>Citations are always shown.</li>
+            <li>Short supporting snippets are displayed for QA.</li>
+            <li>If evidence is insufficient, VeriDoc refuses.</li>
+          </ul>
+          <div className="hr" />
+          <div className="badge">API: {process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000"}</div>
+        </div>
+      </div>
+    </Layout>
+  );
+}
+JS
+
+echo "==> 8) Upgrade Ask page: better form + markdown answer + citation cards"
+cat > pages/ask.js <<'JS'
+import { useEffect, useState } from "react";
+import { ask as apiAsk, clearToken, getToken, me } from "../lib/api";
+import { useRouter } from "next/router";
+import Layout from "../components/Layout";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+export default function AskPage() {
+  const router = useRouter();
+  const [token, setTok] = useState(null);
+  const [user, setUser] = useState(null);
+
+  const [question, setQuestion] = useState("Quel est le rôle de l’hyaluronidase en cas de complication liée aux fillers ?");
+  const [domain, setDomain] = useState("aesthetic_medicine");
+  const [mode, setMode] = useState("clinic");
+
+  const [busy, setBusy] = useState(false);
+  const [resp, setResp] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    const t = getToken();
+    if (!t) {
+      router.replace("/login");
+      return;
+    }
+    setTok(t);
+    me(t).then(setUser).catch(() => {
+      clearToken();
+      router.replace("/login");
+    });
+  }, [router]);
+
+  async function onAsk() {
+    setErr("");
+    setResp(null);
+    setBusy(true);
+    try {
+      const data = await apiAsk(token, question, domain, mode);
+      setResp(data);
+      if (data?.refusal) {
+        // Helpful nudge
+        setErr("");
+      }
+    } catch (e) {
+      setErr(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function logout() {
+    clearToken();
+    router.replace("/login");
+  }
+
+  const right = (
+    <>
+      <span className="badge">{user?.email || "…"}</span>
+      <button className="btn" onClick={logout}>Logout</button>
+    </>
+  );
+
+  return (
+    <Layout right={right}>
+      <div className="h1">Ask VeriDoc</div>
+      <p className="p">
+        Ask a clinical question. VeriDoc will answer only when it can retrieve citable evidence.
+      </p>
+
+      <div className="grid">
+        <div className="card">
+          <label className="label">Question</label>
+          <textarea value={question} onChange={(e) => setQuestion(e.target.value)} />
+
+          <div style={{ height: 12 }} />
+
+          <div className="row">
+            <div>
+              <label className="label">Domain</label>
+              <select value={domain} onChange={(e) => setDomain(e.target.value)}>
+                <option value="medicine">medicine</option>
+                <option value="dermatology">dermatology</option>
+                <option value="aesthetic_medicine">aesthetic_medicine</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Mode</label>
+              <select value={mode} onChange={(e) => setMode(e.target.value)}>
+                <option value="clinic">clinic (concise)</option>
+                <option value="deep_dive">deep_dive (more context)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ height: 12 }} />
+
+          <button className={"btn btnPrimary"} disabled={busy} onClick={onAsk}>
+            {busy ? "Searching evidence…" : "Ask"}
+          </button>
+
+          {err ? <div style={{ marginTop: 12 }} className="error">{err}</div> : null}
+        </div>
+
+        <div className="card">
+          <div className="badge"><span className="dot" /> Tips for better answers</div>
+          <div className="hr" />
+          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--muted)", lineHeight: 1.6 }}>
+            <li>Be specific (procedure, complication, time course).</li>
+            <li>Ask for “evidence-backed protocol” and “citations”.</li>
+            <li>If refused, ingest stronger sources (guidelines/consensus/IFUs).</li>
+          </ul>
+          <div className="hr" />
+          <div className="badge">Evidence quality improves as your library grows</div>
+        </div>
+      </div>
+
+      {resp ? (
+        <div style={{ marginTop: 16 }} className="card">
+          <div className="metaLine">
+            <span className="kpi">request_id: {resp.request_id}</span>
+            <span className="kpi">latency: {resp.latency_ms} ms</span>
+            <span className="kpi">citations: {resp.citations?.length || 0}</span>
+          </div>
+
+          {resp.refusal ? (
+            <div className="answerBox">
+              <div className="badge"><span className="dot" /> Refusal</div>
+              <div className="hr" />
+              <p className="p" style={{ marginBottom: 0 }}>
+                {resp.refusal_reason || "Insufficient evidence retrieved."}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="answerBox">
+                <div className="badge"><span className="dot" /> Answer</div>
+                <div className="hr" />
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {String(resp.answer || "")}
+                </ReactMarkdown>
+              </div>
+
+              <div className="hr" />
+
+              <div className="badge"><span className="dot" /> Citations</div>
+              <div style={{ height: 10 }} />
+
+              <div style={{ display: "grid", gap: 12 }}>
+                {(resp.citations || []).map((c, i) => (
+                  <div className="citation" key={i}>
+                    <div className="citationTitle">{c.title}</div>
+                    <div className="citationMeta">
+                      {c.evidence_level || "Source"} • {c.year || "n.d."} • {c.organization_or_journal || "—"} • {c.page_or_section || "—"}
+                    </div>
+                    {c.snippet ? <div className="snippet">{c.snippet}</div> : null}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
+    </Layout>
+  );
+}
+JS
+
+echo "==> 9) Reminder about the logo file"
+mkdir -p public
+if [ ! -f public/veridoc-logo.png ]; then
+  echo "NOTE: public/veridoc-logo.png not found."
+  echo "Upload your chosen logo to: veridoc-frontend/public/veridoc-logo.png"
+fi
+
+echo "==> DONE. Now run:"
+echo "npm install"
+echo "npm run dev"

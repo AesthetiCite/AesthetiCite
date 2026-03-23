@@ -1,0 +1,28 @@
+Good move. While Replit is doing that, here's what to verify once it's done — because auto-wiring from an AI assistant often gets 80% right and misses specific things.
+
+The 5-minute verification checklist
+Backend — confirm these endpoints respond:
+GET  /api/workflow?complication=vascular_occlusion   → should return JSON with 9 steps
+GET  /api/workflow/list                              → should return 8 protocols
+POST /api/vision/diagnose                            → should accept multipart/form-data
+POST /api/cases                                      → should accept JSON
+POST /api/generate-report                            → should return report_id
+POST /api/generate-report/pdf                        → should return binary PDF
+Quickest way to test: open the FastAPI docs at /docs on your Replit URL. Every registered router shows up there. If workflow, vision, cases, and generate-report appear in the docs, the backend wiring worked.
+Frontend — confirm these routes load:
+/decide          → dark screen, "What complication are you facing?" + 8 buttons
+/workflow        → should redirect to /decide or show workflow runner
+/tools           → should show 5 tabs including Hyaluronidase Calculator (not the old blank page)
+The one thing Replit most likely missed:
+The speed_optimizer.py startup call in main.py. This needs to go after the retrieval pool is initialised, not just anywhere in the file. If Replit added it at the top before the pool exists, it'll silently fail or crash startup. Look for this in main.py:
+python# Should be AFTER init_retrieval_pool() or equivalent
+precompute_hot_queries(_hot_retrieve, max_queries=10)
+If startup logs show an error about the retrieval pool, that's why.
+
+What to tell me once it's done
+Just run these two queries as the demo user and paste what comes back:
+
+Type "vascular occlusion" on /ask — does it return in under 3 seconds?
+Go to /decide, tap "Vascular Occlusion" — do the 9 workflow steps load?
+
+Those two tell you whether the critical path works. Everything else is secondary.

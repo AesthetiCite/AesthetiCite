@@ -1,0 +1,633 @@
+"""
+AesthetiCite — Replit-ready FastAPI backend (single-file)
+Includes the improvements you asked for:
+✅ Evidence tiering (guidelines > SR/MA > RCT > OBS > expert)
+✅ Conflict handling (explicit disagreements + balanced synthesis)
+✅ “No evidence” mode (refuses unsupported claims)
+✅ Medico-legal framing (off-label flag, consensus/controversy, uncertainty)
+✅ Evidence Snapshot PDF (ReportLab) with version hash + timestamp
+✅ Silent analytics logging (JSONL + SQLite optional)
+✅ Copy-safe pilot design (output-only, hides scoring/logic details from API clients)
+
+How to run on Replit:
+1) Create a new Replit Python project
+2) Save this file as `main.py`
+3) In Replit "Packages", add: fastapi uvicorn reportlab pydantic
+4) Run: `uvicorn main:app --host 0.0.0.0 --port 8000`
+
+You must plug in:
+- retrieve_chunks(query) -> list[DocChunk]
+Optionally:
+- fetch_fulltext(doi/url) if you have access
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import time
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel, Field
+
+# --- PDF (Evidence Snapshot) ---
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+
+APP_NAME = "AesthetiCite"
+ENGINE_VERSION = "2026.02.01"  # bump when logic changes
+DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+ANALYTICS_JSONL = DATA_DIR / "analytics.jsonl"
+SQLITE_DB = DATA_DIR / "analytics.db"
+
+# ---------- Evidence model ----------
+
+@dataclass
+class DocChunk:
+    """A retrieved passage. You will return these from retrieve_chunks()."""
+    title: str
+    year: Optional[int]
+    source_type: str  # e.g., guideline, systematic_review, meta_analysis, rct, observational, expert_opinion
+    doi: Optional[str]
+    url: Optional[str]
+    excerpt: str
+    # Optional fields you can provide if available:
+    journal: Optional[str] = None
+    authors: Optional[str] = None
+    # A relevance score from your retriever (0..1) if you have it:
+    retriever_score: Optional[float] = None
+
+
+# ---------- Request/Response schemas ----------
+
+class AnswerRequest(BaseModel):
+    query: str = Field(..., min_length=5, max_length=2000)
+    specialty: str = Field("aesthetic_medicine", max_length=80)
+    context: Optional[str] = Field(
+        None,
+        description="Optional context like patient scenario; avoid PII."
+    )
+    locale: str = Field("en", max_length=10)
+    # Optional: user identity for audit logs (clinic id, anon user id, etc.)
+    user_id: Optional[str] = Field(None, max_length=120)
+    # If true, return more detail about evidence conflicts
+    verbose: bool = False
+
+
+class Citation(BaseModel):
+    id: str
+    title: str
+    year: Optional[int] = None
+    source_type: str
+    doi: Optional[str] = None
+    url: Optional[str] = None
+    journal: Optional[str] = None
+
+
+class EvidenceItem(BaseModel):
+    citation_id: str
+    tier: str
+    quality_note: str
+    excerpt: str
+
+
+class AnswerResponse(BaseModel):
+    app: str
+    engine_version: str
+    timestamp_utc: str
+    query: str
+    clinical_summary: str
+    evidence_strength: str
+    key_points: List[str]
+    uncertainty_and_unknowns: List[str]
+    consensus_or_controversy: str
+    regulatory_note: str
+    citations: List[Citation]
+    evidence_table: List[EvidenceItem]
+    conflicts: List[str]
+    no_evidence: bool
+    snapshot_pdf_url: str
+    answer_hash: str
+
+
+# ---------- Plug-in retrieval (YOU MUST REPLACE THIS) ----------
+
+def retrieve_chunks(query: str) -> List[DocChunk]:
+    """
+    TODO: Replace with your real retrieval:
+      - vector + keyword hybrid
+      - filters for aesthetic medicine sources
+      - return top chunks with metadata
+
+    For now, this stub returns an empty list (forces "No evidence" mode).
+    """
+    return []
+
+
+# ---------- Evidence tiering + conflict logic ----------
+
+TIER_ORDER = [
+    ("guideline", 1),
+    ("systematic_review", 2),
+    ("meta_analysis", 2),
+    ("rct", 3),
+    ("observational", 4),
+    ("expert_opinion", 5),
+    ("case_report", 5),
+    ("other", 6),
+]
+
+def normalize_source_type(s: str) -> str:
+    s2 = (s or "").strip().lower()
+    s2 = s2.replace(" ", "_")
+    # common normalizations
+    if s2 in {"sr", "systematicreview"}:
+        return "systematic_review"
+    if s2 in {"ma", "metaanalysis"}:
+        return "meta_analysis"
+    if s2 in {"randomized_controlled_trial", "randomised_controlled_trial"}:
+        return "rct"
+    if s2 in {"obs", "observational_study", "cohort", "case_control"}:
+        return "observational"
+    if s2 in {"guidelines", "clinical_guideline"}:
+        return "guideline"
+    return s2 if s2 else "other"
+
+def tier_for_source_type(source_type: str) -> Tuple[str, int]:
+    st = normalize_source_type(source_type)
+    for name, rank in TIER_ORDER:
+        if st == name:
+            return (name, rank)
+    # map partials
+    if "guideline" in st:
+        return ("guideline", 1)
+    if "systematic" in st or "meta" in st:
+        return ("systematic_review", 2)
+    if "random" in st or "trial" in st:
+        return ("rct", 3)
+    if "observ" in st or "cohort" in st:
+        return ("observational", 4)
+    if "expert" in st:
+        return ("expert_opinion", 5)
+    return ("other", 6)
+
+def stable_id_for_citation(doc: DocChunk) -> str:
+    base = f"{doc.title}|{doc.year}|{normalize_source_type(doc.source_type)}|{doc.doi or ''}|{doc.url or ''}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:12]
+
+def compute_answer_hash(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+def extract_signal_phrases(text: str) -> Dict[str, bool]:
+    """
+    Lightweight heuristic flags that help detect conflicts in excerpts.
+    This is deliberately simple and explainable.
+    """
+    t = (text or "").lower()
+    return {
+        "supports": bool(re.search(r"\b(recommend|supports?|effective|improv(e|es|ed)|benefit)\b", t)),
+        "no_benefit": bool(re.search(r"\b(no benefit|not effective|ineffective|failed to|did not)\b", t)),
+        "risk": bool(re.search(r"\b(adverse|risk|complication|contraindicat)\b", t)),
+        "uncertain": bool(re.search(r"\b(limited|uncertain|insufficient|inconclusive|low[- ]quality)\b", t)),
+    }
+
+def detect_conflicts(evidence_items: List[EvidenceItem]) -> List[str]:
+    """
+    Flags conflicts when top-tier evidence contains both supportive and non-supportive language.
+    """
+    top_tiers = {"guideline", "systematic_review", "meta_analysis", "rct"}
+    signals = []
+    for e in evidence_items:
+        if e.tier in top_tiers:
+            signals.append(extract_signal_phrases(e.excerpt))
+
+    if not signals:
+        return []
+
+    has_support = any(s["supports"] for s in signals)
+    has_no_benefit = any(s["no_benefit"] for s in signals)
+    has_uncertain = any(s["uncertain"] for s in signals)
+
+    conflicts = []
+    if has_support and has_no_benefit:
+        conflicts.append("High-tier sources contain mixed conclusions (some supportive, some reporting no benefit).")
+    if has_uncertain and (has_support or has_no_benefit):
+        conflicts.append("High-tier sources indicate limited/uncertain evidence alongside stronger-sounding claims.")
+    return conflicts
+
+def evidence_strength_label(evidence_items: List[EvidenceItem], conflicts: List[str]) -> str:
+    """
+    Produces a conservative strength label.
+    """
+    if not evidence_items:
+        return "No high-quality evidence identified"
+    best_rank = min({"guideline": 1, "systematic_review": 2, "meta_analysis": 2, "rct": 3,
+                     "observational": 4, "expert_opinion": 5, "other": 6}.get(e.tier, 6) for e in evidence_items)
+    if conflicts:
+        if best_rank <= 3:
+            return "Mixed evidence (high-quality sources disagree)"
+        return "Uncertain evidence (limited and conflicting)"
+    if best_rank == 1:
+        return "Strong (clinical guidelines present)"
+    if best_rank == 2:
+        return "Moderate-to-strong (systematic evidence present)"
+    if best_rank == 3:
+        return "Moderate (randomized evidence present)"
+    if best_rank == 4:
+        return "Limited (observational evidence only)"
+    return "Very limited (expert opinion / low-level evidence)"
+
+def regulatory_note_for_aesthetic(query: str) -> str:
+    """
+    High-level medico-legal note. Keep it conservative; does NOT claim specific approvals.
+    """
+    return (
+        "Regulatory note: Many aesthetic indications and dosing approaches may be off-label and vary by product, "
+        "jurisdiction, and clinician technique. Confirm local labeling, contraindications, and professional guidance."
+    )
+
+def consensus_or_controversy(conflicts: List[str], evidence_items: List[EvidenceItem]) -> str:
+    if not evidence_items:
+        return "No clear consensus could be established due to insufficient high-quality evidence."
+    if conflicts:
+        return "Controversy/variation exists: the evidence base is mixed and practice may vary by clinician and context."
+    # conservative default
+    return "A general consensus is suggested by the available evidence, though practice variation may still exist."
+
+# ---------- Analytics (silent) ----------
+
+def _init_sqlite():
+    conn = sqlite3.connect(SQLITE_DB)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_utc TEXT,
+            user_id TEXT,
+            specialty TEXT,
+            query TEXT,
+            no_evidence INTEGER,
+            evidence_strength TEXT,
+            answer_hash TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+_init_sqlite()
+
+def log_event(event: Dict[str, Any]) -> None:
+    # JSONL
+    with open(ANALYTICS_JSONL, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    # SQLite (optional but helpful)
+    conn = sqlite3.connect(SQLITE_DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO events (ts_utc, user_id, specialty, query, no_evidence, evidence_strength, answer_hash) VALUES (?,?,?,?,?,?,?)",
+        (
+            event.get("timestamp_utc"),
+            event.get("user_id"),
+            event.get("specialty"),
+            event.get("query"),
+            1 if event.get("no_evidence") else 0,
+            event.get("evidence_strength"),
+            event.get("answer_hash"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+# ---------- PDF snapshot ----------
+
+SNAPSHOT_DIR = DATA_DIR / "snapshots"
+SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+def make_snapshot_pdf(resp: AnswerResponse) -> str:
+    """
+    Creates a PDF snapshot with answer + citations + version hash.
+    Returns a file path.
+    """
+    filename = f"snapshot_{resp.answer_hash}.pdf"
+    path = SNAPSHOT_DIR / filename
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    width, height = letter
+    x = 0.75 * inch
+    y = height - 0.75 * inch
+
+    def draw_line(txt: str, dy: float = 14):
+        nonlocal y
+        if y < 1.0 * inch:
+            c.showPage()
+            y = height - 0.75 * inch
+        c.drawString(x, y, txt[:1500])
+        y -= dy
+
+    c.setTitle(f"{APP_NAME} Evidence Snapshot")
+
+    draw_line(f"{APP_NAME} — Evidence Snapshot", dy=18)
+    draw_line(f"Engine version: {resp.engine_version}")
+    draw_line(f"Timestamp (UTC): {resp.timestamp_utc}")
+    draw_line(f"Answer hash: {resp.answer_hash}")
+    draw_line("")
+
+    draw_line("Question:", dy=16)
+    draw_line(resp.query, dy=14)
+    draw_line("")
+
+    draw_line("Clinical Summary:", dy=16)
+    for line in wrap_text(resp.clinical_summary, 105):
+        draw_line(line)
+    draw_line("")
+
+    draw_line(f"Evidence Strength: {resp.evidence_strength}", dy=16)
+    draw_line(f"Consensus/Controversy: {resp.consensus_or_controversy}", dy=16)
+    draw_line("")
+
+    draw_line("Key Points:", dy=16)
+    for kp in resp.key_points[:12]:
+        for line in wrap_text(f"- {kp}", 105):
+            draw_line(line)
+    draw_line("")
+
+    draw_line("Uncertainty & Unknowns:", dy=16)
+    for u in resp.uncertainty_and_unknowns[:12]:
+        for line in wrap_text(f"- {u}", 105):
+            draw_line(line)
+    draw_line("")
+
+    draw_line("Regulatory Note:", dy=16)
+    for line in wrap_text(resp.regulatory_note, 105):
+        draw_line(line)
+    draw_line("")
+
+    draw_line("Citations:", dy=16)
+    for cit in resp.citations[:40]:
+        parts = [cit.id, cit.title]
+        if cit.year:
+            parts.append(str(cit.year))
+        parts.append(cit.source_type)
+        if cit.doi:
+            parts.append(f"DOI: {cit.doi}")
+        elif cit.url:
+            parts.append(f"URL: {cit.url}")
+        for line in wrap_text(" | ".join(parts), 105):
+            draw_line(line)
+
+    c.save()
+    return str(path)
+
+def wrap_text(text: str, max_chars: int) -> List[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    words = text.split()
+    lines = []
+    cur = []
+    for w in words:
+        if sum(len(x) for x in cur) + len(cur) + len(w) > max_chars:
+            lines.append(" ".join(cur))
+            cur = [w]
+        else:
+            cur.append(w)
+    if cur:
+        lines.append(" ".join(cur))
+    return lines
+
+# ---------- Core answer builder (LLM-free baseline) ----------
+# This baseline produces a conservative structured answer using retrieved excerpts.
+# You can later replace `compose_summary()` with an LLM call, but keep the same guardrails.
+
+def build_evidence_table(docs: List[DocChunk]) -> Tuple[List[Citation], List[EvidenceItem]]:
+    # sort by tier then retriever_score then recency
+    def sort_key(d: DocChunk):
+        tier, rank = tier_for_source_type(d.source_type)
+        score = d.retriever_score if d.retriever_score is not None else 0.0
+        year = d.year if d.year is not None else 0
+        return (rank, -score, -year)
+
+    docs_sorted = sorted(docs, key=sort_key)
+
+    citations: List[Citation] = []
+    evidence: List[EvidenceItem] = []
+    seen = set()
+
+    for d in docs_sorted[:20]:
+        cid = stable_id_for_citation(d)
+        if cid in seen:
+            continue
+        seen.add(cid)
+
+        tier, _rank = tier_for_source_type(d.source_type)
+        quality_note = {
+            "guideline": "Guideline-level recommendation (highest tier if current and applicable).",
+            "systematic_review": "Systematic synthesis; check heterogeneity and included study quality.",
+            "meta_analysis": "Pooled analysis; check heterogeneity, bias, and applicability.",
+            "rct": "Randomized evidence; check size, endpoints, and population match.",
+            "observational": "Observational evidence; higher risk of confounding and bias.",
+            "expert_opinion": "Expert opinion; lowest tier—use cautiously.",
+            "other": "Non-standard evidence source—interpret cautiously.",
+        }.get(tier, "Interpret cautiously.")
+
+        citations.append(
+            Citation(
+                id=cid,
+                title=d.title,
+                year=d.year,
+                source_type=normalize_source_type(d.source_type),
+                doi=d.doi,
+                url=d.url,
+                journal=d.journal,
+            )
+        )
+        evidence.append(
+            EvidenceItem(
+                citation_id=cid,
+                tier=tier,
+                quality_note=quality_note,
+                excerpt=(d.excerpt or "").strip()[:1200],
+            )
+        )
+
+    return citations, evidence
+
+def compose_summary(query: str, evidence_items: List[EvidenceItem], conflicts: List[str]) -> Tuple[str, List[str], List[str]]:
+    """
+    Conservative, explainable composition.
+    Replace with an LLM later if you want, but keep the same outputs.
+    """
+    if not evidence_items:
+        clinical = (
+            "No high-quality, directly relevant evidence was identified in the current knowledge base for this query. "
+            "Consider refining the question (product, indication, dose, interval, population) or consult authoritative guidelines."
+        )
+        key_points = [
+            "Insufficient high-quality evidence found for a confident recommendation.",
+            "If proceeding, use shared decision-making and align with local regulations and professional guidance.",
+        ]
+        unknowns = [
+            "Optimal dosing, interval, and technique may be uncertain for this specific indication.",
+            "Safety profile may vary by product, patient factors, and operator technique.",
+        ]
+        return clinical, key_points, unknowns
+
+    # Build key points from top evidence excerpts (very light heuristic)
+    top = evidence_items[:6]
+    key_points = []
+    unknowns = []
+
+    for e in top:
+        sig = extract_signal_phrases(e.excerpt)
+        if sig["risk"]:
+            key_points.append(f"Safety/complications are highlighted in {e.tier} evidence (see citation {e.citation_id}).")
+        if sig["supports"]:
+            key_points.append(f"Some evidence suggests benefit/effectiveness (see citation {e.citation_id}).")
+        if sig["no_benefit"]:
+            key_points.append(f"Some evidence reports no benefit/ineffectiveness (see citation {e.citation_id}).")
+        if sig["uncertain"]:
+            unknowns.append(f"Evidence quality/precision is limited or uncertain (see citation {e.citation_id}).")
+
+    # De-duplicate while preserving order
+    def dedupe(lst: List[str]) -> List[str]:
+        out = []
+        seen2 = set()
+        for item in lst:
+            if item not in seen2:
+                out.append(item)
+                seen2.add(item)
+        return out
+
+    key_points = dedupe(key_points)[:8] or ["Relevant evidence exists, but applicability should be assessed carefully."]
+    unknowns = dedupe(unknowns)[:8] or ["Applicability depends on product, dosing, technique, and patient selection."]
+
+    if conflicts:
+        clinical = (
+            "The available evidence is mixed. Some higher-tier sources suggest benefit, while others report limited or no benefit. "
+            "A cautious, individualized approach is advised, prioritizing patient selection, conservative dosing, and clear informed consent."
+        )
+    else:
+        clinical = (
+            "The available evidence suggests this approach may be reasonable in appropriate patients, but outcomes depend on product choice, "
+            "dose/interval, technique, and patient factors. Use the cited sources to align practice with current evidence and guidance."
+        )
+
+    return clinical, key_points, unknowns
+
+# ---------- FastAPI app ----------
+
+app = FastAPI(title=f"{APP_NAME} API", version=ENGINE_VERSION)
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "app": APP_NAME, "engine_version": ENGINE_VERSION}
+
+@app.post("/deepconsult", response_model=AnswerResponse)
+def deepconsult(req: AnswerRequest):
+    ts = datetime.now(timezone.utc).isoformat()
+
+    # Retrieve evidence
+    docs = retrieve_chunks(req.query)
+
+    # Build citations + evidence table
+    citations, evidence_table = build_evidence_table(docs)
+
+    # Conflict detection + strength label
+    conflicts = detect_conflicts(evidence_table)
+    strength = evidence_strength_label(evidence_table, conflicts)
+
+    # No-evidence gate (hard)
+    no_evidence = len(evidence_table) == 0
+
+    clinical_summary, key_points, unknowns = compose_summary(req.query, evidence_table, conflicts)
+
+    response_payload = {
+        "app": APP_NAME,
+        "engine_version": ENGINE_VERSION,
+        "timestamp_utc": ts,
+        "query": req.query,
+        "clinical_summary": clinical_summary,
+        "evidence_strength": strength,
+        "key_points": key_points,
+        "uncertainty_and_unknowns": unknowns,
+        "consensus_or_controversy": consensus_or_controversy(conflicts, evidence_table),
+        "regulatory_note": regulatory_note_for_aesthetic(req.query),
+        "citations": [c.model_dump() for c in citations],
+        "evidence_table": [e.model_dump() for e in evidence_table],
+        "conflicts": conflicts if req.verbose else conflicts[:2],
+        "no_evidence": no_evidence,
+        # snapshot_pdf_url and answer_hash will be filled after hashing
+    }
+
+    answer_hash = compute_answer_hash(response_payload)
+    response_payload["answer_hash"] = answer_hash
+    # Create PDF snapshot now
+    resp_obj = AnswerResponse(
+        **response_payload,
+        snapshot_pdf_url=f"/snapshots/{answer_hash}.pdf",
+    )
+    pdf_path = make_snapshot_pdf(resp_obj)
+
+    # Log analytics silently
+    log_event(
+        {
+            "timestamp_utc": ts,
+            "user_id": req.user_id,
+            "specialty": req.specialty,
+            "query": req.query,
+            "no_evidence": no_evidence,
+            "evidence_strength": strength,
+            "answer_hash": answer_hash,
+            "conflicts": conflicts,
+        }
+    )
+
+    # Return response
+    return JSONResponse(content=resp_obj.model_dump())
+
+@app.get("/snapshots/{answer_hash}.pdf")
+def get_snapshot(answer_hash: str):
+    path = SNAPSHOT_DIR / f"snapshot_{answer_hash}.pdf"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+
+# ---------- Optional: basic analytics endpoint (keep private) ----------
+
+@app.get("/_admin/analytics/summary")
+def analytics_summary(last_n: int = Query(200, ge=1, le=5000)):
+    """
+    Private endpoint: returns last N events counts.
+    Add auth before exposing publicly.
+    """
+    conn = sqlite3.connect(SQLITE_DB)
+    cur = conn.cursor()
+    cur.execute("SELECT ts_utc, no_evidence, evidence_strength FROM events ORDER BY id DESC LIMIT ?", (last_n,))
+    rows = cur.fetchall()
+    conn.close()
+
+    total = len(rows)
+    no_ev = sum(1 for r in rows if r[1] == 1)
+    strengths: Dict[str, int] = {}
+    for _ts, _no, s in rows:
+        strengths[s] = strengths.get(s, 0) + 1
+
+    return {
+        "total_events": total,
+        "no_evidence_events": no_ev,
+        "evidence_strength_counts": strengths,
+    }
