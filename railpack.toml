@@ -1,4 +1,2 @@
 [build]
-language
-=
-nodejs
+language = "nodejs"
