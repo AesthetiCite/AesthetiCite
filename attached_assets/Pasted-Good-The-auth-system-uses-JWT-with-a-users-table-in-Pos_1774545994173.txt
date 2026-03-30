@@ -1,0 +1,34 @@
+Good. The auth system uses JWT with a users table in Postgres and require_admin_user middleware already wired. No session tracking table exists yet. I need to build all three layers: the tracking table + backend endpoints, the frontend heartbeat hook, and the admin dashboard page.Created 3 files, ran a command, read a fileCreated 3 files, ran a command, read a fileThree files. Here's exactly how to wire them:
+
+session_tracker.py → app/api/session_tracker.py
+In main.py, add two lines:
+pythonfrom app.api.session_tracker import router as session_tracker_router, create_tables_sync
+app.include_router(session_tracker_router)
+# inside @app.on_event("startup"):
+create_tables_sync()
+In app/api/auth.py, inside the login endpoint after token creation:
+pythonfrom app.api.session_tracker import record_session_start
+record_session_start(user_id=str(row["id"]), email=row["email"], session_token=token)
+
+use-session-tracker.ts → client/src/hooks/use-session-tracker.ts
+In ask.tsx, add two lines:
+tsximport { useSessionTracker } from "@/hooks/use-session-tracker";
+const { trackQuery } = useSessionTracker(token);
+// then inside handleAsk():
+trackQuery();
+
+user-activity.tsx → client/src/pages/admin/user-activity.tsx
+In App.tsx:
+tsximport UserActivityPage from "@/pages/admin/user-activity";
+<Route path="/admin/user-activity">{() => <ProtectedRoute component={UserActivityPage} />}</Route>
+Five proxy routes in server/routes.ts — all listed in the file header.
+
+What the dashboard shows for Dr. Mehta:
+
+Live online/offline badge (green pulse if active in last 5 minutes)
+Four metric cards: total sessions, average duration, total time connected, total queries run
+Daily bar chart — 14 days of activity showing time spent per day
+Hour-of-day heatmap — shows when she typically uses the platform (morning clinic vs evening review)
+Full session log table with start time, duration, query count, last heartbeat, and how the session ended (logout, tab closed, timeout, expired)
+
+The page only loads for support@aestheticite.com — any other account gets a 403 at the API level and a blocked UI. You can look up any user by typing their email into the search field at the top.

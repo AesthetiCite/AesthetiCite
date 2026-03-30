@@ -74,6 +74,7 @@ def _do_rebuild_index():
         # long-running idle TCP connection during the CREATE INDEX build.
         conn = psycopg2.connect(
             os.environ["DATABASE_URL"],
+            connect_timeout=15,
             keepalives=1,
             keepalives_idle=30,       # start probing after 30s of silence
             keepalives_interval=10,   # probe every 10s

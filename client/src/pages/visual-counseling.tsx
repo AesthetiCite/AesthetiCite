@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { VisualDifferential } from "@/components/VisualDifferential";
 import {
   getToken,
   getMe,
@@ -358,6 +359,20 @@ export default function VisualCounselingPage() {
                     label="Analyse Image for Complications"
                     variant="outline"
                     size="sm"
+                  />
+                </div>
+              )}
+
+              {visualId && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5 text-teal-600" />
+                    Differential Diagnosis
+                  </p>
+                  <VisualDifferential
+                    visualId={visualId}
+                    token={getToken() || ""}
+                    clinicalContext={question || undefined}
                   />
                 </div>
               )}

@@ -1,0 +1,30 @@
+Analyzed UX frustrations and architected redesign prioritizing ask interfaceAnalyzed UX frustrations and architected redesign prioritizing ask interfaceUnderstood. Let me audit every complaint specifically before recommending fixes.Diagnosed UX navigation flaws and mapped comprehensive redesign solutionsDiagnosed UX navigation flaws and mapped comprehensive redesign solutionsGood. I can see exactly what's wrong from the codebase. Let me list every specific problem before writing the fixes.
+Problems confirmed in the code:
+
+Login routes to /home not /ask — adds an unnecessary step every session
+Language selector exists (LanguageSelector component is imported) but is hidden — it's not in the desktop header, only buried in mobile sheet
+Vision is labelled "Visuals" in the header — button-visual-counsel routes to /visual-counsel, not /vision-analysis. Wrong label, wrong destination
+No way back to home from /ask — the logo in the header has no <Link> wrapper, it's just an <img>
+/start gateway is redundant — adds a click between login and doing anything useful
+Header is cluttered on desktop — Evidence, Challenge, Safety, Visuals, Tools, all equal weight, no visual hierarchy
+Emergency is not in the header at all — the most critical feature is absent from the primary navigation bar
+"Challenge" button in the main header — this is a benchmark tool, not a daily-use feature, and it's taking primary nav space
+
+Here are the exact fixes:Created a file, read a fileCreated a file, read a fileHere are every specific fix, numbered against your complaints:
+
+Fix 1 — /ask becomes the home page
+In login.tsx, change the post-login redirect from /home or /start to /ask. In App.tsx, change the / route to <Redirect to="/ask" />. One line each.
+Fix 2 — Language selector visible on first load
+The LanguageSelector component is imported in ask.tsx but never placed in the desktop header. The fix adds it directly into the header bar between Tools and the More dropdown — always visible on desktop. On mobile it appears at the very top of the navigation sheet.
+Fix 3 — Emergency in the primary header
+Emergency is the most critical feature and currently absent from the header entirely. The fix adds it as the first item in the nav bar with a red accent — distinct from everything else so it's impossible to miss.
+Fix 4 — Vision correctly labelled and linked
+Currently labelled "Visuals" and linking to /visual-counsel. The fix renames it "Vision" and links it to /vision-analysis.
+Fix 5 — Challenge demoted to More dropdown
+The benchmark tool has no place in the primary nav bar. It moves into the More dropdown alongside Evidence and secondary tools.
+Fix 6 — Back navigation from /ask
+The logo in the header is currently a plain <img> with no link. The fix wraps it in <Link href="/ask">. This is the standard pattern — clicking the logo always goes home.
+Fix 7 — All Tools accessible from sidebar
+The left sidebar gets an "All Tools" button below New Search, linking to /home. This gives clinicians a clear path from the search interface to the broader tools hub without using the header.
+
+The new header order is: Emergency (red) · Safety · Vision · Tools · Language · More ▾. Everything a clinician needs in a session is visible. Everything they need occasionally is one click in the dropdown.

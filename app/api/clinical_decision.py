@@ -116,11 +116,11 @@ WORKFLOWS: Dict[str, List[Dict[str, Any]]] = {
     "vascular_occlusion": [
         {"step": 1, "action": "STOP injection immediately", "critical": True, "detail": "Do not apply pressure — may extend occlusion"},
         {"step": 2, "action": "Warm compress to area", "critical": False, "detail": "Apply immediately to promote vasodilation"},
-        {"step": 3, "action": "Hyaluronidase 1500 IU — inject NOW", "critical": True, "detail": "Flood the entire region generously if HA filler used. Repeat every 60 min if no improvement."},
-        {"step": 4, "action": "Aspirin 300 mg orally", "critical": True, "detail": "Antiplatelet — give immediately unless contraindicated"},
-        {"step": 5, "action": "Nitroglycerin paste 2% — apply topically", "critical": False, "detail": "Thin layer over affected area. Avoid mucous membranes."},
-        {"step": 6, "action": "Monitor capillary refill every 5 min", "critical": True, "detail": "Blanching should begin to resolve within 30–60 min"},
-        {"step": 7, "action": "Repeat hyaluronidase if no improvement at 60 min", "critical": True, "detail": "Can use up to 3000–10000 IU in severe cases"},
+        {"step": 3, "action": "Hyaluronidase 150–300 IU initial dose — inject NOW", "critical": True, "detail": "Minimum 150–300 IU per cycle; up to 1500 IU pulsed. Flood the full vascular territory. Repeat every 60 min if blanching, livedo, or pain persist."},
+        {"step": 4, "action": "Aspirin 325 mg orally", "critical": True, "detail": "Antiplatelet — give immediately unless contraindicated"},
+        {"step": 5, "action": "Topical nitroglycerin 2% paste — apply to affected area", "critical": False, "detail": "Thin layer over compromised area every 4–6 h. Monitor for hypotension if large area treated."},
+        {"step": 6, "action": "Monitor capillary refill every 15–30 min", "critical": True, "detail": "Blanching should begin to resolve within 30–60 min. Photograph at each cycle."},
+        {"step": 7, "action": "Repeat hyaluronidase at 60 min if no improvement", "critical": True, "detail": "Escalate to 1500 IU per cycle. Consider hyperbaric oxygen referral if available."},
         {"step": 8, "action": "Assess for visual symptoms", "critical": True, "detail": "Any visual change → IMMEDIATE ophthalmology referral + emergency services"},
         {"step": 9, "action": "Escalate if no improvement", "critical": True, "detail": "Call 999 / emergency services if no resolution by 90 min"},
     ],
@@ -136,10 +136,10 @@ WORKFLOWS: Dict[str, List[Dict[str, Any]]] = {
     "ptosis": [
         {"step": 1, "action": "Reassure patient — usually resolves in 4–6 weeks", "critical": False, "detail": "Botulinum toxin-induced ptosis is temporary"},
         {"step": 2, "action": "Assess extent — ptosis >2mm is significant", "critical": False, "detail": "Measure margin-reflex distance (MRD1)"},
-        {"step": 3, "action": "Apraclonidine 0.5% eye drops — 1–2 drops", "critical": False, "detail": "Alpha-agonist — causes Müller's muscle contraction, raises lid 1–2mm. Use 3x daily."},
-        {"step": 4, "action": "Avoid massage or heat to toxin area", "critical": True, "detail": "May spread toxin further"},
-        {"step": 5, "action": "Review at 2 weeks", "critical": False, "detail": "Document baseline and progress photos"},
-        {"step": 6, "action": "If not resolved by 6 weeks — ophthalmology referral", "critical": False, "detail": "Rule out other causes"},
+        {"step": 3, "action": "Apraclonidine 0.5% eye drops — 1–2 drops up to 3× daily", "critical": False, "detail": "Alpha-2 agonist — stimulates Müller's muscle contraction, raising lid 1–2 mm. Effect onset within 30 min, duration 4–6 h per dose. Oxymetazoline 0.1% is an alternative."},
+        {"step": 4, "action": "Avoid massage or heat to toxin area", "critical": True, "detail": "May spread toxin further and worsen ptosis"},
+        {"step": 5, "action": "Review at 2 weeks — document progress photos", "critical": False, "detail": "Measure MRD1 at each visit. Expected resolution 8–12 weeks as toxin clears."},
+        {"step": 6, "action": "If not resolved by 8 weeks — ophthalmology referral", "critical": False, "detail": "Rule out neurological or myasthenic cause"},
     ],
     "nodule": [
         {"step": 1, "action": "Assess: inflammatory vs non-inflammatory", "critical": False, "detail": "Inflammatory: tender, erythematous. Non-inflammatory: firm, painless."},
@@ -794,6 +794,7 @@ async def master_decision(
         "cache_hit": False,
         "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "engine_version": "3.1.0",
     }
 
     _cache_set(cache_key, result)
@@ -805,9 +806,10 @@ def _stub_evidence(workflow_key: str) -> List[Dict[str, Any]]:
     evidence_map: Dict[str, List[Dict]] = {
         "vascular_occlusion": [
             {"title": "BAFPS/RAFT Consensus on Vascular Occlusion Management", "source": "BAFPS/RAFT", "year": 2023, "evidence_type": "consensus", "similarity": 0.97},
-            {"title": "Hyaluronidase dosing in vascular compromise: systematic review", "source": "Aesthet Surg J", "year": 2021, "evidence_type": "review", "similarity": 0.91},
-            {"title": "Filler-induced vascular occlusion: management algorithm", "source": "J Clin Aesthet Dermatol", "year": 2022, "evidence_type": "review", "similarity": 0.88},
-            {"title": "Emergency management of vascular complications: RCT", "source": "Dermatol Surg", "year": 2020, "evidence_type": "rct", "similarity": 0.82},
+            {"title": "Localization and Staging of Vascular Adverse Events After Facial Filler", "source": "Aesthet Surg J", "year": 2024, "evidence_type": "review", "similarity": 0.95},
+            {"title": "Ultrasound assisted hyaluronic acid vascular adverse event management", "source": "J Cosmet Dermatol", "year": 2024, "evidence_type": "review", "similarity": 0.92},
+            {"title": "Filler-induced vascular occlusion: management algorithm (Cassuto et al.)", "source": "J Clin Aesthet Dermatol", "year": 2022, "evidence_type": "review", "similarity": 0.88},
+            {"title": "Ultrasound to improve the safety of hyaluronic acid filler treatments (Schelke et al.)", "source": "J Cosmet Dermatol", "year": 2018, "evidence_type": "review", "similarity": 0.84},
         ],
         "anaphylaxis": [
             {"title": "NICE CG134: Anaphylaxis assessment and referral after emergency treatment", "source": "NICE", "year": 2022, "evidence_type": "guideline", "similarity": 0.98},

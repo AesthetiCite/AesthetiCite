@@ -1,7 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
 import { rm, readFile } from "fs/promises";
-import { existsSync } from "fs";
 import { execSync } from "child_process";
 
 // server deps to bundle to reduce openat(2) syscalls
@@ -47,23 +46,6 @@ async function buildAll() {
     } catch {
       console.warn("Warning: could not verify Python dependencies — continuing build");
     }
-  }
-
-  console.log("pre-warming fastembed ONNX model cache...");
-  try {
-    // Use direct Python binary from the uv-managed env if available (avoids uv run overhead
-    // and works even if UV_PROJECT_ENVIRONMENT is set to a non-standard path).
-    const uvEnv = process.env.UV_PROJECT_ENVIRONMENT;
-    const directPy = uvEnv ? `${uvEnv}/bin/python3` : null;
-    const pyCmd = directPy && existsSync(directPy)
-      ? `"${directPy}" -c`
-      : `uv run python3 -c`;
-    execSync(
-      `${pyCmd} "from app.rag.embedder import embed_text; embed_text('warm'); print('fastembed model cached OK')"`,
-      { stdio: "inherit" }
-    );
-  } catch {
-    console.warn("Warning: fastembed model pre-warm failed — will download at runtime");
   }
 
   console.log("building client...");

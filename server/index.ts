@@ -130,7 +130,7 @@ async function runDrizzleMigrations() {
   try {
     const { db } = await import("./db");
     const { migrate } = await import("drizzle-orm/node-postgres/migrator");
-    const migrationsFolder = path.join(process.cwd(), "migrations");
+    const migrationsFolder = path.join(process.cwd(), "drizzle");
     await migrate(db, { migrationsFolder });
     console.log("[migrations] Drizzle migrations applied successfully");
   } catch (err: any) {
@@ -230,13 +230,10 @@ app.get("/health", (_req, res) => {
 
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen(
-  { port, host: "0.0.0.0", reusePort: true },
-  () => {
-    log(`serving on port ${port}`);
-
-    if (process.env.NODE_ENV !== "production") {
+    { port, host: "0.0.0.0", reusePort: true },
+    () => {
+      log(`serving on port ${port}`);
       startPythonAPIBackground();
-    }
     },
   );
 })();

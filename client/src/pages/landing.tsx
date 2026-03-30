@@ -26,8 +26,8 @@ function useCorpusCount() {
 }
 
 function formatCorpusCount(n: number | null): string {
-  if (!n) return "825,000+";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M+`;
+  if (!n) return "1,900,000+";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M+`;
   const rounded = Math.floor(n / 1000) * 1000;
   return `${rounded.toLocaleString()}+`;
 }
@@ -96,7 +96,7 @@ export default function LandingPage() {
               { icon: BookOpen, label: `${displayCount} peer-reviewed documents` },
               { icon: CheckCircle2, label: "Server-validated citations only" },
               { icon: Lock, label: "GDPR compliant by design" },
-              { icon: Globe, label: "25 languages supported" },
+              { icon: Globe, label: "22+ languages supported" },
               { icon: TrendingUp, label: "Corpus growing daily" },
             ].map(({ icon: Icon, label }) => (
               <div key={label} className="flex items-center gap-1.5">

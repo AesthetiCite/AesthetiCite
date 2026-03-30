@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, AlertCircle, Users, Search, Clock, DollarSign, Shield, TrendingUp } from "lucide-react";
+import { getToken } from "@/lib/auth";
 
 interface TimeWindow {
   fromISO: string;
@@ -94,15 +95,18 @@ export default function AdminPage() {
   const { data, isLoading, error } = useQuery<AdminMetrics>({
     queryKey: ["/admin/metrics"],
     queryFn: async () => {
-      const adminKey = localStorage.getItem("aestheticite-admin-key");
-      if (!adminKey) {
-        throw new Error("Admin API key not configured. Set it in localStorage as 'aestheticite-admin-key'.");
+      const token = getToken();
+      if (!token) {
+        throw new Error("Not authenticated — please log in.");
       }
       const res = await fetch("/api/admin/metrics", {
         headers: {
-          "x-admin-api-key": adminKey,
+          Authorization: `Bearer ${token}`,
         },
       });
+      if (res.status === 403) {
+        throw new Error("Access denied — admin role required.");
+      }
       if (!res.ok) {
         throw new Error(`Failed to load metrics: ${res.status}`);
       }
@@ -129,10 +133,7 @@ export default function AdminPage() {
             <span>{error instanceof Error ? error.message : "Failed to load metrics"}</span>
           </div>
           <p className="mt-4 text-sm text-muted-foreground">
-            To access admin metrics, set your admin API key in localStorage:
-            <code className="ml-2 px-2 py-1 bg-muted rounded text-xs">
-              localStorage.setItem("aestheticite-admin-key", "your-key")
-            </code>
+            This page is accessible to admin and super_admin accounts. Make sure you are logged in as support@aestheticite.com.
           </p>
         </div>
       </div>

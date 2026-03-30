@@ -1,0 +1,179 @@
+Implement a complete Admin Dashboard for AesthetiCite in the existing codebase.
+
+GOAL
+Create a production-ready admin dashboard visible only to the account:
+support@aestheticite.com
+
+STACK
+Use the existing stack already in this project:
+- Express server
+- React client
+- existing auth/session system
+- PostgreSQL / Drizzle / existing tables where possible
+- existing UI components / Tailwind / Recharts if already installed
+
+ACCESS CONTROL
+1. Add a strict admin check based on the logged-in user email.
+2. Only support@aestheticite.com can access /admin and /api/admin/*
+3. Any other user must receive 403 for API routes and be redirected away from /admin on the frontend.
+4. Do not break existing auth flows.
+
+BACKEND
+Create admin endpoints under /api/admin with proper auth protection.
+
+Required endpoints:
+1. GET /api/admin/overview
+Return:
+- totalUsers
+- activeUsers24h
+- activeUsers7d
+- totalQueries
+- totalAnswers
+- totalCaseLogs
+- totalSafetyReports
+- avgQueriesPerUser
+- avgResponseTimeMs if available, otherwise null
+- topComplications: array of { name, count }
+- topProtocols: array of { name, count }
+- recentActivity: latest 20 events mixing signups, queries, case logs, safety reports when available
+
+2. GET /api/admin/users
+Return a paginated list of users with:
+- id
+- email
+- name if available
+- createdAt
+- lastSeenAt if available
+- queryCount
+- answerCount
+- caseLogCount
+- role = "admin" for support@aestheticite.com else "user"
+
+3. GET /api/admin/analytics
+Return:
+- dailyQueriesLast30d
+- dailyActiveUsersLast30d
+- complicationDistribution
+- protocolDistribution
+- evidenceUsage if available
+- queryLanguageDistribution if available
+
+4. GET /api/admin/recent-logins
+If explicit login tracking does not exist, infer from most recent authenticated activity and return:
+- email
+- lastActivityAt
+- source = inferred or actual
+
+5. GET /api/admin/health
+Return:
+- dbConnected
+- totalDocuments
+- totalChunks
+- chunkedDocuments
+- documentsWithoutChunks
+- latestQueryAt
+- latestCaseLogAt
+
+DATABASE / DATA MAPPING
+Use existing tables whenever present:
+- users
+- queries
+- answers
+- case_logs
+- safety_reports
+- analytics_events
+- saved_protocols
+- documents
+- chunks
+
+If a field does not exist, infer it safely or return null.
+Do not invent fake data.
+Do not fail if some tables are sparse.
+Use efficient SQL / Drizzle queries and avoid N+1 patterns.
+
+IMPORTANT DATA RULES
+- activeUsers24h / 7d = users with any recent activity in queries, answers, analytics_events, case_logs, or safety_reports
+- topComplications should come primarily from case_logs.complication_type or nearest equivalent column
+- topProtocols should come from saved_protocols or protocol usage in logs if available
+- recentActivity should normalize records into:
+  { type, label, email, createdAt, metadata }
+- documentsWithoutChunks = documents left joined to chunks where no chunk exists
+- avgQueriesPerUser = totalQueries / totalUsers rounded to 2 decimals
+
+FRONTEND
+Create a new protected route/page:
+- /admin
+
+Build a clean professional dashboard with these sections:
+
+1. Top KPI cards
+- Total Users
+- Active 24h
+- Active 7d
+- Total Queries
+- Total Case Logs
+- Avg Queries/User
+- Total Documents
+- Total Chunks
+
+2. Charts
+- Daily Queries (30d line chart)
+- Daily Active Users (30d bar or line chart)
+- Top Complications (bar chart)
+- Top Protocols (bar chart)
+
+3. Recent Activity feed
+Show latest 20 items with timestamp and type badge.
+
+4. Users table
+Columns:
+- Email
+- Role
+- Created
+- Last Activity
+- Queries
+- Answers
+- Case Logs
+
+5. System Health card
+- DB connected
+- documents
+- chunks
+- chunkedDocuments
+- documentsWithoutChunks
+- latest query timestamp
+- latest case log timestamp
+
+UI REQUIREMENTS
+- Use the existing design system
+- Make it visually clean and premium
+- Responsive layout
+- No broken loading states
+- Include skeleton/loading states
+- Include empty states
+- Include basic error states
+- Do not use mock data
+
+AUTH / ROUTING
+- Add a reusable admin guard on the server
+- Add a frontend guard for /admin
+- If a non-admin reaches /admin, redirect to home or dashboard
+- Show a clear “Unauthorized” message if necessary
+
+IMPLEMENTATION DETAILS
+- Keep changes minimal and well integrated with the current architecture
+- Reuse existing helpers/utilities where possible
+- Add TypeScript types for all admin responses
+- Keep code clean and production-ready
+- Do not remove any existing feature
+- Do not alter current user-facing flows
+- Make sure the app still builds successfully with:
+  npm run build
+
+ALSO DO THIS
+- Add support@aestheticite.com as the only hardcoded super-admin for now
+- Add a small “Admin” link in the authenticated navigation, visible only to support@aestheticite.com
+- Log useful server-side errors without crashing
+
+DELIVERABLE
+Make all required backend and frontend code changes directly in the project so that when I log in with support@aestheticite.com, I can open /admin and see the full dashboard with real data from the database.

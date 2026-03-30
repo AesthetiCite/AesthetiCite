@@ -1,0 +1,126 @@
+
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K4:13:22 PM [express] serving on port 5000
+Starting Python FastAPI backend on port 8000...
+[startup] Using direct Python binary: /home/runner/workspace/.pythonlibs/bin/python3
+[startup] Spawning: /home/runner/workspace/.pythonlibs/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+[startup] Waiting for Python API... 30s elapsed
+[startup] Waiting for Python API... 60s elapsed
+[python] INFO:     Started server process [384]
+[python] INFO:     Waiting for application startup.
+2026-03-21 16:14:26,065 [INFO] Visuals table ensured
+[python] 2026-03-21 16:14:26,079 [INFO] [operational] Safety engines already patched or unavailable
+[python] 2026-03-21 16:14:26,079 [INFO] [operational] Operational patches applied
+[python] 2026-03-21 16:14:26,080 [INFO] [startup] Background init dispatched — server ready to handle /health immediately
+[python] 2026-03-21 16:14:26,080 [INFO] Visuals table ensured
+[python] INFO:     Application startup complete.
+[python] INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[python] 2026-03-21 16:14:26,118 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 307 Temporary Redirect"
+[python] [network_migrations] schema OK
+[python] 2026-03-21 16:14:26,166 [INFO] asyncpg retrieval pool initialized (min=5, max=20)
+[python] 2026-03-21 16:14:26,205 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,291 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[python] [intelligence_migrations] OK
+[python] 2026-03-21 16:14:26,374 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,374 [INFO] [startup/bg] Mass upload agent started
+[python] 2026-03-21 16:14:26,375 [INFO] [startup/bg] Index rebuild thread started
+[python] 2026-03-21 16:14:26,375 [INFO] [startup/bg] Background initialization complete
+[python] 2026-03-21 16:14:26,394 [INFO] [index_rebuild] idx_chunks_embedding_hnsw: present
+[python] 2026-03-21 16:14:26,395 [INFO] [index_rebuild] chunks_text_norm_trgm: present
+[python] 2026-03-21 16:14:26,396 [INFO] [index_rebuild] chunks_tsv_gin: present
+[python] 2026-03-21 16:14:26,397 [INFO] [index_rebuild] idx_documents_trgm_title: present
+[python] 2026-03-21 16:14:26,398 [INFO] [index_rebuild] idx_documents_fts: present
+[python] 2026-03-21 16:14:26,398 [INFO] [index_rebuild] All indexes checked/rebuilt
+[python] 2026-03-21 16:14:26,453 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,467 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,534 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 200 OK"
+[python] Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]
+[python] 2026-03-21 16:14:26,551 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,618 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,632 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,637 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,638 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,643 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,656 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,699 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 302 Found"
+[python] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-21 16:14:26,699 [WARNING] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[python] 2026-03-21 16:14:26,722 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,723 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,724 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,725 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,732 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,734 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,735 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,742 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,743 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,746 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 200 OK"
+[python] Fetching 5 files:  20%|██        | 1/5 [00:00<00:00,  5.10it/s]
+[python] 2026-03-21 16:14:26,748 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,757 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,768 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:26,803 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,879 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 200 OK"
+[python] Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s][A
+[python] 2026-03-21 16:14:26,958 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-21 16:14:26,996 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/xet-read-token/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079 "HTTP/1.1 200 OK"
+[python] 2026-03-21 16:14:27,038 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 302 Found"
+[python] Fetching 5 files:  40%|████      | 2/5 [00:01<00:02,  1.38it/s]
+[python] Fetching 5 files: 100%|██████████| 5/5 [00:01<00:00,  3.88it/s]
+[python] Fetching 5 files:  40%|████      | 2/5 [00:01<00:01,  1.65it/s][A
+[python] Fetching 5 files: 100%|██████████| 5/5 [00:01<00:00,  4.13it/s]
+[python] 2026-03-21 16:14:28,591 [INFO] Embedding cache warmed: 22 new, 0 already cached
+[python] INFO:     127.0.0.1:56862 - "GET /health HTTP/1.1" 200 OK
+Python API started successfully (health check passed)
+[migrations] Drizzle migrations applied successfully
+[python] 2026-03-21 16:14:41,374 [INFO] [progress] Loaded — M1=True M2=True M3=True M4=True M5=False | policy: multilang_fixed=True guideline_priority=True cleanup_verified=True | resume: phase=5 qi=173
+[python] 2026-03-21 16:14:54,338 [INFO] =================================================================
+[python] 2026-03-21 16:14:54,339 [INFO]   AesthetiCite Corpus Engine — 5-Milestone Strategy
+2026-03-21 16:14:54,339 [INFO]   Current: 971,398  Target: 1,500,000
+2026-03-21 16:14:54,339 [INFO]   Priority: M1=clean → M2=authoritative → M3=global → M4=broad → M5=aesthetic-deep-dive
+2026-03-21 16:14:54,339 [INFO]   Completion: M1=True M2=True M3=True M4=True M5=False
+2026-03-21 16:14:54,339 [INFO]   Policy: multilang_fixed=True guideline_priority=True cleanup_verified=True
+2026-03-21 16:14:54,339 [INFO] =================================================================
+2026-03-21 16:14:54,339 [INFO] [M1] Already completed — skipping cleanup.
+2026-03-21 16:14:54,339 [INFO] [M2] Already completed — skipping guideline ingestion.
+2026-03-21 16:14:54,339 [INFO] [M3] Already completed — skipping multilingual ingestion.
+[python] 2026-03-21 16:14:54,339 [INFO] [M4] Already completed.
+[python] 2026-03-21 16:14:54,339 [INFO] [M5] Starting aesthetic medicine deep-dive + recency sweep + safety data. Queries: 173. Target: 1,500,000 docs.
+2026-03-21 16:14:54,339 [INFO] === PHASE 5: Aesthetic Deep-Dive — Subspecialties + Recency + Safety | queries=173 | resuming_from=173 ===
+2026-03-21 16:14:54,339 [INFO] [QA] M5: Auditing aesthetic medicine corpus coverage ...
+[python] INFO:     127.0.0.1:55716 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 16:15:16,849 [INFO] Unified retrieval: 40 candidates in 48.47s (embed 2.01s)
+[python] 2026-03-21 16:15:16,850 [INFO] [speed_optimizer] precomputed 'vascular occlusion management hyaluronidase treatm' → 8 chunks in 50480.6ms
+[python] 2026-03-21 16:15:16,850 [INFO] Numerical query detected: hyaluronidase dose vascular occlusion...
+[python] 2026-03-21 16:15:19,910 [INFO] Unified retrieval: 40 candidates in 3.04s (embed 0.02s)
+[python] 2026-03-21 16:15:24,759 [INFO] [speed_optimizer] precomputed 'hyaluronidase dose vascular occlusion' → 8 chunks in 7908.7ms
+[python] 2026-03-21 16:15:27,806 [INFO] Unified retrieval: 40 candidates in 3.03s (embed 0.01s)
+[python] 2026-03-21 16:15:27,808 [INFO] [speed_optimizer] precomputed 'visual symptoms after filler emergency management' → 8 chunks in 3048.9ms
+[python] 2026-03-21 16:15:32,323 [INFO] Unified retrieval: 40 candidates in 4.50s (embed 0.02s)
+[python] 2026-03-21 16:15:32,324 [INFO] [speed_optimizer] precomputed 'anaphylaxis emergency management aesthetic injecta' → 8 chunks in 4515.7ms
+[python] 2026-03-21 16:15:37,731 [INFO] Unified retrieval: 40 candidates in 5.39s (embed 0.01s)
+[python] 2026-03-21 16:15:37,731 [INFO] [speed_optimizer] precomputed 'filler nodule granuloma treatment management' → 8 chunks in 5407.7ms
+[python] 2026-03-21 16:15:43,457 [INFO] Unified retrieval: 40 candidates in 5.71s (embed 0.01s)
+[python] 2026-03-21 16:15:43,458 [INFO] [speed_optimizer] precomputed '5-FU triamcinolone filler nodule injection' → 8 chunks in 5726.4ms
+[python] 2026-03-21 16:15:48,372 [INFO] Unified retrieval: 40 candidates in 4.90s (embed 0.01s)
+[python] 2026-03-21 16:15:48,373 [INFO] [speed_optimizer] precomputed 'post-filler infection biofilm treatment antibiotic' → 8 chunks in 4914.9ms
+[python] 2026-03-21 16:15:52,084 [INFO] Unified retrieval: 40 candidates in 3.70s (embed 0.01s)
+[python] 2026-03-21 16:15:52,085 [INFO] [speed_optimizer] precomputed 'botulinum toxin induced ptosis management apraclon' → 8 chunks in 3712.0ms
+[python] INFO:     127.0.0.1:53554 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 16:15:54,689 [INFO] Unified retrieval: 40 candidates in 2.59s (embed 0.01s)
+[python] 2026-03-21 16:15:54,689 [INFO] [speed_optimizer] precomputed 'tyndall effect filler hyaluronidase treatment' → 8 chunks in 2604.3ms
+[python] 2026-03-21 16:15:56,758 [INFO] Unified retrieval: 40 candidates in 2.06s (embed 0.01s)
+[python] 2026-03-21 16:15:56,758 [INFO] [speed_optimizer] precomputed 'delayed inflammatory reaction filler management tr' → 8 chunks in 2068.8ms
+[python] 2026-03-21 16:15:56,758 [INFO] [speed_optimizer] precomputed 10/10 hot queries
+[python] INFO:     127.0.0.1:45424 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:45778 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:42172 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:60798 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:57132 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:58630 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:42992 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:53266 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:40066 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59818 - "GET /health HTTP/1.1" 200 OK

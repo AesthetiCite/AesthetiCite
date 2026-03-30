@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 import uuid
 import json
+import asyncio
 from typing import Optional
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
@@ -12,11 +13,15 @@ from app.core.config import settings
 from app.core.safety import safety_screen
 from app.core.limiter import limiter
 from app.db.session import get_db
-from app.rag.retriever import retrieve_db
+import logging as _logging
+from app.rag.async_retriever import retrieve_db_async
+from app.rag.retriever import retrieve_db as retrieve_db_sync
 from app.rag.citations import to_citations
 from app.rag.answer import build_answer
+_logger = _logging.getLogger(__name__)
 from app.rag.llm_answer import synthesize_answer
 from app.rag.quality_guard import safe_finalize
+from app.engine.speed_optimizer import get_hot_answer, set_hot_answer
 
 router = APIRouter(prefix="", tags=["ask"])
 
@@ -46,7 +51,7 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> Option
 
 @router.post("/ask", response_model=AskResponse)
 @limiter.limit(settings.RATE_LIMIT_ASK)
-def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) -> AskResponse:
+async def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) -> AskResponse:
     request_id = str(uuid.uuid4())
     t0 = time.perf_counter()
 
@@ -78,8 +83,39 @@ def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) ->
             latency_ms=latency_ms,
         )
 
-    retrieved = retrieve_db(db=db, question=payload.question, domain=payload.domain, k=8)
+    hot = get_hot_answer(payload.question)
+    if hot:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        return AskResponse(
+            answer=hot.get("answer", ""),
+            citations=hot.get("citations", []),
+            refusal=False,
+            request_id=request_id,
+            latency_ms=latency_ms,
+            evidence=hot.get("evidence", []),
+        )
+
+    try:
+        retrieved = await retrieve_db_async(question=payload.question, domain=payload.domain, k=8)
+    except Exception as _e:
+        _logger.warning(f"Async retrieval failed ({_e}), falling back to sync retriever")
+        retrieved = retrieve_db_sync(db=db, question=payload.question, domain=payload.domain, k=8)
     citations = to_citations(retrieved)
+
+    max_src = min(len(retrieved), settings.MAX_SOURCES_IN_PROMPT)
+    evidence_for_response = [
+        {
+            "id": f"S{i + 1}",
+            "source_id": r.get("source_id", ""),
+            "title": r.get("title") or "Unknown source",
+            "year": r.get("year"),
+            "organization_or_journal": r.get("organization_or_journal"),
+            "page_or_section": r.get("page_or_section"),
+            "evidence_level": r.get("evidence_level"),
+            "snippet": (r.get("text") or "")[:240] or None,
+        }
+        for i, r in enumerate(retrieved[:max_src])
+    ]
 
     if len(citations) < settings.MIN_CITATIONS_REQUIRED:
         latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -105,16 +141,17 @@ def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) ->
             latency_ms=latency_ms,
         )
 
-    # High-quality LLM synthesis (OpenEvidence-like), with strict citation enforcement
     related_questions = []
     llm_refused = False
     try:
-        answer_llm = synthesize_answer(payload.question, payload.domain, payload.mode, retrieved)
+        loop = asyncio.get_event_loop()
+        answer_llm = await loop.run_in_executor(
+            None, synthesize_answer, payload.question, payload.domain, payload.mode, retrieved
+        )
         answer = safe_finalize(answer_llm, sources=retrieved)
         if answer.startswith("REFUSAL:"):
             llm_refused = True
     except Exception as e:
-        # LLM failed (network/timeout/config) - fallback to template
         answer, related_questions = build_answer(
             question=payload.question,
             mode=payload.mode,
@@ -122,8 +159,7 @@ def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) ->
             retrieved=retrieved,
             escalation_note=safety.escalation_note,
         )
-    
-    # If LLM explicitly refused due to insufficient evidence, return refusal
+
     if llm_refused:
         latency_ms = int((time.perf_counter() - t0) * 1000)
         db.execute(text("""
@@ -149,6 +185,15 @@ def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) ->
         )
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    try:
+        set_hot_answer(payload.question, {
+            "answer": answer,
+            "citations": [c.model_dump() for c in citations],
+            "evidence": evidence_for_response,
+        })
+    except Exception:
+        pass
 
     db.execute(text("""
       INSERT INTO queries (id, user_id, question, domain, mode, latency_ms, citations_count, refusal, refusal_reason)
@@ -179,4 +224,5 @@ def ask(payload: AskRequest, request: Request, db: Session = Depends(get_db)) ->
         refusal=False,
         request_id=request_id,
         latency_ms=latency_ms,
+        evidence=evidence_for_response,
     )

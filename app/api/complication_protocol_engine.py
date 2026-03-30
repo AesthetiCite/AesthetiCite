@@ -666,11 +666,11 @@ PROTOCOL_LIBRARY: Dict[str, Dict[str, Any]] = {
             {
                 "substance": "Hyaluronidase",
                 "recommendation": (
-                    "Use high-dose pulsed treatment. A practical starting point is at least 500 IU per affected "
-                    "ischemic area, with many expert protocols using 500 to 1500 IU or more depending on extent, "
-                    "repeated at short intervals until reperfusion improves."
+                    "Minimum 150–300 IU per cycle, up to 1500 IU pulsed per affected ischemic area. "
+                    "Flood the full vascular territory. Repeat every 60 min if blanching, livedo, or pain persist. "
+                    "Escalate to 1500 IU per cycle if no improvement at 60 min."
                 ),
-                "notes": "Inject across the full compromised vascular territory. Repeat according to persistent pain, blanching, livedo, and delayed refill.",
+                "notes": "Inject across the full compromised vascular territory and surrounding tissue. More is better in an emergency — do not under-dose. Repeat every 60 min until reperfusion is confirmed.",
             },
             {
                 "substance": "Aspirin",
@@ -1003,9 +1003,10 @@ PROTOCOL_LIBRARY: Dict[str, Dict[str, Any]] = {
             "Visual symptoms, diplopia, or atypical neurologic findings require escalation."
         ),
         "keywords": [
-            "ptosis after botox", "droopy eyelid", "eyelid droop", "brow ptosis", "brow heaviness",
+            "ptosis", "blepharoptosis", "droopy eyelid", "eyelid droop", "eyelid drooping",
+            "ptosis after botox", "brow ptosis", "brow heaviness", "drooping eyelid",
             "botulinum toxin complication", "levator spread", "botox ptosis", "diplopia after botox",
-            "toxin ptosis",
+            "toxin ptosis", "upper eyelid ptosis", "lid droop", "levator ptosis",
         ],
         "steps": [
             {
@@ -1891,7 +1892,13 @@ def list_protocols() -> List[Dict[str, Any]]:
 @router.post("/protocol", response_model=ProtocolResponse, summary="Generate structured complication protocol + evidence")
 def generate_protocol(payload: ProtocolRequest) -> ProtocolResponse:
     request_id = str(uuid.uuid4())
-    protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
+    # Direct key lookup — used by the emergency page which sends the protocol key verbatim
+    if payload.query in PROTOCOL_LIBRARY:
+        protocol_key = payload.query
+        protocol = PROTOCOL_LIBRARY[protocol_key]
+        confidence = 0.99
+    else:
+        protocol_key, protocol, confidence = select_protocol(payload.query, payload.context)
     response = build_response(
         request_id=request_id,
         protocol_key=protocol_key,
@@ -1951,32 +1958,24 @@ def log_case(payload: LogCaseRequest) -> LogCaseResponse:
             detail=f"Unknown protocol key: {payload.protocol_key!r}. "
                    f"Valid keys: {list(PROTOCOL_LIBRARY.keys())}",
         )
-    case_id = str(uuid.uuid4())
-    logged_at = now_utc_iso()
-    with _case_db_lock:
-        conn = _get_case_conn()
-        conn.execute(
-            """INSERT INTO logged_cases
-               (case_id, logged_at_utc, clinic_id, clinician_id, protocol_key,
-                region, procedure, product_type, symptoms, outcome)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (
-                case_id, logged_at,
-                payload.clinic_id, payload.clinician_id, payload.protocol_key,
-                payload.region, payload.procedure, payload.product_type,
-                json.dumps(payload.symptoms) if payload.symptoms else None,
-                payload.outcome,
-            ),
-        )
-        conn.commit()
-        conn.close()
+    from app.api.case_store import log_case as _pg_log_case, get_stats as _pg_get_stats
+    case_id = _pg_log_case(
+        protocol_key=payload.protocol_key,
+        clinic_id=payload.clinic_id,
+        clinician_id=payload.clinician_id,
+        region=payload.region,
+        procedure=payload.procedure,
+        product_type=payload.product_type,
+        symptoms=payload.symptoms,
+        outcome=payload.outcome,
+    )
     safe_write_jsonl(AUDIT_LOG_PATH, {
         "event_type": "case_logged",
-        "logged_at_utc": logged_at,
+        "logged_at_utc": now_utc_iso(),
         "case_id": case_id,
+        "protocol_key": payload.protocol_key,
         "clinic_id": payload.clinic_id,
         "clinician_id": payload.clinician_id,
-        "protocol_key": payload.protocol_key,
         "region": payload.region,
         "procedure": payload.procedure,
         "outcome": payload.outcome,
@@ -1986,25 +1985,8 @@ def log_case(payload: LogCaseRequest) -> LogCaseResponse:
 
 @router.get("/stats", response_model=DatasetStatsResponse, summary="Case dataset statistics")
 def dataset_stats() -> DatasetStatsResponse:
-    with _case_db_lock:
-        conn = _get_case_conn()
-        total = conn.execute("SELECT COUNT(*) FROM logged_cases").fetchone()[0]
-        by_protocol = dict(conn.execute(
-            "SELECT protocol_key, COUNT(*) FROM logged_cases WHERE protocol_key IS NOT NULL GROUP BY protocol_key"
-        ).fetchall())
-        by_region = dict(conn.execute(
-            "SELECT region, COUNT(*) FROM logged_cases WHERE region IS NOT NULL GROUP BY region"
-        ).fetchall())
-        by_procedure = dict(conn.execute(
-            "SELECT procedure, COUNT(*) FROM logged_cases WHERE procedure IS NOT NULL GROUP BY procedure"
-        ).fetchall())
-        conn.close()
-    return DatasetStatsResponse(
-        total_cases=total,
-        by_protocol=by_protocol,
-        by_region=by_region,
-        by_procedure=by_procedure,
-    )
+    from app.api.case_store import get_stats as _pg_get_stats
+    return DatasetStatsResponse(**_pg_get_stats())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

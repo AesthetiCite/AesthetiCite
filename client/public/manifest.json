@@ -64,10 +64,24 @@
   "screenshots": [],
   "shortcuts": [
     {
-      "name": "New Search",
+      "name": "Emergency Protocol",
+      "short_name": "Emergency",
+      "description": "Immediate complication protocols",
+      "url": "/emergency",
+      "icons": [{"src": "/icons/icon-96x96.png", "sizes": "96x96"}]
+    },
+    {
+      "name": "Safety Check",
+      "short_name": "Safety",
+      "description": "Pre-procedure risk assessment",
+      "url": "/safety-check",
+      "icons": [{"src": "/icons/icon-96x96.png", "sizes": "96x96"}]
+    },
+    {
+      "name": "Ask a Question",
       "short_name": "Search",
-      "description": "Start a new evidence search",
-      "url": "/",
+      "description": "Evidence search across 1.9M papers",
+      "url": "/ask",
       "icons": [{"src": "/icons/icon-96x96.png", "sizes": "96x96"}]
     }
   ]

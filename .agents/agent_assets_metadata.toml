@@ -1,0 +1,14 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "KsrXDOwVSW6oxcMxIFrvQ"
+uri = "file://aestheticite_codebase.txt"
+type = "text"
+title = "AesthetiCite — Codebase Bundle for ChatGPT"
+
+[[outputs]]
+id = "ZMiccvmvVC-Nu-9-eR0E4"
+uri = "file://client/public/aestheticite-logo.png"
+type = "image"
+title = "AesthetiCite Logo"

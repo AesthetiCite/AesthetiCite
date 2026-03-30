@@ -402,12 +402,43 @@ def cleanup_expired_cache():
         logger.warning(f"Error cleaning answer cache: {e}")
 
 
+def _fastembed_model_is_cached() -> bool:
+    """
+    Return True only if the fastembed ONNX model files already exist on disk.
+    Avoids triggering a HuggingFace download during startup on production VMs
+    where the model was not pre-baked into the image.
+    """
+    import os, pathlib
+    cache_root = pathlib.Path(
+        os.environ.get("FASTEMBED_CACHE_PATH", "/home/runner/workspace/.fastembed_cache")
+    )
+    # fastembed stores the model under models--<org>--<name>-onnx/
+    model_dir = cache_root / "models--qdrant--all-MiniLM-L6-v2-onnx"
+    if not model_dir.exists():
+        return False
+    # Must have at least one real file (not just lock files)
+    return any(
+        f.stat().st_size > 10_000  # actual model file, not a lock
+        for f in model_dir.rglob("*")
+        if f.is_file()
+    )
+
+
 def warm_embedding_cache():
     """
     Pre-warm embedding cache with common clinical query terms on startup.
     Runs in a background thread so it doesn't block server start.
+
+    If the ONNX model is not already cached on disk this function returns
+    immediately without launching a thread — we never trigger a network
+    download during startup.  The model will be fetched lazily on the first
+    real search request instead.
     """
     import threading
+
+    if not _fastembed_model_is_cached():
+        logger.info("Embedding model not in local cache — skipping startup warmup (lazy load on first use)")
+        return
 
     def _warm():
         try:

@@ -1,0 +1,20 @@
+Architected production-ready vision analysis engine with strategic positioningArchitected production-ready vision analysis engine with strategic positioningThis is the right strategic read. Let me build it properly — the full Complication Vision Engine as a single cohesive system.
+Three files: backend engine, result display component, and the /vision-analysis page.Created 3 files, ran a command, read a fileCreated 3 files, ran a command, read a fileThree files. Here's what to do.
+vision_analysis.py → app/api/
+Mount in main.py:
+pythonfrom app.api.vision_analysis import router as vision_router
+app.include_router(vision_router, prefix="/api/vision")
+VisionAnalysisResult.tsx → client/src/components/
+vision-analysis.tsx → client/src/pages/
+Register in App.tsx:
+tsximport VisionAnalysisPage from "@/pages/vision-analysis";
+<Route path="/vision-analysis">{() => <ProtectedRoute component={VisionAnalysisPage} />}</Route>
+Three proxy routes in server/routes.ts:
+typescriptapp.post("/api/vision/analyse",         (req, res) => proxyToFastAPI(req, res, "/api/vision/analyse"));
+app.post("/api/vision/serial-compare",  (req, res) => proxyToFastAPI(req, res, "/api/vision/serial-compare"));
+app.get ("/api/vision/feature-glossary",(req, res) => proxyToFastAPI(req, res, "/api/vision/feature-glossary"));
+What's built across the three files:
+The backend has three endpoints — /analyse runs the full vision engine extracting features, classifying risk, and suggesting causes; /serial-compare takes two photos and assesses healing trajectory; /feature-glossary returns definitions for every visual feature the engine can detect.
+The result component renders six sections — risk banner with score bar, flagged feature grid, ranked cause cards with expandable detail, primary and secondary action cards, red flags vs reassuring signs, and collapsible evidence.
+The page has two tabs — single photo analysis with the full upload → region map → context → engine flow, and the serial healing tracker which takes before/after photos and returns an improving/stable/worsening trajectory with feature-level breakdowns.
+The positioning throughout is exactly right: "AI highlights visual patterns that may indicate complications and guides next steps" — never "diagnoses." That's what keeps it defensible under MHRA SaMD positioning and credible in front of Dr. Mehta.

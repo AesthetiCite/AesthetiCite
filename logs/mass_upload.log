@@ -1,0 +1,16 @@
+2026-03-14 12:18:41,943 [INFO] =================================================================
+2026-03-14 12:18:41,943 [INFO] AesthetiCite Mass Upload Engine
+2026-03-14 12:18:41,943 [INFO]   Current documents :    229,295
+2026-03-14 12:18:41,943 [INFO]   Target            :  1,000,000
+2026-03-14 12:18:41,943 [INFO]   Needed            :    770,705
+2026-03-14 12:18:41,943 [INFO]   Queries           :        225
+2026-03-14 12:18:41,943 [INFO]   Workers           :          4
+2026-03-14 12:18:41,944 [INFO]   NCBI API key      : yes
+2026-03-14 12:18:41,944 [INFO] =================================================================
+2026-03-14 12:18:42,576 [INFO] [W3] Injectables: 163 PMIDs found | query='"vascular occlusion"[Title/Abstract] AND filler'
+2026-03-14 12:18:43,039 [INFO] [W1] Injectables: 2376 PMIDs found | query='"botulinum toxin"[Title/Abstract] AND (aesthetic OR cosmetic'
+2026-03-14 12:18:43,512 [INFO] [W0] Injectables: 9649 PMIDs found | query='"hyaluronic acid"[Title/Abstract] AND (filler OR injection O'
+2026-03-14 12:18:43,784 [INFO] [W2] Injectables: 949 PMIDs found | query='"dermal filler"[Title/Abstract]'
+2026-03-14 12:18:46,397 [INFO] [W3] Injectables: DONE +10 inserted, 137 skipped, 0 failed (4s)
+2026-03-14 12:18:46,437 [INFO] Progress: 229,305/1,000,000 (22.9%) | Queries: 1/225
+2026-03-14 12:18:48,567 [INFO] [W0] Injectables: 5023 PMIDs found | query='"hyaluronidase"[Title/Abstract]'

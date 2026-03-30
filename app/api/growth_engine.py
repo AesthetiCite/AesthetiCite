@@ -35,13 +35,13 @@ router = APIRouter(prefix="/api/growth", tags=["AesthetiCite Growth Engine"])
 EXPORT_DIR = os.environ.get("AESTHETICITE_EXPORT_DIR", "exports")
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
 def get_conn() -> psycopg2.extensions.connection:
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
     conn.autocommit = False
     return conn
 
@@ -490,6 +490,24 @@ DRUG_ACTIONS = {
 def check_drug_interactions(
     medications: List[str], planned_products: List[str]
 ) -> List[DrugInteractionItem]:
+    try:
+        from app.api.drug_interactions import AestheticDrugChecker
+        checker = AestheticDrugChecker()
+        raw = checker.check(medications, planned_products)
+        # Convert dataclass items to Pydantic DrugInteractionItem
+        return [
+            DrugInteractionItem(
+                medication=i.medication,
+                product_or_context=i.product_or_context,
+                severity=i.severity,
+                explanation=i.explanation,
+                action=i.action,
+            )
+            for i in raw
+        ]
+    except Exception:
+        pass
+    # Legacy fallback — original logic
     items = []
     prods = planned_products or ["injectable aesthetic procedure"]
     for med in medications:

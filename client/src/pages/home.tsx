@@ -15,7 +15,7 @@ import type { Citation } from "@shared/schema";
 import type { QueryMeta, ComplicationProtocol, InlineTool } from "@/lib/auth";
 
 function useCorpusLabel() {
-  const [label, setLabel] = useState("825K+ publications");
+  const [label, setLabel] = useState("1.9M+ publications");
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
@@ -49,7 +49,7 @@ export default function Home() {
   const corpusLabel = useCorpusLabel();
   const STATS = [
     { icon: BookOpen, label: corpusLabel },
-    { icon: Languages, label: "25 languages" },
+    { icon: Languages, label: "22+ languages" },
     { icon: ShieldCheck, label: "Evidence graded" },
     { icon: Zap, label: "Real-time citations" },
   ];

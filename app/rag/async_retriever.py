@@ -29,19 +29,19 @@ from app.rag.retriever import (
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
 SQL_UNIFIED_ALL = r"""
 WITH
 v AS (
+  -- No JOIN here so the planner can use the IVFFlat index for ORDER BY + LIMIT.
+  -- Inactive-doc filtering is deferred to the final SELECT.
   SELECT c.id,
          (c.embedding <=> CAST($2 AS vector(384))) AS vdist
   FROM chunks c
-  JOIN documents d ON d.id = c.document_id
-  WHERE d.status = 'active'
-    AND c.embedding IS NOT NULL
+  WHERE c.embedding IS NOT NULL
   ORDER BY c.embedding <=> CAST($2 AS vector(384))
-  LIMIT 80
+  LIMIT 60
 ),
 f AS (
   SELECT c.id,
@@ -81,21 +81,21 @@ SELECT
 FROM ranked r
 JOIN chunks c ON c.id = r.id
 JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
 ORDER BY COALESCE(r.vdist, 1e9) ASC, COALESCE(r.fts, 0) DESC;
 """
 
 SQL_UNIFIED_DOMAIN = r"""
 WITH
 v AS (
+  -- No JOIN here so the planner can use the IVFFlat index.
+  -- Domain and active-doc filtering is deferred to the final SELECT.
   SELECT c.id,
          (c.embedding <=> CAST($2 AS vector(384))) AS vdist
   FROM chunks c
-  JOIN documents d ON d.id = c.document_id
-  WHERE d.status = 'active'
-    AND c.embedding IS NOT NULL
-    AND d.domain = $4
+  WHERE c.embedding IS NOT NULL
   ORDER BY c.embedding <=> CAST($2 AS vector(384))
-  LIMIT 80
+  LIMIT 100
 ),
 f AS (
   SELECT c.id,
@@ -136,6 +136,8 @@ SELECT
 FROM ranked r
 JOIN chunks c ON c.id = r.id
 JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND d.domain = $4
 ORDER BY COALESCE(r.vdist, 1e9) ASC, COALESCE(r.fts, 0) DESC;
 """
 
@@ -160,13 +162,36 @@ _stmts: Dict[int, Dict[str, asyncpg.prepared_stmt.PreparedStatement]] = {}
 
 async def _init_connection(con: asyncpg.Connection):
     """Called once per new connection in the pool — prepare + cache statements."""
-    await con.execute("SET statement_timeout = '30s'")
-    cid = id(con)
-    _stmts[cid] = {
-        "all": await con.prepare(SQL_UNIFIED_ALL),
-        "domain": await con.prepare(SQL_UNIFIED_DOMAIN),
-        "drug": await con.prepare(SQL_DRUG_TITLE),
-    }
+    try:
+        await con.execute("SET statement_timeout = '120s'")
+        await con.execute("SET ivfflat.probes = 5")
+        cid = id(con)
+        _stmts[cid] = {
+            "all": await con.prepare(SQL_UNIFIED_ALL),
+            "domain": await con.prepare(SQL_UNIFIED_DOMAIN),
+            "drug": await con.prepare(SQL_DRUG_TITLE),
+        }
+    except Exception as e:
+        # Non-fatal: log and continue. Pool will still work; prepared stmts fall back to plain queries.
+        logger.warning(f"[async_retriever] _init_connection partial failure (non-fatal): {e}")
+
+
+def _sanitize_asyncpg_dsn(dsn: str) -> tuple[str, bool]:
+    """
+    Asyncpg does not accept ?sslmode=require in the URL the same way psycopg does.
+    Strip sslmode from the query string and return (clean_dsn, ssl_required).
+    """
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+    try:
+        p = urlparse(dsn)
+        qs = parse_qs(p.query, keep_blank_values=True)
+        sslmode = qs.pop("sslmode", ["prefer"])[0]
+        ssl_required = sslmode in ("require", "verify-ca", "verify-full")
+        new_query = urlencode({k: v[0] for k, v in qs.items()})
+        clean = urlunparse(p._replace(query=new_query))
+        return clean, ssl_required
+    except Exception:
+        return dsn, True  # leave URL as-is, assume SSL needed
 
 
 async def init_retrieval_pool():
@@ -177,16 +202,25 @@ async def init_retrieval_pool():
     if not dsn:
         logger.error("DATABASE_URL not set, async retrieval pool not initialized")
         return
-    try:
-        _pool = await asyncpg.create_pool(
-            dsn=dsn,
-            min_size=5,
+
+    clean_dsn, ssl_required = _sanitize_asyncpg_dsn(dsn)
+    ssl_param: Any = "require" if ssl_required else False
+
+    async def _create():
+        return await asyncpg.create_pool(
+            dsn=clean_dsn,
+            ssl=ssl_param,
+            min_size=1,
             max_size=20,
             max_inactive_connection_lifetime=300,
             command_timeout=30,
+            timeout=10,
             init=_init_connection,
         )
-        logger.info("asyncpg retrieval pool initialized (min=5, max=20)")
+
+    try:
+        _pool = await asyncio.wait_for(_create(), timeout=20)
+        logger.info("asyncpg retrieval pool initialized (min=1, max=20)")
     except Exception as e:
         logger.error(f"Failed to initialize asyncpg pool: {e}")
         _pool = None
@@ -241,7 +275,9 @@ async def retrieve_db_async(
         logger.info(f"Numerical query detected: {question[:80]}...")
 
     t0 = time.perf_counter()
-    qvec = embed_text_cached(question, embed_text)
+    # Run embedding in a thread — embed_text is synchronous CPU/IO work and
+    # must not block the uvicorn event loop (would starve concurrent requests).
+    qvec = await asyncio.to_thread(embed_text_cached, question, embed_text)
     qvec_str = "[" + ",".join(str(v) for v in qvec) + "]"
     t_embed = time.perf_counter() - t0
 
@@ -252,7 +288,7 @@ async def retrieve_db_async(
     async with _pool.acquire() as con:
         t_acq = time.perf_counter() - t1
 
-        await con.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)};")
+        await con.execute(f"SET LOCAL ivfflat.probes = {min(int(ef_search // 8), 5)};")
 
         t_q0 = time.perf_counter()
         if domain:

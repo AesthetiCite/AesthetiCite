@@ -1,0 +1,29 @@
+Most of the "Built and ready to integrate" items were already delivered earlier in this session. Let me confirm what's already coded, then build the 10 new Vision improvements that are genuinely new.Searched project for “visual counseling serial compare healing tracker visual_id postgres visual store”Searched project for “visual counseling serial compare healing tracker visual_id postgres visual store”Good. Now I'll build the two files — one backend for all new Vision improvements, one frontend that consolidates the complete Vision UI.Created 2 files, read a fileCreated 2 files, read a fileHere's what's in each file and how it connects to everything already built:
+
+Previously delivered (already in your outputs from this session):
+FileWhat it doesvision_protocol_bridge.py15 signal patterns → 6 complication protocolsvision_quality.pyHardened prompt, 7 scores, Fitzpatrick, capture validation, training datasetCaptureGuide.tsxQuality validation UI before uploadPoseCaptureGuide.tsx3-angle SVG pose overlays (front/left 45°/right 45°)VisualScoreCard.tsxVISIA-style 7-score displayConsultationFlow.tsx5-step orchestrator (capture→analyse→signals→simulate→export)skingpt_integration.pySkinGPT simulation framework with scenario libraryvision_extensions.pySerial comparison wiring, live RAG glossary, pre-procedure pre-fillProtocolAlert.tsxProtocol alert cards in Vision UI
+
+Now delivered — vision_advanced.py → app/api/vision_advanced.py
+7 new endpoints:
+
+/visual/serial-delta — computes quantified score diff between two visits (before/after VisualScores → per-field deltas with % change and trajectory label)
+/visual/confidence-badge — scores 0–100 from image quality + signal count + structured output completeness
+/visual/symmetry — bilateral symmetry score via GPT-4o, returns left/right balance + affected regions + likely cause
+/visual/share + /visual/share/{token} — time-limited shared review links for remote supervision, SHA-256 audit trail, access logging
+/visual/calibrate-colour — colour calibration assessment from uploaded image
+/visual/population-baseline — expected appearance at specific post-treatment timepoint with amber/red flags, RAG-enriched
+/visual/auto-log — 1-click session logging that wires into complication engine case store + training dataset simultaneously
+
+VisionAdvancedUI.tsx → client/src/components/vision/
+8 React components:
+
+ImageAnnotator — full canvas drawing layer: pen, arrow, circle, text label, eraser, colour picker, export annotated image
+MeasurementRuler — click-to-calibrate + click-to-measure distance overlay in mm
+SerialDeltaDisplay — renders the serial delta API response as scored cards with direction arrows and % change
+AnalysisConfidenceBadge — expandable badge showing confidence score and limiting factors
+ColourCalibrationGuide — pre-capture instructions with light condition examples
+SharedReviewBanner — shows active/expired share link with copy button and countdown
+PopulationBaseline — collapsible card showing expected day-N appearance with amber/red flag lists
+AutoLogButton — 1-click log with loading/done/error states
+
+Integration: add vision_advanced_router to main.py + 8 proxy routes to routes.ts. Place components in ConsultationFlow.tsx at the appropriate steps.

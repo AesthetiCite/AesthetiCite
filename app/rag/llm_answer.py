@@ -21,14 +21,13 @@ STRICT ANTI-HALLUCINATION RULES:
 
 QUALITY RULES:
 - Keep the tone clinical, cautious, and clear
+- Be concise: 2-3 sentences per section maximum
 - Prefer consensus/guidelines/IFUs when available
-- Structure your response clearly with sections as appropriate
 
-Output format:
-- Clinical summary
-- Evidence-backed answer (with inline citations)
-- Red flags / escalation considerations
-- Evidence level & limitations
+Output format (3 sections only, brief):
+1. Clinical summary (2-3 sentences)
+2. Evidence-backed answer with inline citations [S1], [S2], etc. (3-5 sentences)
+3. Red flags & evidence limitations (2-3 sentences)
 """
 
 SAFE_SYSTEM_PROMPT_FR = """Tu es AesthetiCite, une plateforme d'aide à la décision clinique evidence-first pour professionnels de santé.
@@ -44,15 +43,14 @@ RÈGLES ANTI-HALLUCINATION STRICTES :
 8) Privilégie les citations directes quand la précision est critique.
 
 RÈGLES DE QUALITÉ :
-- Ton clinique, prudent, structuré
+- Ton clinique, prudent, concis
+- 2-3 phrases par section maximum
 - Priorise consensus/guidelines/IFU quand disponible
-- Structure ta réponse clairement avec des sections appropriées
 
-Format de sortie :
-- Résumé clinique
-- Réponse sourcée (citations inline)
-- Signaux d'alarme / escalade
-- Niveau de preuve & limites
+Format de sortie (3 sections, bref) :
+1. Résumé clinique (2-3 phrases)
+2. Réponse sourcée avec citations inline [S1], [S2], etc. (3-5 phrases)
+3. Signaux d'alarme & limites des preuves (2-3 phrases)
 """
 
 def _make_evidence_pack(retrieved: List[Dict]) -> str:
@@ -81,7 +79,12 @@ def _llm_openai(messages: List[dict]) -> str:
     base_url = settings.OPENAI_BASE_URL.rstrip("/")
     model = os.getenv("OPENAI_MODEL", settings.OPENAI_MODEL)
     url = f"{base_url}/chat/completions"
-    payload = {"model": model, "messages": messages, "temperature": settings.LLM_TEMPERATURE}
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": settings.LLM_TEMPERATURE,
+        "max_tokens": 600,
+    }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     with httpx.Client(timeout=60) as client:
         r = client.post(url, json=payload, headers=headers)

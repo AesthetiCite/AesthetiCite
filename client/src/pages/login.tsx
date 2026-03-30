@@ -15,28 +15,48 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [serverStarting, setServerStarting] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { t } = useLocale();
 
+  async function attemptLogin(emailVal: string, passwordVal: string, attempt: number = 0): Promise<void> {
+    try {
+      const token = await login(emailVal, passwordVal);
+      setToken(token);
+      await getMe(token);
+      setServerStarting(false);
+      setLocation("/ask");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      const isStartingUp = msg.toLowerCase().includes("starting up") || msg.includes("502") || msg.includes("503");
+
+      if (isStartingUp && attempt < 8) {
+        setServerStarting(true);
+        setRetryCount(attempt + 1);
+        const delay = Math.min(4000 + attempt * 1000, 8000);
+        setTimeout(() => attemptLogin(emailVal, passwordVal, attempt + 1), delay);
+      } else {
+        setServerStarting(false);
+        setIsLoading(false);
+        toast({
+          variant: "destructive",
+          title: isStartingUp ? "Server timeout" : t('login.failed'),
+          description: isStartingUp
+            ? "The server is taking too long to start. Please try again in a minute."
+            : err instanceof Error ? err.message : t('login.invalidCredentials'),
+        });
+      }
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setIsLoading(true);
-
-    try {
-      const token = await login(email, password);
-      setToken(token);
-      await getMe(token);
-      setLocation("/");
-    } catch (err) {
-      toast({
-        variant: "destructive",
-        title: t('login.failed'),
-        description: err instanceof Error ? err.message : t('login.invalidCredentials'),
-      });
-    } finally {
-      setIsLoading(false);
-    }
+    setServerStarting(false);
+    setRetryCount(0);
+    attemptLogin(email, password, 0);
   }
 
   return (
@@ -117,15 +137,23 @@ export default function LoginPage() {
           <button
             type="button"
             data-testid="button-demo-login"
-            onClick={() => { setEmail("demo@aestheticite.com"); setPassword("Demo2026!"); }}
-            className="w-full mb-3 flex items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 hover:bg-primary/10 px-4 py-3 transition-colors group"
+            disabled={isLoading}
+            onClick={() => {
+              setEmail("demo@aestheticite.com");
+              setPassword("Demo2026!");
+              setIsLoading(true);
+              setServerStarting(false);
+              setRetryCount(0);
+              attemptLogin("demo@aestheticite.com", "Demo2026!", 0);
+            }}
+            className="w-full mb-3 flex items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 hover:bg-primary/10 px-4 py-3 transition-colors group disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <div className="text-left">
               <p className="text-xs font-bold text-primary">Try the demo</p>
               <p className="text-[11px] text-muted-foreground font-mono">demo@aestheticite.com</p>
             </div>
             <span className="text-[11px] font-semibold text-primary/70 group-hover:text-primary transition-colors">
-              Fill credentials →
+              {isLoading ? "Signing in…" : "One-click login →"}
             </span>
           </button>
 
@@ -164,7 +192,12 @@ export default function LoginPage() {
                   disabled={isLoading} 
                   data-testid="button-login"
                 >
-                  {isLoading ? (
+                  {serverStarting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Server warming up… retrying ({retryCount}/8)
+                    </>
+                  ) : isLoading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       {t('common.loading')}
@@ -173,6 +206,11 @@ export default function LoginPage() {
                     t('login.submit')
                   )}
                 </Button>
+                {serverStarting && (
+                  <p className="text-xs text-center text-muted-foreground mt-2">
+                    The clinical server is starting — this takes up to 60 seconds after a period of inactivity.
+                  </p>
+                )}
               </form>
             </CardContent>
           </Card>

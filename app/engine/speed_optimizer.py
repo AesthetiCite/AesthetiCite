@@ -292,6 +292,7 @@ def precompute_hot_queries(
 
     def _run():
         done = 0
+        time.sleep(180)  # Wait 3 minutes before precomputing to avoid competing with initial user session
         for hq in HOT_QUERIES[:max_queries]:
             canonical = hq["canonical"]
             try:
@@ -304,6 +305,7 @@ def precompute_hot_queries(
                         f"→ {len(chunks)} chunks in {elapsed}ms"
                     )
                 done += 1
+                time.sleep(10)  # Pace between queries to avoid starving user requests
             except Exception as e:
                 logger.warning(f"[speed_optimizer] precompute failed for '{canonical[:50]}': {e}")
 

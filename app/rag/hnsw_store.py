@@ -2,6 +2,9 @@
 HNSW ANN Index for sub-3s latency vector search.
 Uses hnswlib for fast approximate nearest neighbor search.
 Loads index from hnsw.bin and metadata from hnsw_meta.json.
+
+Lazy-initialised: the module-level `hnsw_store` instance is only constructed
+on first access, preventing OOM crashes at import time in constrained VMs.
 """
 from __future__ import annotations
 import os
@@ -11,12 +14,15 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+# 384 matches sentence-transformers/all-MiniLM-L6-v2 (the actual model used)
+EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
 HNSW_INDEX_PATH = os.getenv("HNSW_INDEX_PATH", "./index/hnsw.bin")
 HNSW_META_PATH = os.getenv("HNSW_META_PATH", "./index/hnsw_meta.json")
-HNSW_MAX_ELEMENTS = int(os.getenv("HNSW_MAX_ELEMENTS", "200000"))
+# Reduced from 200 000 — each slot is dim×4 bytes; 50 000×384×4 ≈ 75 MB
+HNSW_MAX_ELEMENTS = int(os.getenv("HNSW_MAX_ELEMENTS", "50000"))
 HNSW_M = int(os.getenv("HNSW_M", "16"))
 HNSW_EF = int(os.getenv("HNSW_EF", "128"))
+
 
 def _hnswlib_safe() -> bool:
     """Test hnswlib in a subprocess — catches SIGILL / AVX2 crashes."""
@@ -29,6 +35,7 @@ def _hnswlib_safe() -> bool:
         return r.returncode == 0
     except Exception:
         return False
+
 
 hnswlib = None
 HNSWLIB_AVAILABLE = False
@@ -45,7 +52,7 @@ if not HNSWLIB_AVAILABLE:
 
 class HNSWStore:
     """HNSW index for fast approximate nearest neighbor search."""
-    
+
     def __init__(self, dim: int = EMBED_DIM):
         self.dim = dim
         self.ok = False
@@ -54,14 +61,14 @@ class HNSWStore:
         self.by_hash: Dict[str, dict] = {}
         self.id_to_hash: Dict[int, str] = {}
         self.next_id = 0
-        
+
         if not HNSWLIB_AVAILABLE:
             logger.warning("hnswlib not available - HNSW store disabled")
             return
-        
+
         try:
             self.idx = hnswlib.Index(space="cosine", dim=dim)
-            
+
             if os.path.exists(HNSW_INDEX_PATH):
                 self.idx.load_index(HNSW_INDEX_PATH)
                 self._load_meta()
@@ -72,42 +79,42 @@ class HNSWStore:
                     ef_construction=200,
                     M=HNSW_M
                 )
-                logger.info(f"Initialized new HNSW index (dim={dim})")
-            
+                logger.info(f"Initialized new HNSW index (dim={dim}, max={HNSW_MAX_ELEMENTS})")
+
             self.idx.set_ef(HNSW_EF)
             self.ok = True
         except Exception as e:
             logger.error(f"Failed to initialize HNSW: {e}")
             self.ok = False
-    
+
     def _load_meta(self):
         """Load metadata from hnsw_meta.json."""
         if not os.path.exists(HNSW_META_PATH):
             logger.warning(f"No meta file at {HNSW_META_PATH}")
             return
-        
+
         try:
             with open(HNSW_META_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             self.by_hash = data.get("by_hash", {})
             raw_id_to_hash = data.get("id_to_hash", {})
             self.id_to_hash = {int(k): v for k, v in raw_id_to_hash.items()}
-            
+
             for label, h in self.id_to_hash.items():
                 if h in self.by_hash:
                     self.id_to_chunk[label] = self.by_hash[h]
-            
+
             self.next_id = max(self.id_to_hash.keys()) + 1 if self.id_to_hash else 0
             logger.info(f"Loaded {len(self.id_to_chunk)} chunk metas from {HNSW_META_PATH}")
         except Exception as e:
             logger.error(f"Failed to load meta: {e}")
-    
+
     def add(self, embedding: List[float], chunk: dict) -> int:
         """Add a chunk with its embedding to the index."""
         if not self.ok or self.idx is None:
             return -1
-        
+
         try:
             i = self.next_id
             self.idx.add_items([embedding], [i])
@@ -117,23 +124,23 @@ class HNSWStore:
         except Exception as e:
             logger.error(f"HNSW add error: {e}")
             return -1
-    
+
     def add_batch(self, embeddings: List[List[float]], chunks: List[dict]) -> int:
         """Add multiple chunks at once."""
         if not self.ok or self.idx is None:
             return 0
-        
+
         added = 0
         for emb, chunk in zip(embeddings, chunks):
             if self.add(emb, chunk) >= 0:
                 added += 1
         return added
-    
+
     def search(self, embedding: List[float], k: int = 12) -> List[dict]:
         """Search for k nearest neighbors. Returns chunk metadata with text."""
         if not self.ok or self.idx is None or self.next_id == 0:
             return []
-        
+
         try:
             labels, distances = self.idx.knn_query([embedding], k=min(k, self.next_id))
             results = []
@@ -154,12 +161,12 @@ class HNSWStore:
         except Exception as e:
             logger.error(f"HNSW search error: {e}")
             return []
-    
+
     def save(self) -> bool:
         """Save the index to disk."""
         if not self.ok or self.idx is None:
             return False
-        
+
         try:
             self.idx.save_index(HNSW_INDEX_PATH)
             logger.info(f"Saved HNSW index to {HNSW_INDEX_PATH}")
@@ -167,10 +174,35 @@ class HNSWStore:
         except Exception as e:
             logger.error(f"HNSW save error: {e}")
             return False
-    
+
     @property
     def count(self) -> int:
         return self.next_id
 
 
-hnsw_store = HNSWStore()
+# ---------------------------------------------------------------------------
+# Lazy singleton — only constructed on first access.
+# This prevents the 1.2 GB init_index() allocation from happening at module
+# import time, which caused OOM kills in constrained deployment VMs.
+# ---------------------------------------------------------------------------
+_hnsw_store_instance: Optional[HNSWStore] = None
+
+
+def _get_hnsw_store() -> HNSWStore:
+    global _hnsw_store_instance
+    if _hnsw_store_instance is None:
+        _hnsw_store_instance = HNSWStore()
+    return _hnsw_store_instance
+
+
+class _LazyHNSWStore:
+    """Proxy that instantiates HNSWStore on first attribute access."""
+
+    def __getattr__(self, name: str):
+        return getattr(_get_hnsw_store(), name)
+
+    def __bool__(self) -> bool:
+        return _get_hnsw_store().ok
+
+
+hnsw_store = _LazyHNSWStore()

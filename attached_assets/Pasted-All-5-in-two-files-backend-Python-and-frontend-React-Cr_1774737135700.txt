@@ -1,0 +1,13 @@
+All 5 in two files — backend Python and frontend React.Created 2 files, read a fileCreated 2 files, read a fileTwo files. Here's exactly what each improvement does and how to wire it:
+
+Improvement 1 — Capture guidance (CaptureGuide.tsx)
+Replace your current file <input> with this component. Shows a 5-point checklist before upload, then on file select calls POST /api/visual/validate-capture and scores the image on lighting, focus, angle, face visibility, and treatment area visibility (0–100). If it fails, shows specific issues and suggestions before blocking analysis. If it passes, auto-advances after 1.5s. Clinicians can override with "Use anyway." This alone makes serial comparisons meaningful.
+Improvement 2 — Structured scores (extract_visual_scores() in vision_quality.py)
+Zero extra LLM calls. Pure regex/keyword extraction against the hardened prompt's structured output. Produces 7 trackable fields: skin_colour_change (0–3), swelling_severity (0–3), asymmetry_flag, infection_signal (0–3), ptosis_flag, fitzpatrick_type, tyndall_flag, plus a derived overall_concern_level. Call it immediately after GPT-4o returns and add visual_scores to your response payload.
+Improvement 3 — Prompt hardening (INJECTABLE_SAFETY_SYSTEM + build_injectable_safety_prompt())
+Replaces whatever system prompt visual_counseling.py currently uses. Forces GPT-4o into 5 structured sections with exact headers (PERFUSION & COLOUR, TISSUE CHANGES, etc.), bans diagnostic language, requires Fitzpatrick estimate, and demands "No abnormality observed" rather than silence when nothing is wrong. This is the single highest-ROI change — it makes the output parseable, reduces hallucination, and feeds the protocol bridge correctly.
+Improvement 4 — Fitzpatrick detection (POST /visual/fitzpatrick)
+Dedicated endpoint that returns type I–VI with confidence level, description, and three clinical implications: PIH risk, laser/energy device risk, keloid risk. Useful pre-consultation and post-complication. Add a "Skin type" tab to the Vision page or call it inline during the Analyse flow.
+Improvement 5 — Fine-tune dataset (POST /visual/training-case + /training-dataset/stats)
+Consent-gated endpoint that logs clinician-corrected ground truth against AI detections. Tracks which signals the AI got right vs wrong per case. The /stats endpoint shows progress toward fine-tune readiness (target: 500 labelled cases per complication class). At that threshold you have the training data for a model that will significantly outperform raw GPT-4o on injectable complication detection — that's the long-term moat.
+Integration is 3 lines in main.py, 3 proxy routes in routes.ts, and swapping the system prompt in visual_counseling.py.

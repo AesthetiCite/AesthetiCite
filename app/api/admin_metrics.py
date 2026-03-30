@@ -91,14 +91,36 @@ class AdminMetricsResponse(BaseModel):
     safety: SafetyMetrics
 
 
-def verify_admin_key(x_admin_api_key: Optional[str] = Header(None)):
-    """Verify admin API key from header."""
+def verify_admin_key(
+    x_admin_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+    db=Depends(get_db),
+):
+    """Verify admin access — accepts either the ADMIN_API_KEY header or a valid JWT with admin/super_admin role."""
+    # ── Path 1: API key (legacy) ─────────────────────────────────
     expected_key = os.getenv("ADMIN_API_KEY")
-    if not expected_key:
-        raise HTTPException(status_code=500, detail="Admin API key not configured")
-    if not x_admin_api_key or x_admin_api_key != expected_key:
-        raise HTTPException(status_code=403, detail="Invalid admin API key")
-    return True
+    if x_admin_api_key and expected_key and x_admin_api_key == expected_key:
+        return True
+
+    # ── Path 2: JWT Bearer token with admin/super_admin role ─────
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+        try:
+            from app.core.auth import decode_token
+            user_id = decode_token(token)
+            row = db.execute(
+                text("SELECT role FROM users WHERE id = :id AND is_active = true"),
+                {"id": user_id},
+            ).mappings().first()
+            if row and row["role"] in ("admin", "super_admin"):
+                return True
+        except Exception:
+            pass
+
+    raise HTTPException(
+        status_code=403,
+        detail="Access denied — admin role or valid API key required.",
+    )
 
 
 @router.get("", response_model=AdminMetricsResponse)

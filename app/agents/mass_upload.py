@@ -854,7 +854,7 @@ def batch_ingest(papers: List[Dict], domain: str, specialty: str) -> Tuple[int, 
         return 0, 0, 0
     import psycopg2, psycopg2.extras
     source_ids = [f"PMID_{p['pmid']}" for p in papers]
-    raw = psycopg2.connect(os.environ["DATABASE_URL"])
+    raw = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=15)
     raw.autocommit = False
     try:
         cur = raw.cursor()

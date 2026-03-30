@@ -485,11 +485,11 @@ function StatCard({ icon, label, value, sub }: {
   icon: React.ReactNode; label: string; value: string; sub: string;
 }) {
   return (
-    <div className="rounded-2xl border bg-slate-50 p-4">
-      <div className="mb-2 flex items-center gap-2 text-slate-500">{icon}</div>
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="rounded-2xl border bg-muted/30 p-4">
+      <div className="mb-2 flex items-center gap-2 text-muted-foreground">{icon}</div>
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-xl font-bold">{value}</div>
-      <div className="mt-1 text-xs text-slate-500">{sub}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
     </div>
   );
 }
@@ -502,7 +502,7 @@ function InputField({ label, value, onChange, placeholder }: {
       <label className="mb-2 block text-sm font-medium">{label}</label>
       <input value={value} onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-2xl border bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-slate-400" />
+        className="w-full rounded-2xl border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-slate-400" />
     </div>
   );
 }
@@ -514,7 +514,7 @@ function NumberInput({ label, value, setValue, min }: {
     <div>
       <label className="mb-2 block text-sm font-medium">{label}</label>
       <input type="number" min={min} value={value} onChange={e => setValue(Number(e.target.value))}
-        className="w-full rounded-2xl border bg-white px-3 py-2 text-sm focus:outline-none" />
+        className="w-full rounded-2xl border bg-background px-3 py-2 text-sm focus:outline-none" />
     </div>
   );
 }
@@ -527,7 +527,7 @@ function TextArea({ label, value, onChange, rows, placeholder }: {
       <label className="mb-2 block text-sm font-medium">{label}</label>
       <textarea value={value} onChange={e => onChange(e.target.value)} rows={rows}
         placeholder={placeholder}
-        className="w-full rounded-2xl border bg-white px-3 py-2 text-sm resize-none focus:outline-none" />
+        className="w-full rounded-2xl border bg-background px-3 py-2 text-sm resize-none focus:outline-none" />
     </div>
   );
 }
@@ -538,9 +538,9 @@ function ProtocolSection({ title, items }: { title: string; items: string[] }) {
       <div className="mb-3 text-base font-semibold">{title}</div>
       <div className="space-y-2">
         {items.map((item, i) => (
-          <div key={i} className="flex items-start gap-3 rounded-xl border bg-white p-3">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
-            <div className="text-sm text-slate-700">{item}</div>
+          <div key={i} className="flex items-start gap-3 rounded-xl border bg-card p-3">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <div className="text-sm text-foreground/80">{item}</div>
           </div>
         ))}
       </div>
@@ -556,7 +556,7 @@ function TrustBadge({ tier, confidence }: { tier: EvidenceTier; confidence: numb
         <span className={cn("h-2.5 w-2.5 rounded-full", t.dot)} />
         {t.label}
       </div>
-      <div className="mt-2 text-xs text-slate-500">Confidence: {confidence}%</div>
+      <div className="mt-2 text-xs text-muted-foreground">Confidence: {confidence}%</div>
     </div>
   );
 }
@@ -569,15 +569,15 @@ function TrustRow({ tier }: { tier: EvidenceTier }) {
         <span className={cn("h-3 w-3 rounded-full", t.dot)} />
         <span className="text-sm font-medium">{t.label}</span>
       </div>
-      <span className="text-xs text-slate-500">Rank {t.order}</span>
+      <span className="text-xs text-muted-foreground">Rank {t.order}</span>
     </div>
   );
 }
 
 function PanelRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border bg-slate-50 p-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="rounded-2xl border bg-muted/30 p-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-sm font-semibold">{value}</div>
     </div>
   );
@@ -587,15 +587,15 @@ function DocCard({ title, icon, content }: { title: string; icon: React.ReactNod
   return (
     <div className="rounded-2xl border p-4">
       <div className="mb-2 flex items-center gap-2 text-sm font-semibold">{icon}{title}</div>
-      <pre className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{content}</pre>
+      <pre className="whitespace-pre-wrap text-sm leading-6 text-foreground/80">{content}</pre>
     </div>
   );
 }
 
 function CalcCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-2xl border bg-slate-50 p-4">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="rounded-2xl border bg-muted/30 p-4">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-lg font-bold">{value}</div>
     </div>
   );
@@ -608,7 +608,7 @@ function ClinicDashboard({ analytics, savedCases, onLoadCase }: {
 }) {
   return (
     <div className="space-y-6">
-      <section className="rounded-3xl border bg-white p-5 shadow-sm">
+      <section className="rounded-3xl border bg-card p-5 shadow-sm">
         <div className="mb-4 flex items-center gap-2">
           <TrendingUp className="h-5 w-5" />
           <h2 className="text-lg font-bold">Clinic analytics dashboard</h2>
@@ -620,18 +620,18 @@ function ClinicDashboard({ analytics, savedCases, onLoadCase }: {
           <StatCard icon={<Activity className="h-4 w-4" />} label="Most frequent event" value={analytics.mostFrequent} sub="Risk tracking view" />
         </div>
       </section>
-      <section className="rounded-3xl border bg-white p-5 shadow-sm">
+      <section className="rounded-3xl border bg-card p-5 shadow-sm">
         <div className="mb-4 text-lg font-bold">Case library</div>
         {savedCases.length === 0 ? (
-          <p className="text-sm text-slate-600">No cases stored yet. Save cases to build clinic learning and analytics.</p>
+          <p className="text-sm text-muted-foreground">No cases stored yet. Save cases to build clinic learning and analytics.</p>
         ) : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {savedCases.map(c => (
               <button key={c.id} onClick={() => onLoadCase(c.id)}
-                className="rounded-2xl border p-4 text-left hover:bg-slate-50">
+                className="rounded-2xl border p-4 text-left hover:bg-muted/30">
                 <div className="font-semibold">{c.complication}</div>
-                <div className="mt-1 text-sm text-slate-600">{c.procedure} • {c.region}</div>
-                <div className="mt-2 text-xs text-slate-500">{new Date(c.createdAt).toLocaleString()} • {c.severity}</div>
+                <div className="mt-1 text-sm text-muted-foreground">{c.procedure} • {c.region}</div>
+                <div className="mt-2 text-xs text-muted-foreground">{new Date(c.createdAt).toLocaleString()} • {c.severity}</div>
               </button>
             ))}
           </div>
@@ -948,41 +948,41 @@ export default function SafetyWorkspacePage() {
   // Render
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-background text-slate-900">
       <div className="mx-auto max-w-7xl p-4 md:p-6">
 
         {/* Header */}
-        <div className="mb-6 flex flex-col gap-4 rounded-3xl border bg-white p-5 shadow-sm">
+        <div className="mb-6 flex flex-col gap-4 rounded-3xl border bg-card p-5 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <div className="mb-2 flex items-center gap-3">
                 <button onClick={() => setLocation("/")}
-                  className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-900 transition-colors">
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-slate-900 transition-colors">
                   <ArrowLeft className="h-3.5 w-3.5" /> Back
                 </button>
                 <div className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-700">
                   <AlertTriangle className="h-4 w-4" /> Complication Mode
                 </div>
                 {protocolLoading && (
-                  <div className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                  <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" /> Updating protocol…
                   </div>
                 )}
               </div>
               <h1 className="text-2xl font-bold md:text-3xl">AesthetiCite Safety Workspace</h1>
-              <p className="mt-1 text-sm text-slate-600">
+              <p className="mt-1 text-sm text-muted-foreground">
                 Live protocol retrieval from 780K+ documents · Ambient AI documentation · Evidence-first ranking · PDF export
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button onClick={() => setMode("complication")}
                 className={cn("rounded-2xl border px-4 py-2 text-sm font-medium",
-                  mode === "complication" ? "border-slate-900 bg-slate-900 text-white" : "bg-white")}>
+                  mode === "complication" ? "border-foreground bg-foreground text-background" : "bg-card")}>
                 Complication Workspace
               </button>
               <button onClick={() => setMode("dashboard")}
                 className={cn("rounded-2xl border px-4 py-2 text-sm font-medium",
-                  mode === "dashboard" ? "border-slate-900 bg-slate-900 text-white" : "bg-white")}>
+                  mode === "dashboard" ? "border-foreground bg-foreground text-background" : "bg-card")}>
                 Clinic Dashboard
               </button>
             </div>
@@ -1013,14 +1013,14 @@ export default function SafetyWorkspacePage() {
             <div className="space-y-6">
 
               {/* Emergency CTA */}
-              <section className="rounded-3xl border border-red-200 bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border border-red-200 bg-card p-5 shadow-sm">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-red-50 px-3 py-1 text-sm font-medium text-red-700">
                       <Activity className="h-4 w-4" /> Live backend retrieval active
                     </div>
                     <h2 className="text-xl font-bold">🚨 Complication happening now</h2>
-                    <p className="mt-1 text-sm text-slate-600">
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Protocol pulls live from your RAG engine. Enter context below — the protocol updates automatically.
                     </p>
                   </div>
@@ -1038,20 +1038,20 @@ export default function SafetyWorkspacePage() {
               </section>
 
               {/* Protocol selector + context */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <Stethoscope className="h-5 w-5" />
                   <h2 className="text-lg font-bold">Complication intake</h2>
-                  {protocolLoading && <Loader2 className="h-4 w-4 animate-spin text-slate-400 ml-2" />}
+                  {protocolLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground ml-2" />}
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
                     <label className="mb-2 block text-sm font-medium">What complication are you facing?</label>
                     <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                      <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                       <input value={query} onChange={e => setQuery(e.target.value)}
                         placeholder="Search complication…"
-                        className="w-full rounded-2xl border bg-white py-2 pl-9 pr-3 text-sm outline-none" />
+                        className="w-full rounded-2xl border bg-background py-2 pl-9 pr-3 text-sm outline-none" />
                     </div>
                     <div className="mt-3 max-h-80 space-y-2 overflow-auto">
                       {rankedList.map(p => {
@@ -1061,11 +1061,11 @@ export default function SafetyWorkspacePage() {
                           <button key={p.id}
                             onClick={() => { setComplicationId(p.id); setStep("identify"); setLiveProtocol(null); }}
                             className={cn("w-full rounded-2xl border p-3 text-left transition",
-                              active ? "border-slate-900 bg-slate-50" : "bg-white hover:bg-slate-50")}>
+                              active ? "border-slate-900 bg-muted/30" : "bg-card hover:bg-muted/30")}>
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <div className="font-semibold text-sm">{p.title}</div>
-                                <div className="mt-1 text-xs text-slate-500">{p.category} · {p.severity}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">{p.category} · {p.severity}</div>
                               </div>
                               <span className={cn("rounded-full border px-2 py-1 text-xs font-medium flex-shrink-0", evidence.pill)}>
                                 {evidence.label}
@@ -1088,7 +1088,7 @@ export default function SafetyWorkspacePage() {
                       <div>
                         <label className="mb-2 block text-sm font-medium">Override severity</label>
                         <select value={severityOverride} onChange={e => setSeverityOverride(e.target.value as any)}
-                          className="w-full rounded-2xl border bg-white px-3 py-2 text-sm">
+                          className="w-full rounded-2xl border bg-background px-3 py-2 text-sm">
                           <option value="">Use protocol severity</option>
                           <option>Low</option><option>Moderate</option><option>High</option><option>Critical</option>
                         </select>
@@ -1099,12 +1099,12 @@ export default function SafetyWorkspacePage() {
               </section>
 
               {/* Workflow steps */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex flex-wrap gap-2">
                   {STEP_LABELS.map((s, idx) => (
                     <button key={s.key} onClick={() => setStep(s.key)}
                       className={cn("inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-medium",
-                        step === s.key ? "border-slate-900 bg-slate-900 text-white" : "bg-white")}>
+                        step === s.key ? "border-foreground bg-foreground text-background" : "bg-card")}>
                       <span className="rounded-full border border-current px-2 py-0.5 text-xs">{idx + 1}</span>
                       {s.label}
                     </button>
@@ -1112,14 +1112,14 @@ export default function SafetyWorkspacePage() {
                 </div>
 
                 <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
-                  <div className="rounded-2xl border bg-slate-50 p-4">
+                  <div className="rounded-2xl border bg-muted/30 p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
                         <h3 className="text-lg font-bold">{selectedProtocol.title}</h3>
-                        <div className="mt-1 text-sm text-slate-500">
+                        <div className="mt-1 text-sm text-muted-foreground">
                           {selectedProtocol.category} · Severity: {effectiveSeverity}
                           {liveProtocol && <span className="ml-2 text-emerald-600 font-medium">· Live</span>}
-                          {protocolLoading && <span className="ml-2 text-slate-400">· Updating…</span>}
+                          {protocolLoading && <span className="ml-2 text-muted-foreground">· Updating…</span>}
                         </div>
                       </div>
                       <TrustBadge tier={selectedProtocol.evidenceTier} confidence={selectedProtocol.confidence} />
@@ -1191,11 +1191,11 @@ export default function SafetyWorkspacePage() {
                       <PanelRow label="Confidence score" value={`${selectedProtocol.confidence}%`} />
                     </div>
                     {selectedProtocol.recommendedDose && (
-                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="mt-4 rounded-2xl border border-border bg-muted/30 p-3">
                         <div className="flex items-center gap-2 text-sm font-semibold">
                           <Syringe className="h-4 w-4" /> Protocol dose cue
                         </div>
-                        <p className="mt-2 text-sm text-slate-700">{selectedProtocol.recommendedDose}</p>
+                        <p className="mt-2 text-sm text-foreground/80">{selectedProtocol.recommendedDose}</p>
                       </div>
                     )}
                   </div>
@@ -1203,7 +1203,7 @@ export default function SafetyWorkspacePage() {
               </section>
 
               {/* Ambient AI documentation */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <Mic className="h-5 w-5" />
@@ -1211,7 +1211,7 @@ export default function SafetyWorkspacePage() {
                   </div>
                   <button onClick={toggleListening}
                     className={cn("inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold",
-                      isListening ? "bg-red-600 text-white" : "border bg-white text-slate-900")}>
+                      isListening ? "bg-red-600 text-white" : "border bg-card text-foreground")}>
                     {isListening ? <><MicOff className="h-4 w-4" /> Stop Listening</> : <><Mic className="h-4 w-4" /> Start Ambient Capture</>}
                   </button>
                 </div>
@@ -1229,24 +1229,24 @@ export default function SafetyWorkspacePage() {
               </section>
 
               {/* Patient output + export */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <UserRound className="h-5 w-5" />
                   <h2 className="text-lg font-bold">Patient-facing output & export</h2>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="rounded-2xl border bg-slate-50 p-4 space-y-4">
+                  <div className="rounded-2xl border bg-muted/30 p-4 space-y-4">
                     <div>
                       <h3 className="font-semibold text-sm">Protocol patient summary</h3>
-                      <p className="mt-2 text-sm leading-6 text-slate-700">{selectedProtocol.patientSummary}</p>
+                      <p className="mt-2 text-sm leading-6 text-foreground/80">{selectedProtocol.patientSummary}</p>
                     </div>
                     <div>
                       <h3 className="font-semibold text-sm">Plain-language explanation</h3>
-                      <p className="mt-2 text-sm leading-6 text-slate-700">{autoDocs.patientSummary}</p>
+                      <p className="mt-2 text-sm leading-6 text-foreground/80">{autoDocs.patientSummary}</p>
                     </div>
                     <div>
                       <h3 className="font-semibold text-sm">Aftercare instructions</h3>
-                      <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                      <ul className="mt-2 space-y-2 text-sm text-foreground/80">
                         <li>• Monitor the treated area for worsening pain, colour change, or swelling.</li>
                         <li>• Follow the clinic's instructions exactly and attend all scheduled reviews.</li>
                         <li>• Seek urgent medical help immediately for vision changes, severe pain, or rapid deterioration.</li>
@@ -1255,7 +1255,7 @@ export default function SafetyWorkspacePage() {
                   </div>
                   <div className="rounded-2xl border p-4 space-y-3">
                     <h3 className="font-semibold">Clinic Safety Report</h3>
-                    <p className="text-sm text-slate-600">
+                    <p className="text-sm text-muted-foreground">
                       Legal-ready export with procedure log, timeline, treatment, evidence signal, and patient communication. PDF generated from live backend protocol when available.
                     </p>
                     <div className="flex flex-wrap gap-2 pt-2">
@@ -1282,7 +1282,7 @@ export default function SafetyWorkspacePage() {
             <div className="space-y-6">
 
               {/* Trust indicators */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <ShieldCheck className="h-5 w-5" />
                   <h2 className="text-lg font-bold">Trust indicators</h2>
@@ -1290,13 +1290,13 @@ export default function SafetyWorkspacePage() {
                 <div className="space-y-3">
                   {(["guideline","consensus","review","low"] as EvidenceTier[]).map(t => <TrustRow key={t} tier={t} />)}
                 </div>
-                <div className="mt-4 rounded-2xl border bg-slate-50 p-4">
+                <div className="mt-4 rounded-2xl border bg-muted/30 p-4">
                   <div className="text-sm font-semibold">Current evidence status</div>
                   <div className="mt-2 flex items-center gap-2">
                     <span className={cn("h-3 w-3 rounded-full", EVIDENCE_STYLE[selectedProtocol.evidenceTier].dot)} />
                     <span className="text-sm font-medium">{EVIDENCE_STYLE[selectedProtocol.evidenceTier].label}</span>
                   </div>
-                  <div className="mt-2 text-sm text-slate-600">Confidence: {selectedProtocol.confidence}%</div>
+                  <div className="mt-2 text-sm text-muted-foreground">Confidence: {selectedProtocol.confidence}%</div>
                   {liveProtocol && (
                     <div className="mt-2 text-xs text-emerald-600 font-medium">
                       ✓ Live from RAG engine · Request {liveProtocol.requestId?.slice(0,8)}
@@ -1307,9 +1307,9 @@ export default function SafetyWorkspacePage() {
                   <div className="text-sm font-semibold mb-3">Evidence sources</div>
                   <div className="space-y-2">
                     {selectedProtocol.sources.map((s, i) => (
-                      <div key={i} className="rounded-xl border bg-slate-50 p-3">
+                      <div key={i} className="rounded-xl border bg-muted/30 p-3">
                         <div className="font-medium text-sm">{s.title}</div>
-                        <div className="mt-1 text-xs text-slate-500">{s.type} · {s.year}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{s.type} · {s.year}</div>
                       </div>
                     ))}
                   </div>
@@ -1317,7 +1317,7 @@ export default function SafetyWorkspacePage() {
               </section>
 
               {/* Hyaluronidase calculator */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <Syringe className="h-5 w-5" />
                   <h2 className="text-lg font-bold">Hyaluronidase calculator</h2>
@@ -1332,27 +1332,27 @@ export default function SafetyWorkspacePage() {
                   <CalcCard label="mL needed" value={round2(hyalMlNeeded)} />
                   <CalcCard label="Vials needed" value={round2(hyalVialsNeeded)} />
                 </div>
-                <p className="mt-3 text-xs text-slate-400 leading-relaxed">
+                <p className="mt-3 text-xs text-muted-foreground leading-relaxed">
                   Calculator output is a mathematical computation only. Actual dosing must follow your clinic protocol, training, and the product prescribing information.
                 </p>
               </section>
 
               {/* Case memory */}
-              <section className="rounded-3xl border bg-white p-5 shadow-sm">
+              <section className="rounded-3xl border bg-card p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <FileText className="h-5 w-5" />
                   <h2 className="text-lg font-bold">Case memory</h2>
                 </div>
                 {savedCases.length === 0 ? (
-                  <p className="text-sm text-slate-600">No saved cases yet. Cases are also logged to the AesthetiCite dataset for anonymised audit.</p>
+                  <p className="text-sm text-muted-foreground">No saved cases yet. Cases are also logged to the AesthetiCite dataset for anonymised audit.</p>
                 ) : (
                   <div className="space-y-2">
                     {savedCases.slice(0, 8).map(c => (
                       <button key={c.id} onClick={() => loadSavedCase(c.id)}
-                        className={cn("w-full rounded-2xl border p-3 text-left hover:bg-slate-50",
-                          c.id === selectedSavedCaseId && "border-slate-900 bg-slate-50")}>
+                        className={cn("w-full rounded-2xl border p-3 text-left hover:bg-muted/30",
+                          c.id === selectedSavedCaseId && "border-slate-900 bg-muted/30")}>
                         <div className="font-medium text-sm">{c.complication}</div>
-                        <div className="mt-1 text-xs text-slate-500">
+                        <div className="mt-1 text-xs text-muted-foreground">
                           {new Date(c.createdAt).toLocaleString()} · {c.region} · {c.severity}
                         </div>
                       </button>

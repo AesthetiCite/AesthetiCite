@@ -1,520 +1,288 @@
 """
-Visual Counseling API — No-GPU edition.
-
-Endpoints:
-  POST /visual/upload       — store a patient photo
-  POST /visual/preview      — return 2D overlay preview as PNG
-  POST /ask/visual/stream   — SSE evidence-grounded long-term scenarios + complications
+app/api/visual_counseling.py
+============================
+Visual counseling FastAPI router.
+Upload endpoint now writes images to disk — survives server restarts.
 """
+
 from __future__ import annotations
 
 import io
-import json
 import logging
 import os
-import secrets
-import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
-from PIL import Image, ImageDraw, ImageEnhance
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import Response
+from PIL import Image
 
-from app.core.auth import get_current_user
-from app.core.config import settings
-from app.core.lang import detect_lang, language_label, SUPPORTED_LANGS
-from app.core.safety import safety_screen, sanitize_input
-from app.core.governance import log_governance_event, rerank_by_domain, detect_intent, validate_citations, REFUSAL_ANSWER
-from app.db.session import get_db
-from app.rag.retriever import retrieve_db
-from app.rag import async_retriever as _ar
+from app.api.visual_store import register_visual, load_image, delete_visual
 
 logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/visual", tags=["Visual Counseling"])
 
-router = APIRouter(prefix="", tags=["visual-counseling"])
-
-COMPOSE_MODEL = os.getenv("COMPOSE_MODEL", "gpt-4o-mini")
-CHUNK_CHAR_CAP = int(os.getenv("CHUNK_CHAR_CAP", "650"))
-MAX_SOURCES_TO_LLM = int(os.getenv("MAX_SOURCES_TO_LLM", "10"))
-COMPOSE_MAX_TOKENS = int(os.getenv("COMPOSE_MAX_TOKENS", "1100"))
-COMPOSE_TEMPERATURE = float(os.getenv("COMPOSE_TEMPERATURE", "0.2"))
-MEMORY_MAX_TURNS = int(os.getenv("MEMORY_MAX_TURNS", "6"))
-MEMORY_MAX_CHARS = int(os.getenv("MEMORY_MAX_CHARS", "1800"))
-
-_AI_PROXY_URL = settings.OPENAI_BASE_URL.rstrip("/") + "/chat/completions"
-
-VISUALS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS visuals (
-  id              TEXT PRIMARY KEY,
-  user_id         TEXT NOT NULL,
-  conversation_id TEXT NOT NULL,
-  kind            TEXT NOT NULL DEFAULT 'photo',
-  image_bytes     BYTEA NOT NULL,
-  created_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_visuals_user_created ON visuals(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_visuals_conv_created ON visuals(conversation_id, created_at DESC);
-"""
+ALLOWED_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"}
+ALLOWED_MIME  = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
-async def _ensure_visuals_table():
-    if _ar._pool is None:
-        return
-    async with _ar._pool.acquire() as con:
-        await con.execute(VISUALS_TABLE_SQL)
+def _detect_mime_fallback(data: bytes) -> str:
+    """Magic byte check — server-side MIME detection without libmagic dependency."""
+    if data[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return "image/webp"
+    if data[:6] in (b'GIF87a', b'GIF89a'):
+        return "image/gif"
+    return "application/octet-stream"
 
 
-def _sse(event_type: str, data: Any) -> str:
-    return f"data: {json.dumps({'type': event_type, **data} if isinstance(data, dict) else {'type': event_type, 'data': data}, ensure_ascii=False)}\n\n"
+# ─────────────────────────────────────────────────────────────────
+# Upload
+# ─────────────────────────────────────────────────────────────────
 
-
-def _img_to_png_bytes(img: Image.Image) -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
-
-
-def _make_2d_projection_preview(img: Image.Image, intensity: float) -> Image.Image:
-    base = img.convert("RGBA")
-    w, h = base.size
-
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(overlay)
-
-    cx1 = int(w * 0.38)
-    cx2 = int(w * 0.62)
-    cy = int(h * 0.42)
-
-    rx = int(w * (0.11 + 0.07 * intensity))
-    ry = int(h * (0.09 + 0.06 * intensity))
-
-    alpha = int(55 + 90 * intensity)
-
-    for cx in (cx1, cx2):
-        bbox = (cx - rx, cy - ry, cx + rx, cy + ry)
-        d.ellipse(bbox, fill=(255, 255, 255, alpha), outline=(255, 255, 255, min(180, alpha + 40)))
-
-    out = Image.alpha_composite(base, overlay)
-    out = ImageEnhance.Contrast(out.convert("RGB")).enhance(1.03)
-    return out
-
-
-async def _save_visual(user_id: str, conversation_id: str, kind: str, image_bytes: bytes) -> str:
-    vid = "v_" + secrets.token_hex(10)
-    if _ar._pool is None:
-        raise HTTPException(status_code=503, detail="Database pool not available")
-    async with _ar._pool.acquire() as con:
-        await con.execute(
-            "INSERT INTO visuals(id, user_id, conversation_id, kind, image_bytes) VALUES($1,$2,$3,$4,$5)",
-            vid, user_id, conversation_id, kind, image_bytes,
-        )
-    return vid
-
-
-async def _load_visual(visual_id: str, user_id: str) -> Dict[str, Any]:
-    if _ar._pool is None:
-        raise HTTPException(status_code=503, detail="Database pool not available")
-    async with _ar._pool.acquire() as con:
-        row = await con.fetchrow(
-            "SELECT id, kind, image_bytes, conversation_id FROM visuals WHERE id=$1 AND user_id=$2",
-            visual_id, user_id,
-        )
-    if not row:
-        raise HTTPException(status_code=404, detail="Visual not found")
-    return dict(row)
-
-
-async def _ensure_conversation(conversation_id: str, user_id: str = "") -> None:
-    if _ar._pool is None:
-        return
-    async with _ar._pool.acquire() as con:
-        await con.execute(
-            "INSERT INTO conversations(id, user_id, title) VALUES($1, NULLIF($2,''), 'Visual Counseling') ON CONFLICT DO NOTHING",
-            conversation_id, user_id,
-        )
-
-
-async def _add_message(conversation_id: str, role: str, content: str) -> None:
-    if _ar._pool is None:
-        return
-    async with _ar._pool.acquire() as con:
-        await con.execute(
-            "INSERT INTO messages(conversation_id, role, content) VALUES($1,$2,$3)",
-            conversation_id, role, content,
-        )
-
-
-async def _fetch_recent_messages(conversation_id: str, limit: int = 6) -> List[Dict[str, Any]]:
-    if _ar._pool is None:
-        return []
-    async with _ar._pool.acquire() as con:
-        rows = await con.fetch(
-            "SELECT role, content FROM messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2",
-            conversation_id, limit,
-        )
-    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
-
-
-def _compress_context(messages: List[Dict[str, Any]]) -> str:
-    parts = []
-    for m in messages[-MEMORY_MAX_TURNS:]:
-        role = "User" if m["role"] == "user" else "Assistant"
-        txt = m["content"].strip()
-        if len(txt) > 700:
-            txt = txt[:700] + "..."
-        parts.append(f"{role}: {txt}")
-    ctx = "\n".join(parts)
-    if len(ctx) > MEMORY_MAX_CHARS:
-        ctx = ctx[-MEMORY_MAX_CHARS:]
-    return ctx
-
-
-def _get_headers() -> dict:
-    return {"Content-Type": "application/json", "Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
-
-
-def _infer_evidence_type(document_type: Optional[str], journal_or_org: Optional[str]) -> str:
-    t = (document_type or "").lower()
-    j = (journal_or_org or "").lower()
-    if "guideline" in t or "consensus" in t or "recommendation" in t:
-        return "Guideline/Consensus"
-    if "systematic" in t or "meta" in t:
-        return "Systematic Review"
-    if "random" in t or "rct" in t or "trial" in t:
-        return "Randomized Trial"
-    if "cohort" in t or "case-control" in t or "observational" in t:
-        return "Observational Study"
-    if "case report" in t or "case series" in t:
-        return "Case Report/Series"
-    if "review" in t:
-        return "Narrative Review"
-    if any(x in j for x in ["nejm", "jama", "lancet", "bmj"]):
-        return "Journal Article"
-    return "Other"
-
-
-def _evidence_rank(evidence_type: str) -> int:
-    order = {
-        "Guideline/Consensus": 1, "Systematic Review": 2, "Randomized Trial": 3,
-        "Observational Study": 4, "Case Report/Series": 5, "Narrative Review": 6,
-        "Journal Article": 7, "Other": 8,
-    }
-    return order.get(evidence_type, 9)
-
-
-def _build_citations_payload(chunks: list) -> list:
-    citations = []
-    for i, c in enumerate(chunks):
-        title = c.get("title", "Unknown")
-        year = c.get("year")
-        source = c.get("organization_or_journal") or c.get("journal") or "Research Source"
-        doc_type = c.get("document_type") or c.get("evidence_level") or ""
-        et = _infer_evidence_type(doc_type, source)
-        citations.append({
-            "id": i + 1,
-            "title": title,
-            "source": source,
-            "year": year or 2024,
-            "authors": c.get("authors", "Author et al."),
-            "url": c.get("url") or "",
-            "document_type": doc_type,
-            "evidence_type": et,
-            "evidence_rank": _evidence_rank(et),
-        })
-    return citations
-
-
-async def _llm_stream(prompt: str, system: str) -> AsyncGenerator[str, None]:
-    import httpx
-    payload = {
-        "model": COMPOSE_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": COMPOSE_TEMPERATURE,
-        "max_tokens": COMPOSE_MAX_TOKENS,
-        "stream": True,
-    }
-    async with httpx.AsyncClient(timeout=None) as client:  # nosec B113
-        async with client.stream("POST", _AI_PROXY_URL, json=payload, headers=_get_headers()) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
-                chunk = line[6:].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(chunk)
-                    tok = obj["choices"][0].get("delta", {}).get("content")
-                    if tok:
-                        yield tok
-                except Exception:  # nosec B112
-                    continue
-
-
-def _build_visual_counseling_prompt(question: str, conversation_context: str, chunks: list, lang: str) -> str:
-    compact = []
-    for c in chunks[:MAX_SOURCES_TO_LLM]:
-        compact.append({
-            "sid": c.get("sid") or f"S{len(compact)+1}",
-            "t": (c.get("title") or "")[:160],
-            "y": c.get("year"),
-            "id": c.get("doi") or c.get("url"),
-            "x": (c.get("text") or "")[:CHUNK_CHAR_CAP],
-        })
-
-    lang_name = language_label(lang)
-
-    return f"""You are AesthetiCite (evidence-grounded clinical assistant for aesthetic medicine).
-
-IMPORTANT CLINICAL GOVERNANCE RULES:
-- This is patient counseling support. Do NOT promise outcomes.
-- Do NOT predict exact appearance at 10 years. Provide scenario-based ranges and drivers of change.
-- EVERY factual claim MUST include citations like [S1][S3]. No cite = no claim.
-- If evidence is insufficient, say "Evidence insufficient" (in {lang_name}).
-- Write the entire answer in {lang_name}.
-
-Write exactly in this structure:
-
-Evidence Strength Summary
-- Overall confidence (0-10)
-- Highest evidence level found
-- Supporting sources used
-- Evidence gaps
-
-Counseling Summary (2-3 lines)
-
-Expected Long-Term Trajectories (5-10 years) - scenario-based, not deterministic
-- Scenario 1 (drivers + what may change) [S#]
-- Scenario 2 ... [S#]
-
-Complications & Revision Considerations
-- Early complications (examples only if supported) [S#]
-- Late complications (capsular contracture, rupture, reoperation/revision considerations) [S#]
-
-Safety / Informed Consent Notes
-- What must be explicitly discussed (if supported) [S#]
-
-Limitations / Uncertainty
-
-Suggested Follow-up Questions
-- Q1
-- Q2
-- Q3
-
-User question: {question}
-
-Conversation context:
-{conversation_context}
-
-Sources (JSON):
-{json.dumps(compact, ensure_ascii=False)}
-""".strip()
-
-
-@router.on_event("startup")
-async def _visual_startup():
-    try:
-        await _ensure_visuals_table()
-        logger.info("Visuals table ensured")
-    except Exception as e:
-        logger.warning(f"Could not create visuals table: {e}")
-
-
-@router.post("/visual/upload")
-async def visual_upload(
-    conversation_id: str = Form(...),
-    kind: str = Form("photo"),
+@router.post("/upload")
+async def upload_visual(
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
+    conversation_id: str = Form(default=""),
+    kind: str = Form(default="photo"),
+    authorization: Optional[str] = Header(default=None),
 ):
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image uploads are supported")
-
-    if _ar._pool is None:
-        raise HTTPException(status_code=503, detail="Database pool not available")
-
-    async with _ar._pool.acquire() as con:
-        own = await con.fetchval(
-            "SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2",
-            conversation_id, user["id"],
+    """
+    Upload a clinical photo.
+    Image is written to disk immediately — persists across server restarts.
+    Returns a visual_id to reference in subsequent analysis calls.
+    """
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.content_type}. "
+                   f"Accepted: jpeg, png, webp, gif.",
         )
-        if not own:
-            raise HTTPException(status_code=404, detail="Conversation not found")
 
-    data = await file.read()
-    if len(data) > 7_000_000:
-        raise HTTPException(status_code=400, detail="Image too large (max 7MB)")
+    image_bytes = await file.read()
 
+    if len(image_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({len(image_bytes):,} bytes). Maximum: 20 MB.",
+        )
+
+    if len(image_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    # Server-side magic bytes validation (independent of client-sent Content-Type)
+    detected_mime = _detect_mime_fallback(image_bytes)
+    if detected_mime not in ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content does not match an allowed image type (detected: {detected_mime}).",
+        )
+
+    # Validate it's actually a decodable image using PIL
     try:
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(image_bytes))
         img.verify()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid image file")
+        raise HTTPException(status_code=400, detail="File is not a valid image.")
 
-    vid = await _save_visual(user["id"], conversation_id, kind, data)
-    return {"ok": True, "visual_id": vid, "kind": kind}
+    visual_id = str(uuid.uuid4())
+    content_type = file.content_type or "image/jpeg"
 
+    # Write to disk — persists across restarts
+    disk_path = register_visual(visual_id, image_bytes, content_type)
+    logger.info(
+        f"[VisualUpload] visual_id={visual_id} "
+        f"size={len(image_bytes):,}b kind={kind} path={disk_path}"
+    )
 
-class PreviewBody(BaseModel):
-    visual_id: str
-    intensity_0_1: float = 0.5
-
-
-@router.post("/visual/preview")
-async def visual_preview(body: PreviewBody, user: dict = Depends(get_current_user)):
-    v = await _load_visual(body.visual_id, user["id"])
-    intensity = max(0.0, min(1.0, body.intensity_0_1))
-
-    img = Image.open(io.BytesIO(v["image_bytes"])).convert("RGB")
-    max_w = 900
-    if img.size[0] > max_w:
-        ratio = max_w / img.size[0]
-        img = img.resize((max_w, int(img.size[1] * ratio)))
-
-    out = _make_2d_projection_preview(img, intensity)
-    png = _img_to_png_bytes(out)
-
-    return Response(content=png, media_type="image/png")
+    return {
+        "ok": True,
+        "visual_id": visual_id,
+        "kind": kind,
+        "conversation_id": conversation_id,
+        "size_bytes": len(image_bytes),
+        "content_type": content_type,
+    }
 
 
-class AskVisualBody(BaseModel):
-    q: str
-    conversation_id: str
-    visual_id: Optional[str] = None
-    k: int = 14
-    lang: Optional[str] = None
+# ─────────────────────────────────────────────────────────────────
+# Preview (thumbnail with optional annotation overlay)
+# ─────────────────────────────────────────────────────────────────
+
+@router.post("/preview")
+async def visual_preview(payload: dict):
+    """
+    Return a PNG thumbnail of the uploaded image.
+    Optionally overlays a brightness/contrast adjustment via intensity_0_1.
+    """
+    visual_id = payload.get("visual_id", "")
+    intensity = float(payload.get("intensity_0_1", 0.5))
+
+    image_bytes = load_image(visual_id)
+    if not image_bytes:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Visual ID '{visual_id}' not found.",
+        )
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+        # Resize to thumbnail
+        img.thumbnail((800, 800), Image.LANCZOS)
+
+        # Apply intensity as brightness enhancement
+        from PIL import ImageEnhance
+        factor = 0.6 + (intensity * 0.8)  # range: 0.6 – 1.4
+        img = ImageEnhance.Brightness(img).enhance(factor)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        buf.seek(0)
+        return Response(content=buf.read(), media_type="image/png")
+
+    except Exception as e:
+        logger.error(f"[VisualPreview] Failed for {visual_id}: {e}")
+        raise HTTPException(status_code=500, detail="Preview generation failed.")
 
 
-@router.post("/ask/visual/stream")
-async def ask_visual_stream(body: AskVisualBody, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    q = sanitize_input(body.q or "")
-    if not q:
-        return StreamingResponse(iter([_sse("error", {"message": "Empty query"})]), media_type="text/event-stream")
+# ─────────────────────────────────────────────────────────────────
+# Delete (ephemeral mode)
+# ─────────────────────────────────────────────────────────────────
 
-    safety = safety_screen(q)
-    if not safety.allowed:
-        async def refuse():
-            yield _sse("error", {"message": safety.refusal_reason or "Request refused."})
-        return StreamingResponse(refuse(), media_type="text/event-stream")
+@router.delete("/delete/{visual_id}")
+async def delete_visual_endpoint(visual_id: str):
+    """
+    Delete image from disk and memory.
+    Called when ephemeral mode is enabled or when the clinician
+    explicitly removes the image after analysis.
+    """
+    deleted = delete_visual(visual_id)
+    return {
+        "visual_id": visual_id,
+        "deleted": deleted,
+        "message": (
+            "Image deleted from server. No image data is retained."
+            if deleted else
+            "Visual ID not found — may have already been deleted."
+        ),
+    }
 
-    cid = body.conversation_id.strip()
-    if not cid:
-        raise HTTPException(status_code=400, detail="conversation_id required")
 
-    if _ar._pool is not None:
-        async with _ar._pool.acquire() as con:
-            own = await con.fetchval("SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2", cid, user["id"])
-            if not own:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+# ─────────────────────────────────────────────────────────────────
+# Streaming visual Q&A
+# Proxies to the VeriDoc engine with image context attached.
+# ─────────────────────────────────────────────────────────────────
 
-    async def gen() -> AsyncGenerator[str, None]:
-        import asyncio
-        t0 = time.perf_counter()
-        yield _sse("status", {"phase": "retrieval", "message": "Searching evidence..."})
-        await _add_message(cid, "user", q)
+import base64
+import json
+import os
+from fastapi.responses import StreamingResponse
+from openai import OpenAI
 
-        recent = await _fetch_recent_messages(cid, limit=MEMORY_MAX_TURNS)
-        ctx = _compress_context(recent)
 
-        lang = (body.lang or "").strip().lower() if body.lang else None
-        if lang not in SUPPORTED_LANGS:
-            lang = detect_lang(q)
+def _get_client() -> OpenAI:
+    return OpenAI(
+        api_key=os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY"),
+        base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL"),
+    )
 
-        t_r0 = time.perf_counter()
-        if _ar._pool is not None:
-            chunks = await _ar.retrieve_db_async(question=q, domain="aesthetic_medicine", k=body.k)
-        else:
-            chunks = await asyncio.to_thread(retrieve_db, db=db, question=q, domain="aesthetic_medicine", k=body.k)
-        t_r1 = time.perf_counter()
 
-        intent = detect_intent(q)
-        chunks = rerank_by_domain(chunks, intent)
+from app.engine.vision_quality import (
+    INJECTABLE_SAFETY_SYSTEM,
+    build_injectable_safety_prompt,
+    extract_visual_scores,
+)
 
-        enriched = []
-        for s in chunks:
-            s2 = dict(s)
-            et = _infer_evidence_type(s2.get("document_type"), s2.get("organization_or_journal") or s2.get("journal"))
-            s2["evidence_type"] = et
-            s2["evidence_rank"] = _evidence_rank(et)
-            enriched.append(s2)
 
-        enriched.sort(key=lambda s: (int(s.get("evidence_rank") or 9), -int(s.get("year") or 0)))
+async def _stream_visual_answer(
+    question: str,
+    visual_id: str,
+    lang: str = "en",
+):
+    from app.engine.vision_protocol_bridge import detect_protocols_from_vision_text, build_protocol_alert_sse
 
-        citations_payload = _build_citations_payload(enriched)
+    image_bytes = load_image(visual_id)
+    if not image_bytes:
+        yield f"data: {json.dumps({'type': 'error', 'message': f'Visual ID {visual_id!r} not found.'})}\n\n"
+        return
 
-        aci_score = None
-        try:
-            from app.engine.veridoc import compute_aci
-            aci_sources = [{"source_type": c.get("document_type") or "other", "year": c.get("year"), "id": c.get("source_id") or c.get("id")} for c in enriched]
-            aci_score = compute_aci(aci_sources)
-        except Exception:  # nosec B110
-            pass
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        yield _sse("sources", {"count": len(enriched), "ms": int((t_r1 - t_r0) * 1000)})
-        yield _sse("citations", {"citations": citations_payload, "aci_score": aci_score})
+    client = _get_client()
+    full_analysis = ""
+    user_prompt = build_injectable_safety_prompt(
+        question or "Describe what you see in this clinical photo.",
+    )
+    try:
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": INJECTABLE_SAFETY_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64}",
+                        "detail": "high",
+                    }},
+                    {"type": "text", "text": user_prompt},
+                ]},
+            ],
+            max_tokens=1500,
+            temperature=0.15,
+            stream=True,
+        )
+        for chunk in stream:
+            token = (chunk.choices[0].delta.content or "") if chunk.choices else ""
+            if token:
+                full_analysis += token
+                yield f"data: {json.dumps({'type': 'content', 'data': token})}\n\n"
+    except Exception as e:
+        logger.error(f"[VisualStream] Error: {e}")
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:120]})}\n\n"
+        return
 
-        if await request.is_disconnected():
-            return
+    # ── Structured scores (Improvement 2) ──────────────────────────────────
+    try:
+        scores = extract_visual_scores(full_analysis)
+        yield f"data: {json.dumps({'type': 'visual_scores', 'data': scores.dict()})}\n\n"
+    except Exception as _se:
+        logger.warning(f"[VisualStream] Score extraction error (non-fatal): {_se}")
 
-        if not enriched or len(enriched) < 2:
-            yield _sse("error", {"message": "Insufficient evidence to provide counseling with citations."})
-            return
+    # ── Vision Protocol Bridge ──────────────────────────────────────────────
+    try:
+        triggered = detect_protocols_from_vision_text(full_analysis, query=question)
+        if triggered:
+            alert = build_protocol_alert_sse(triggered)
+            yield f"data: {json.dumps(alert)}\n\n"
+    except Exception as _pe:
+        logger.warning(f"[VisualStream] Protocol bridge error (non-fatal): {_pe}")
 
-        prompt = _build_visual_counseling_prompt(q, ctx, enriched, lang)
-        yield _sse("status", {"phase": "answer", "message": "Generating grounded counseling note..."})
-        yield _sse("replace", {"message": "Visual counseling response:"})
+    yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-        t_c0 = time.perf_counter()
-        buf: List[str] = []
 
-        try:
-            async for tok in _llm_stream(prompt, "Be concise. Follow citation rules exactly. No invented facts. This is visual counseling support."):
-                buf.append(tok)
-                yield _sse("content", tok)
-                if await request.is_disconnected():
-                    return
-        except Exception as e:
-            logger.error(f"Visual counseling LLM stream failed: {e}")
-            yield _sse("error", {"message": "Answer generation failed."})
-            return
+@router.post("/stream")
+async def visual_stream(payload: dict):
+    """
+    Streaming visual Q&A endpoint.
+    Loads image from disk (persistent) and streams a clinical answer.
+    """
+    question   = payload.get("q", "")
+    visual_id  = payload.get("visual_id", "")
+    lang       = payload.get("lang", "en")
 
-        answer_text = "".join(buf).strip()
+    if not visual_id:
+        raise HTTPException(status_code=400, detail="visual_id is required.")
 
-        citation_valid = validate_citations(answer_text)
-        if not citation_valid:
-            yield _sse("replace", {"message": "Citation validation:"})
-            yield _sse("content", REFUSAL_ANSWER)
-            answer_text = REFUSAL_ANSWER
-
-        yield _sse("related", [])
-
-        try:
-            await _add_message(cid, "assistant", answer_text)
-        except Exception as e:
-            logger.warning(f"Failed to store visual counseling message: {e}")
-
-        total_ms = int((time.perf_counter() - t0) * 1000)
-        yield _sse("done", {"total_ms": total_ms, "conversation_id": cid})
-
-        try:
-            gov_source_ids = [c.get("source_id") or c.get("id") or f"S{i+1}" for i, c in enumerate(enriched)]
-            gov_aci = aci_score.get("overall_confidence_0_10") if isinstance(aci_score, dict) else aci_score
-            log_governance_event(
-                question=f"[VISUAL] {q}",
-                source_ids=gov_source_ids,
-                aci_score=gov_aci,
-                answer_text=answer_text,
-                lang=lang,
-                total_ms=total_ms,
-                evidence_badge=None,
-                citation_valid=citation_valid,
-            )
-        except Exception as e:
-            logger.warning(f"Governance log error: {e}")
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_visual_answer(question, visual_id, lang),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection":    "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

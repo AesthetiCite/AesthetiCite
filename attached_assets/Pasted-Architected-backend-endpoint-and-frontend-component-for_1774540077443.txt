@@ -1,0 +1,34 @@
+Architected backend endpoint and frontend component for differential diagnosisArchitected backend endpoint and frontend component for differential diagnosisGood. I have everything I need. Building two files:
+
+Backend — app/api/visual_differential.py — new FastAPI endpoint that produces structured ranked differential from image
+Frontend — client/src/components/VisualDifferential.tsx — the output component that renders it
+Created 2 files, read a fileCreated 2 files, read a fileTwo production-ready files. Here's exactly what to do with them.
+Backend — visual_differential.py
+Drop into app/api/. Then in main.py add:
+pythonfrom app.api.visual_differential import router as visual_diff_router
+app.include_router(visual_diff_router, prefix="/api/visual")
+Also in server/routes.ts, add one proxy line:
+typescriptapp.post("/api/visual/differential", (req, res) => proxyToFastAPI(req, res, "/api/visual/differential"));
+Frontend — VisualDifferential.tsx
+Drop into client/src/components/. Then in your /visual-counsel page, after the existing upload section:
+tsximport { VisualDifferential } from "@/components/VisualDifferential";
+
+{visualId && (
+  <VisualDifferential
+    visualId={visualId}
+    token={token}
+    injectedRegion={region}
+    productType={product}
+    clinicalContext={contextNote}
+  />
+)}
+What it now does that didn't exist before:
+
+Ranked differential with 3–5 diagnoses (most likely / possible / rule out)
+Confidence score per diagnosis with visual bar
+Auto-triggers vascular occlusion protocol if blanching/livedo detected → redirects to /emergency?protocol=vascular_occlusion_ha_filler
+Immediate actions card fires automatically for urgent/immediate cases
+Evidence citations per differential
+Expandable diagnosis cards — clinicians can drill into findings
+
+One note: the image bytes from the existing upload endpoint need to be accessible to the differential engine. The file includes a register_visual() function — call it from your existing upload handler when an image is stored.

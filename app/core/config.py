@@ -8,10 +8,21 @@ class Settings(BaseSettings):
     APP_NAME: str = "AesthetiCite"
     ENV: str = "dev"
 
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+psycopg://localhost/evidentia")
+    DATABASE_URL: str = (
+        os.getenv("NEON_DATABASE_URL")
+        or os.getenv("DATABASE_URL", "postgresql+psycopg://localhost/evidentia")
+    )
 
-    OPENAI_API_KEY: str = os.getenv("AI_INTEGRATIONS_OPENAI_API_KEY", "")
-    OPENAI_BASE_URL: str = os.getenv("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    # On Replit: set by the AI integration (AI_INTEGRATIONS_OPENAI_API_KEY).
+    # On Railway / any other host: set OPENAI_API_KEY instead.
+    OPENAI_API_KEY: str = (
+        os.getenv("AI_INTEGRATIONS_OPENAI_API_KEY")
+        or os.getenv("OPENAI_API_KEY", "")
+    )
+    OPENAI_BASE_URL: str = (
+        os.getenv("AI_INTEGRATIONS_OPENAI_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    )
 
     # Operational limits
     MAX_CONTEXT_CHARS: int = 12000
@@ -32,7 +43,7 @@ class Settings(BaseSettings):
 
     # Answer quality
     MAX_SOURCES_IN_PROMPT: int = 8
-    MAX_CHARS_PER_SOURCE: int = 1400
+    MAX_CHARS_PER_SOURCE: int = 900
     LLM_TEMPERATURE: float = 0.1  # Low temperature for deterministic, less hallucinatory responses
 
     # RAG

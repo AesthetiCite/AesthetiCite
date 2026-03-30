@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { Search, LogOut, Loader2, AlertTriangle, FileText, Sparkles, ExternalLink, ChevronRight, ChevronDown, ChevronUp, BookOpen, Shield, User, Calculator, PanelLeftClose, PanelLeft, Plus, MessageCircle, Send, Pin, PinOff, Tag, Eye, Copy, ClipboardCheck, BarChart3, AlertCircle, Info, StopCircle, Clock, Syringe, Zap, ShieldAlert, Microscope, Bookmark, Pill, FileUser, Key, LayoutDashboard, Bell, ClipboardCheck as SessionIcon, MoreHorizontal, Menu, Database } from "lucide-react";
+import { Search, LogOut, Loader2, AlertTriangle, FileText, Sparkles, ExternalLink, ChevronRight, ChevronDown, ChevronUp, BookOpen, Shield, User, Calculator, PanelLeftClose, PanelLeft, Plus, MessageCircle, Send, Pin, PinOff, Tag, Eye, Copy, ClipboardCheck, BarChart3, AlertCircle, Info, StopCircle, Clock, Syringe, Zap, ShieldAlert, Microscope, Bookmark, Pill, FileUser, Key, LayoutDashboard, Bell, ClipboardCheck as SessionIcon, MoreHorizontal, Menu, Database, Home } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Link } from "wouter";
@@ -15,6 +15,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { LanguageSelector } from "@/components/language-selector";
 import { EvidencePanel, TopEvidenceBadge, type Citation as EHCitation } from "@/components/evidence-hierarchy-badge";
 import { useLocale } from "@/hooks/use-locale";
+import { useSessionTracker } from "@/hooks/use-session-tracker";
 import { BRAND } from "@/config";
 import { getToken, clearToken, getMe, askQuestionStream, askQuestionStreamV2, askQuestionOE, getUserDisplayName, createConversation, listConversations, deleteConversation, getConversationMessages, type AskOEResponse, type Citation, type QueryMeta, type ComplicationProtocol, type InlineTool, type ConversationItem } from "@/lib/auth";
 import { ACIScoreDisplay } from "@/components/aci-score-display";
@@ -27,6 +28,7 @@ import { useToast } from "@/hooks/use-toast";
 import { X } from "lucide-react";
 import { VoiceInput } from "@/components/voice-input";
 import { ExportShare } from "@/components/export-share";
+import { EmergencyDropdown, MHRABadge } from "@/components/ClinicalUIKit";
 import { FavoritesButton } from "@/components/favorites-button";
 import { ClinicalToolsPanel } from "@/components/clinical-tools-panel";
 import { ClinicalReasoningSection } from "@/components/clinical-reasoning";
@@ -41,6 +43,7 @@ import { SidebarSafetyNav } from "@/components/sidebar-safety-nav";
 import { ProtocolCard, type ProtocolCardData } from "@/components/protocol-card";
 import { SafetyEscalationBlock, type SafetyAssessment } from "@/components/safety-escalation-block";
 import { ComplicationQuickStart } from "@/components/complication-quick-start";
+import { MoreMenu } from "@/components/more-menu";
 
 interface ParsedSections {
   evidenceSummary?: string;
@@ -191,10 +194,13 @@ export default function AskPage() {
     staleTime: 10 * 60 * 1000,
   });
   const corpusLabel = corpusStats?.papers_inserted
-    ? `${Math.floor(corpusStats.papers_inserted / 1000)}K+`
-    : "825K+";
+    ? corpusStats.papers_inserted >= 1_000_000
+      ? `${(corpusStats.papers_inserted / 1_000_000).toFixed(1)}M+`
+      : `${Math.floor(corpusStats.papers_inserted / 1000).toLocaleString()}K+`
+    : "1.9M+";
   const STREAMING_PHASES = buildStreamingPhases(corpusLabel);
   const [token, setTokenState] = useState<string | null>(null);
+  const { trackQuery } = useSessionTracker(token);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [input, setInput] = useState("");
   const [domain, setDomain] = useState("aesthetic_medicine");
@@ -319,6 +325,26 @@ export default function AskPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, autoScroll]);
 
+  const [pendingUrlQuery, setPendingUrlQuery] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get("q");
+    if (q && q.trim()) {
+      window.history.replaceState({}, "", "/ask");
+      return q.trim();
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (!pendingUrlQuery || !token) return;
+    setInput(pendingUrlQuery);
+    const timer = setTimeout(() => {
+      handleAsk(pendingUrlQuery);
+      setPendingUrlQuery(null);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [pendingUrlQuery, token]);
+
   function loadConversations(userId?: string) {
     const uid = userId || user?.id;
     if (!uid) return;
@@ -436,6 +462,7 @@ export default function AskPage() {
     setIsLoading(true);
     setActiveSources([]);
     recordQuery();
+    trackQuery();
     saveRecentSearch(questionToAsk);
 
     let convId = activeConversationId;
@@ -766,7 +793,7 @@ export default function AskPage() {
         />
       )}
       <aside
-        className={`${sidebarOpen ? "w-72" : "w-0"} transition-all duration-300 ease-in-out border-r bg-muted/30 flex-shrink-0 overflow-hidden fixed md:relative z-50 md:z-auto h-full bg-background md:bg-muted/30`}
+        className={`${sidebarOpen ? "w-72" : "w-0"} transition-all duration-300 ease-in-out border-r border-sidebar-border bg-sidebar text-sidebar-foreground flex-shrink-0 overflow-hidden fixed md:relative z-50 md:z-auto h-full`}
         data-testid="sidebar-history"
       >
         <div className="w-72 h-full flex flex-col">
@@ -791,6 +818,16 @@ export default function AskPage() {
           </div>
 
           <div className="p-3 space-y-2">
+            <Link href="/home">
+              <Button
+                className="w-full justify-start gap-2 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                variant="ghost"
+                data-testid="button-go-home"
+              >
+                <Home className="w-4 h-4" />
+                All Tools
+              </Button>
+            </Link>
             <Button
               className="w-full justify-start gap-2"
               variant="outline"
@@ -906,44 +943,42 @@ export default function AskPage() {
                   <PanelLeft className="w-4 h-4" />
                 </Button>
               )}
-              <div className="hidden sm:flex items-center gap-2.5">
-                <img
-                  src="/aestheticite-logo.png"
-                  alt="AesthetiCite"
-                  className="w-8 h-8 object-contain rounded-lg"
-                  data-testid="img-header-logo"
-                />
-                <span className="text-lg font-semibold tracking-tight">{BRAND.name}</span>
-              </div>
+              <Link href="/ask">
+                <div className="hidden sm:flex items-center gap-2.5 cursor-pointer hover:opacity-80 transition-opacity">
+                  <img
+                    src="/aestheticite-logo.png"
+                    alt="AesthetiCite"
+                    className="w-8 h-8 object-contain rounded-lg"
+                    data-testid="img-header-logo"
+                  />
+                  <span className="text-lg font-semibold tracking-tight">{BRAND.name}</span>
+                </div>
+              </Link>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               {activeSources.length > 0 && (
                 <Badge variant="secondary" className="hidden md:flex items-center gap-1.5 text-xs" data-testid="badge-active-sources">
                   <BookOpen className="w-3 h-3" />
                   {activeSources.length} sources
                 </Badge>
               )}
-              <Badge variant="secondary" className="hidden md:flex items-center gap-1.5 text-xs">
+              <Badge variant="secondary" className="hidden lg:flex items-center gap-1.5 text-xs">
                 <BookOpen className="w-3 h-3" />
                 {BRAND.publicationsLabel}
               </Badge>
-              <Link href="/ask-oe">
-                <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs h-8" data-testid="button-ask-oe" title="Structured Evidence View">
-                  <FileText className="w-3.5 h-3.5" />
-                  <span>Evidence</span>
-                </Button>
-              </Link>
-              <Link href="/hardest-10">
-                <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs h-8" data-testid="button-hardest10" title="10 Hardest Questions vs General AI">
-                  <BarChart3 className="w-3.5 h-3.5" />
-                  <span>Challenge</span>
-                </Button>
-              </Link>
+
+              {/* Emergency — dropdown with 3 quick-access protocols (Alt+E) */}
+              <div className="hidden md:flex">
+                <EmergencyDropdown />
+              </div>
+              <MHRABadge compact />
+
+              {/* Safety */}
               <Link href="/safety-check">
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="hidden md:flex items-center gap-1.5 text-xs h-8 border-blue-200 text-blue-700 hover:bg-blue-50 hover:border-blue-400 dark:border-blue-800 dark:text-blue-400"
+                  className="hidden md:flex items-center gap-1.5 text-xs h-8"
                   data-testid="button-safety-check"
                   title="Pre-Procedure Safety Check"
                 >
@@ -951,48 +986,33 @@ export default function AskPage() {
                   <span>Safety</span>
                 </Button>
               </Link>
-              <Link href="/decide">
+
+              {/* Vision */}
+              <Link href="/vision-analysis">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="hidden md:flex items-center gap-1.5 text-xs h-8 text-orange-600 hover:bg-orange-50 hover:text-orange-700 dark:text-orange-400 dark:hover:bg-orange-950/30"
-                  data-testid="button-decide"
-                  title="Complication Clinical Decision"
+                  className="hidden md:flex items-center gap-1.5 text-xs h-8"
+                  data-testid="button-vision-analysis"
+                  title="Complication Vision Engine"
                 >
-                  <Shield className="w-3.5 h-3.5" />
-                  <span>Decide</span>
-                </Button>
-              </Link>
-              <Link href="/emergency">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="hidden md:flex items-center gap-1.5 text-xs h-8 bg-red-600 hover:bg-red-700 text-white border-0"
-                  data-testid="button-emergency"
-                  title="Emergency Complication Protocols"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>Emergency</span>
-                </Button>
-              </Link>
-              <Link href="/visual-counsel">
-                <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs h-8" data-testid="button-visual-counsel" title="Visual Counseling">
                   <Eye className="w-3.5 h-3.5" />
-                  <span>Visuals</span>
+                  <span>Vision</span>
                 </Button>
               </Link>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="hidden sm:flex items-center gap-1.5 text-xs h-8"
-                onClick={() => setShowClinicalTools(true)}
-                data-testid="button-clinical-tools-header"
-                title="Clinical Tools — BMI, BSA, eGFR, Unit Converter"
-              >
-                <Calculator className="w-3.5 h-3.5" />
-                <span>Tools</span>
-              </Button>
-              {/* Mobile full-nav sheet — visible only below md breakpoint */}
+
+              {/* Language selector — always visible on desktop */}
+              <div className="hidden md:flex">
+                <LanguageSelector />
+              </div>
+
+              {/* Tools panel — merges calculators + all features */}
+              <MoreMenu
+                isAdmin={user?.email === "support@aestheticite.com"}
+                onOpenCalculators={() => setShowClinicalTools(true)}
+              />
+
+              {/* Mobile full-nav sheet */}
               <Sheet>
                 <SheetTrigger asChild>
                   <Button variant="ghost" size="icon" className="flex md:hidden h-8 w-8" data-testid="button-mobile-menu">
@@ -1003,41 +1023,40 @@ export default function AskPage() {
                   <SheetHeader className="mb-4">
                     <SheetTitle className="text-left">Navigation</SheetTitle>
                   </SheetHeader>
-                  <div className="space-y-6 text-sm">
-                    <Link href="/emergency" className="flex items-center gap-3 rounded-lg px-3 py-3 bg-red-600 text-white font-bold hover:bg-red-700 transition-colors">
-                      <Zap className="h-4 w-4" />Emergency Protocols
+                  <div className="space-y-5 text-sm">
+                    {/* Language at top */}
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Language</p>
+                      <LanguageSelector />
+                    </div>
+                    {/* Emergency prominent */}
+                    <Link href="/emergency" className="flex items-center gap-3 rounded-lg px-3 py-2.5 bg-red-50 text-red-700 font-semibold hover:bg-red-100 transition-colors">
+                      <Zap className="h-4 w-4" />Emergency
                     </Link>
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Search</p>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Clinical</p>
                       <div className="space-y-1">
-                        <Link href="/ask" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Search className="h-4 w-4" />AesthetiCite Search</Link>
+                        <Link href="/ask" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Search className="h-4 w-4" />Search</Link>
+                        <Link href="/safety-check" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><ShieldAlert className="h-4 w-4" />Safety Check</Link>
+                        <Link href="/vision-analysis" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Eye className="h-4 w-4" />Vision Analysis</Link>
+                        <Link href="/drug-interactions" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Pill className="h-4 w-4" />Drug Interactions</Link>
                         <Link href="/ask-oe" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><FileText className="h-4 w-4" />Structured Evidence</Link>
                         <Link href="/hardest-10" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><BarChart3 className="h-4 w-4" />Challenge Mode</Link>
                       </div>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Safety &amp; Tools</p>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Session</p>
                       <div className="space-y-1">
-                        <Link href="/safety-check" className="flex items-center gap-3 rounded-lg px-3 py-2 bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100 transition-colors">
-                          <ShieldAlert className="h-4 w-4" />Pre-Procedure Safety
-                        </Link>
-                        <Link href="/session-report" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><SessionIcon className="h-4 w-4" />Session Safety Report</Link>
-                        <Link href="/drug-interactions" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Pill className="h-4 w-4" />Drug Interactions</Link>
+                        <Link href="/session-report" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><SessionIcon className="h-4 w-4" />Session Report</Link>
                         <Link href="/patient-export" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><FileUser className="h-4 w-4" />Patient Export</Link>
-                        <Link href="/case-log" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Database className="h-4 w-4" />Case Log</Link>
-                        <Link href="/visual-counsel" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Eye className="h-4 w-4" />Visual Counseling</Link>
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">My Account</p>
-                      <div className="space-y-1">
                         <Link href="/bookmarks" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Bookmark className="h-4 w-4" />Saved Answers</Link>
-                        <Link href="/paper-alerts" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Bell className="h-4 w-4" />Paper Alerts</Link>
+                        <Link href="/case-log" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Database className="h-4 w-4" />Case Log</Link>
                       </div>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Clinic</p>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Account</p>
                       <div className="space-y-1">
+                        <Link href="/paper-alerts" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Bell className="h-4 w-4" />Paper Alerts</Link>
                         <Link href="/clinic-dashboard" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><LayoutDashboard className="h-4 w-4" />Clinic Dashboard</Link>
                         <Link href="/api-keys" className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted transition-colors"><Key className="h-4 w-4" />API Keys</Link>
                       </div>
@@ -1046,69 +1065,7 @@ export default function AskPage() {
                 </SheetContent>
               </Sheet>
 
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1 text-xs h-8" data-testid="button-more-menu">
-                    <MoreHorizontal className="w-3.5 h-3.5" />
-                    <span>More</span>
-                    <ChevronDown className="w-3 h-3 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Clinical</DropdownMenuLabel>
-                  <DropdownMenuItem asChild>
-                    <Link href="/emergency" className="flex items-center gap-2 cursor-pointer text-red-600">
-                      <Zap className="h-4 w-4" />Emergency Protocols
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/drug-interactions" className="flex items-center gap-2 cursor-pointer">
-                      <Pill className="h-4 w-4 text-muted-foreground" />Drug Interaction Checker
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/session-report" className="flex items-center gap-2 cursor-pointer">
-                      <SessionIcon className="h-4 w-4 text-muted-foreground" />Session Safety Report
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/patient-export" className="flex items-center gap-2 cursor-pointer">
-                      <FileUser className="h-4 w-4 text-muted-foreground" />Patient-Readable Export
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/case-log" className="flex items-center gap-2 cursor-pointer">
-                      <Database className="h-4 w-4 text-muted-foreground" />Case Log
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>My Account</DropdownMenuLabel>
-                  <DropdownMenuItem asChild>
-                    <Link href="/bookmarks" className="flex items-center gap-2 cursor-pointer">
-                      <Bookmark className="h-4 w-4 text-muted-foreground" />Saved Answers
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/paper-alerts" className="flex items-center gap-2 cursor-pointer">
-                      <Bell className="h-4 w-4 text-muted-foreground" />Paper Alerts
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>Clinic</DropdownMenuLabel>
-                  <DropdownMenuItem asChild>
-                    <Link href="/clinic-dashboard" className="flex items-center gap-2 cursor-pointer">
-                      <LayoutDashboard className="h-4 w-4 text-muted-foreground" />Clinic Dashboard
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/api-keys" className="flex items-center gap-2 cursor-pointer">
-                      <Key className="h-4 w-4 text-muted-foreground" />API Keys
-                    </Link>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
               <UsageIndicator />
-              <LanguageSelector />
               <ThemeToggle />
             </div>
           </div>
@@ -1341,6 +1298,29 @@ export default function AskPage() {
                         />
                         {msg.protocolCard && !msg.isStreaming && (
                           <ProtocolCard data={msg.protocolCard} />
+                        )}
+
+                        {!msg.isStreaming && msg.content && !msg.isRefusal && idx === messages.length - 1 && (
+                          <div className="flex flex-wrap gap-2 pt-2 border-t border-border/40" data-testid="section-post-answer-actions">
+                            <Link href="/safety-check">
+                              <button className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors" data-testid="button-action-safety">
+                                <ShieldAlert className="w-3.5 h-3.5" />
+                                Safety Check
+                              </button>
+                            </Link>
+                            <Link href="/emergency">
+                              <button className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors" data-testid="button-action-emergency">
+                                <Zap className="w-3.5 h-3.5" />
+                                Emergency Protocol
+                              </button>
+                            </Link>
+                            <Link href="/decide">
+                              <button className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400 border border-orange-200 dark:border-orange-800 hover:bg-orange-100 dark:hover:bg-orange-900/40 transition-colors" data-testid="button-action-decide">
+                                <Microscope className="w-3.5 h-3.5" />
+                                Differential
+                              </button>
+                            </Link>
+                          </div>
                         )}
                       </>
                     )}
@@ -1866,6 +1846,26 @@ function StructuredAnswer({ msg, lastQuestion, onRelatedQuestion, onCopyNote, co
           </div>
         </div>
       </div>
+
+      <Link href="/emergency">
+        <button
+          data-testid="button-emergency-fab"
+          title="Emergency Complication Protocol"
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2
+                     bg-red-600 hover:bg-red-700 active:bg-red-800 text-white
+                     font-bold text-sm rounded-full px-5 py-3
+                     shadow-xl shadow-red-600/40 hover:shadow-red-600/60
+                     ring-2 ring-red-400/30 hover:ring-red-400/60
+                     transition-all hover:scale-105 active:scale-95"
+        >
+          <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-300 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-200" />
+          </span>
+          <Zap className="w-4 h-4 flex-shrink-0" />
+          <span>Emergency</span>
+        </button>
+      </Link>
     </>
   );
 }

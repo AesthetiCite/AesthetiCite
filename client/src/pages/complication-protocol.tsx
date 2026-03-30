@@ -328,7 +328,8 @@ export default function ComplicationProtocolPage() {
     fetch("/api/complications/protocols")
       .then((r) => r.json())
       .then((d) => {
-        if (Array.isArray(d?.protocols)) setAvailableProtocols(d.protocols);
+        if (Array.isArray(d)) setAvailableProtocols(d);
+        else if (Array.isArray(d?.protocols)) setAvailableProtocols(d.protocols);
       })
       .catch(() => {});
   }, []);

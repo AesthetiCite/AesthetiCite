@@ -15,13 +15,14 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   AlertTriangle, Activity, BookOpen, CheckCircle2,
   ChevronDown, ChevronUp, Clock, FileText,
   Search, Shield, Syringe, Zap, RotateCcw,
-  Eye, Microscope, HelpCircle,
+  Eye, Microscope, HelpCircle, ArrowLeft,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getToken } from "@/lib/auth";
@@ -50,6 +51,8 @@ interface ComplicationResult {
   evidence: { source_id: string; title: string; note: string; source_type?: string; year?: number }[];
   safety?: any;
   disclaimer: string;
+  engine_version?: string;
+  generated_at?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,10 +415,16 @@ export default function ComplicationDecisionV2Page() {
       <div className="sticky top-0 z-40 bg-slate-950/95 backdrop-blur-sm border-b border-white/8">
         <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
+            <Link href="/ask" className="flex items-center text-white/40 hover:text-white/80 transition-colors flex-shrink-0" data-testid="link-complications-back">
+              <ArrowLeft className="w-4 h-4" />
+            </Link>
             <img src="/aestheticite-logo.png" alt="" className="h-6 w-auto opacity-60 flex-shrink-0" />
             <div className="min-w-0">
               <p className="text-white font-bold text-sm truncate">{result?.matched_protocol_name ?? currentQuery}</p>
-              <p className="text-white/30 text-[10px]">AesthetiCite Clinical Decision</p>
+              <p className="text-white/30 text-[10px]">
+                Safety Engine v{result?.engine_version ?? "3.1.0"}
+                {result?.generated_at ? ` · ${result.generated_at.slice(0, 10)}` : ""}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">

@@ -239,6 +239,25 @@ def log_governance_event(
         f"Governance: hash={q_hash} aci={aci_score} density={density:.2f} "
         f"valid={citation_valid} sources={len(source_ids)} lang={lang} intent={intent} ms={total_ms}"
     )
+
+    try:
+        from app.core.audit import write_audit_sync
+        write_audit_sync(
+            event_type="query_answered",
+            request_id=q_hash,
+            question_preview=preview,
+            source_count=len(source_ids),
+            aci_score=aci_score,
+            citation_density=density,
+            citation_valid=citation_valid,
+            lang=lang,
+            intent=intent,
+            total_ms=total_ms,
+            gaps=gaps,
+        )
+    except Exception:
+        pass
+
     return event
 
 

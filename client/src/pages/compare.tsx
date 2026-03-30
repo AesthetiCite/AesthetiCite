@@ -77,7 +77,7 @@ const features: FeatureRow[] = [
     id: "kb-size",
     feature: "Knowledge Base Size",
     icon: <Database className="w-4 h-4" />,
-    aestheticite: { status: "superior", label: "217K+ papers across 25+ specialties" },
+    aestheticite: { status: "superior", label: "1.9M+ papers across 22+ specialties" },
     openevidence: { status: "yes", label: "Large general medicine corpus" },
     category: "Evidence",
   },
@@ -141,7 +141,7 @@ const features: FeatureRow[] = [
     id: "languages",
     feature: "Languages Supported",
     icon: <Globe className="w-4 h-4" />,
-    aestheticite: { status: "superior", label: "25 languages with automatic script detection" },
+    aestheticite: { status: "superior", label: "22+ languages with automatic script detection" },
     openevidence: { status: "partial", label: "English primary" },
     category: "Access",
   },
@@ -291,10 +291,10 @@ export default function ComparePage() {
             <StatCard value={`${aestheticiteWins}`} label="Features where AesthetiCite leads" testId="stat-wins" />
           </Card>
           <Card className="p-6">
-            <StatCard value="217K+" label="Publications indexed" testId="stat-publications" />
+            <StatCard value="1.9M+" label="Publications indexed" testId="stat-publications" />
           </Card>
           <Card className="p-6">
-            <StatCard value="25" label="Languages supported" testId="stat-languages" />
+            <StatCard value="22+" label="Languages supported" testId="stat-languages" />
           </Card>
         </div>
 
@@ -404,7 +404,7 @@ export default function ComparePage() {
             </p>
             <p data-testid="text-summary-access">
               <strong className="text-foreground">Global Accessibility:</strong>{" "}
-              With 25 languages and automatic script-based detection,
+              With 22+ languages and automatic script-based detection,
               AesthetiCite serves practitioners worldwide. OpenEvidence is primarily English-focused.
             </p>
           </div>

@@ -17,15 +17,17 @@ import RequestAccessPage from "@/pages/request-access";
 import SetPasswordPage from "@/pages/set-password";
 import AskPage from "@/pages/ask";
 import AdminPage from "@/pages/admin";
+import AdminDashboardPage from "@/pages/admin-dashboard";
 import AdminBenchmarkPage from "@/pages/admin-benchmark";
+import UserActivityPage from "@/pages/admin/user-activity";
 import BenchmarkReportPage from "@/pages/benchmark-report";
-import ClinicalToolsPage from "@/pages/clinical-tools";
+import ClinicalToolsPage from "@/pages/clinical-tools-expanded";
 import ResearchToolsPage from "@/pages/research-tools";
 import ToolsPage from "@/pages/tools-epocrates";
 import ComparePage from "@/pages/compare";
 import GovernancePage from "@/pages/governance";
 import AdminAnalyticsPage from "@/pages/admin-analytics";
-import VisualCounselingPage from "@/pages/visual-counseling";
+import VisionAnalysisPage from "@/pages/vision-analysis";
 import AskOEPage from "@/pages/ask-oe";
 import Hardest10Page from "@/pages/hardest10";
 import PreProcedureSafetyPage from "@/pages/pre-procedure-safety";
@@ -45,6 +47,7 @@ import VisionFollowupPage from "@/pages/vision-followup";
 import HyaluronidaseCalcPage from "@/pages/hyaluronidase";
 import CaseLogPage from "@/pages/case-log";
 import ClinicHomePage from "@/pages/clinic-home";
+import ScenarioEntryPage from "@/pages/scenario-entry";
 import EmergencyPage from "@/pages/emergency";
 import NetworkSafetyWorkspacePage from "@/pages/network-safety-workspace";
 import RiskIntelligencePage from "@/pages/risk-intelligence";
@@ -170,7 +173,7 @@ function VerifyEmailPage() {
         if (data.access_token) {
           setStatus("done");
           setMessage("Email verified successfully. Redirecting…");
-          setTimeout(() => { window.location.href = "/ask"; }, 1500);
+          setTimeout(() => { window.location.href = "/start"; }, 1500);
         } else {
           setStatus("error");
           setMessage(data.detail || "Verification failed. The link may have expired.");
@@ -229,16 +232,22 @@ function Router() {
 
       {/* Protected routes */}
       <Route path="/">
-        {() => <ProtectedRoute component={ClinicHomePage} />}
+        {() => <Redirect to="/ask" />}
       </Route>
       <Route path="/home">
         {() => <ProtectedRoute component={ClinicHomePage} />}
+      </Route>
+      <Route path="/start">
+        {() => <ProtectedRoute component={ScenarioEntryPage} />}
       </Route>
       <Route path="/emergency">
         {() => <ProtectedRoute component={EmergencyPage} />}
       </Route>
       <Route path="/ask">
         {() => <ProtectedRoute component={AskPage} />}
+      </Route>
+      <Route path="/admin/dashboard">
+        {() => <ProtectedRoute component={AdminDashboardPage} />}
       </Route>
       <Route path="/admin">
         {() => <ProtectedRoute component={AdminPage} />}
@@ -252,6 +261,9 @@ function Router() {
       <Route path="/admin/benchmark/report">
         {() => <ProtectedRoute component={BenchmarkReportPage} />}
       </Route>
+      <Route path="/admin/user-activity">
+        {() => <ProtectedRoute component={UserActivityPage} />}
+      </Route>
       <Route path="/admin/readiness">
         {() => <ProtectedRoute component={ReadinessDashboardPage} />}
       </Route>
@@ -262,7 +274,10 @@ function Router() {
         {() => <ProtectedRoute component={ResearchToolsPage} />}
       </Route>
       <Route path="/visual-counsel">
-        {() => <ProtectedRoute component={VisualCounselingPage} />}
+        {() => <Redirect to="/vision-analysis" />}
+      </Route>
+      <Route path="/vision-analysis">
+        {() => <ProtectedRoute component={VisionAnalysisPage} />}
       </Route>
       <Route path="/vision-followup">
         {() => <ProtectedRoute component={VisionFollowupPage} />}

@@ -1,0 +1,2374 @@
+# ============================================================
+# AESTHETICITE CLINICAL SAFETY STATE ENGINE
+# ONE-BLOCK IMPLEMENTATION PACKAGE
+# Includes:
+# 1) Supabase/Postgres SQL schema + seed data
+# 2) TypeScript shared types + Supabase helpers
+# 3) FastAPI Pydantic models
+# 4) FastAPI CRUD + protocol routes + live-view route
+# 5) Live-view builder service
+# ============================================================
+
+# ============================================================
+# 1) supabase_schema.sql
+# ============================================================
+
+-- =========================================
+-- AesthetiCite Clinical Safety State Engine
+-- Supabase/PostgreSQL schema
+-- =========================================
+
+create extension if not exists pgcrypto;
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'case_status') then
+    create type case_status as enum ('draft', 'active', 'paused', 'closed');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'case_mode') then
+    create type case_mode as enum ('acute_complication', 'pre_procedure_safety', 'post_procedure_followup');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'clinical_phase') then
+    create type clinical_phase as enum ('intake', 'assessment', 'intervention', 'reassessment', 'disposition');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'severity_level') then
+    create type severity_level as enum ('low', 'moderate', 'high', 'critical');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'protocol_run_status') then
+    create type protocol_run_status as enum ('in_progress', 'completed', 'aborted');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'protocol_step_status') then
+    create type protocol_step_status as enum ('pending', 'ready', 'completed', 'skipped', 'blocked');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'intervention_category') then
+    create type intervention_category as enum (
+      'assessment',
+      'drug_administration',
+      'escalation',
+      'advice_given',
+      'referral',
+      'documentation',
+      'observation'
+    );
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'clinical_direction') then
+    create type clinical_direction as enum ('improving', 'unchanged', 'worsening', 'resolved');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'disposition_type') then
+    create type disposition_type as enum (
+      'managed_in_clinic_with_close_followup',
+      'urgent_hospital_referral',
+      'ophthalmology_emergency_referral',
+      'ambulance_transfer',
+      'resolved_and_discharged'
+    );
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'review_status') then
+    create type review_status as enum ('internal_draft', 'clinical_review', 'approved', 'retired');
+  end if;
+end $$;
+
+create or replace function set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create table if not exists public.clinics (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  country text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.case_sessions (
+  id uuid primary key default gen_random_uuid(),
+  clinic_id uuid references public.clinics(id) on delete set null,
+  created_by_user_id uuid not null references auth.users(id) on delete restrict,
+  status case_status not null default 'draft',
+  mode case_mode not null,
+  chief_concern text,
+  language text not null default 'en',
+  country text,
+  tags text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.patient_contexts (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null unique references public.case_sessions(id) on delete cascade,
+  patient_ref text,
+  age int check (age is null or age >= 0),
+  sex text,
+  pregnancy_status text,
+  weight_kg numeric(6,2),
+  known_allergies jsonb not null default '[]'::jsonb,
+  relevant_history jsonb not null default '[]'::jsonb,
+  current_medications jsonb not null default '[]'::jsonb,
+  risk_flags text[] not null default '{}',
+  consent_status text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.procedure_contexts (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null unique references public.case_sessions(id) on delete cascade,
+  procedure_type text not null,
+  subtype text,
+  treatment_date_time timestamptz,
+  operator_role text,
+  anatomical_areas text[] not null default '{}',
+  products_used jsonb not null default '[]'::jsonb,
+  technique jsonb not null default '{}'::jsonb,
+  procedure_notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.clinical_state_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  state_version int not null,
+  phase clinical_phase not null,
+  time_since_procedure_minutes int,
+  symptoms jsonb not null default '[]'::jsonb,
+  vital_signs jsonb not null default '{}'::jsonb,
+  red_flags text[] not null default '{}',
+  airway_risk boolean not null default false,
+  visual_symptoms jsonb not null default '{}'::jsonb,
+  photos_attached boolean not null default false,
+  free_text_observations text,
+  recorded_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (case_id, state_version)
+);
+
+create table if not exists public.clinical_impressions (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  derived_from_state_id uuid references public.clinical_state_snapshots(id) on delete set null,
+  primary_diagnosis jsonb not null,
+  differentials jsonb not null default '[]'::jsonb,
+  severity_level severity_level not null,
+  severity_rationale text[] not null default '{}',
+  vision_emergency boolean not null default false,
+  anaphylaxis_probability numeric(5,4),
+  needs_immediate_action boolean not null default false,
+  generated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.protocol_definitions (
+  id text primary key,
+  condition_code text not null,
+  title text not null,
+  applicable_when jsonb not null default '{}'::jsonb,
+  contraindications jsonb not null default '[]'::jsonb,
+  required_inputs text[] not null default '{}',
+  review_status review_status not null default 'internal_draft',
+  version int not null,
+  step_definitions jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (condition_code, version)
+);
+
+create table if not exists public.protocol_runs (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  protocol_id text not null references public.protocol_definitions(id) on delete restrict,
+  status protocol_run_status not null default 'in_progress',
+  current_step_order int,
+  started_at timestamptz not null default now(),
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.protocol_run_steps (
+  id uuid primary key default gen_random_uuid(),
+  protocol_run_id uuid not null references public.protocol_runs(id) on delete cascade,
+  step_code text not null,
+  step_order int not null,
+  title text not null,
+  status protocol_step_status not null default 'pending',
+  performed_by text,
+  notes text,
+  dose_support jsonb not null default '{}'::jsonb,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (protocol_run_id, step_order)
+);
+
+create table if not exists public.intervention_events (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  linked_run_step_id uuid references public.protocol_run_steps(id) on delete set null,
+  category intervention_category not null,
+  action text not null,
+  details jsonb not null default '{}'::jsonb,
+  performed_by text,
+  immediate_response text,
+  performed_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.reassessment_events (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  findings jsonb not null,
+  clinical_direction clinical_direction not null,
+  recommended_next_action jsonb not null default '{}'::jsonb,
+  next_reassessment_due_in_minutes int,
+  time_since_last_intervention_minutes int,
+  performed_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.disposition_plans (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  disposition disposition_type not null,
+  escalation_required boolean not null default false,
+  escalation_reason text,
+  followup_plan text[] not null default '{}',
+  patient_advice text[] not null default '{}',
+  owner text,
+  decision_time timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.evidence_bundles (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  linked_to jsonb not null,
+  claim text not null,
+  evidence_items jsonb not null,
+  evidence_strength_summary jsonb not null,
+  uncertainties jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.documentation_bundles (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  documents jsonb not null,
+  audit_trail_included boolean not null default true,
+  export_formats text[] not null default '{"pdf"}',
+  generated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.audit_events (
+  id uuid primary key default gen_random_uuid(),
+  case_id uuid not null references public.case_sessions(id) on delete cascade,
+  actor_type text not null,
+  actor_id uuid,
+  event_type text not null,
+  object_type text,
+  object_id text,
+  change_summary text,
+  timestamp timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_case_sessions_clinic_id on public.case_sessions(clinic_id);
+create index if not exists idx_case_sessions_created_by_user_id on public.case_sessions(created_by_user_id);
+create index if not exists idx_case_sessions_status on public.case_sessions(status);
+create index if not exists idx_case_sessions_mode on public.case_sessions(mode);
+create index if not exists idx_case_sessions_tags on public.case_sessions using gin(tags);
+
+create index if not exists idx_clinical_state_snapshots_case_id on public.clinical_state_snapshots(case_id);
+create index if not exists idx_clinical_state_snapshots_recorded_at on public.clinical_state_snapshots(recorded_at desc);
+
+create index if not exists idx_clinical_impressions_case_id on public.clinical_impressions(case_id);
+create index if not exists idx_clinical_impressions_generated_at on public.clinical_impressions(generated_at desc);
+
+create index if not exists idx_protocol_runs_case_id on public.protocol_runs(case_id);
+create index if not exists idx_protocol_run_steps_protocol_run_id on public.protocol_run_steps(protocol_run_id);
+
+create index if not exists idx_intervention_events_case_id on public.intervention_events(case_id);
+create index if not exists idx_intervention_events_performed_at on public.intervention_events(performed_at desc);
+
+create index if not exists idx_reassessment_events_case_id on public.reassessment_events(case_id);
+create index if not exists idx_reassessment_events_performed_at on public.reassessment_events(performed_at desc);
+
+create index if not exists idx_disposition_plans_case_id on public.disposition_plans(case_id);
+create index if not exists idx_evidence_bundles_case_id on public.evidence_bundles(case_id);
+create index if not exists idx_documentation_bundles_case_id on public.documentation_bundles(case_id);
+create index if not exists idx_audit_events_case_id on public.audit_events(case_id);
+create index if not exists idx_audit_events_timestamp on public.audit_events(timestamp desc);
+
+drop trigger if exists trg_clinics_updated_at on public.clinics;
+create trigger trg_clinics_updated_at
+before update on public.clinics
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_case_sessions_updated_at on public.case_sessions;
+create trigger trg_case_sessions_updated_at
+before update on public.case_sessions
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_patient_contexts_updated_at on public.patient_contexts;
+create trigger trg_patient_contexts_updated_at
+before update on public.patient_contexts
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_procedure_contexts_updated_at on public.procedure_contexts;
+create trigger trg_procedure_contexts_updated_at
+before update on public.procedure_contexts
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_protocol_definitions_updated_at on public.protocol_definitions;
+create trigger trg_protocol_definitions_updated_at
+before update on public.protocol_definitions
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_protocol_runs_updated_at on public.protocol_runs;
+create trigger trg_protocol_runs_updated_at
+before update on public.protocol_runs
+for each row execute function set_updated_at();
+
+drop trigger if exists trg_protocol_run_steps_updated_at on public.protocol_run_steps;
+create trigger trg_protocol_run_steps_updated_at
+before update on public.protocol_run_steps
+for each row execute function set_updated_at();
+
+alter table public.clinics enable row level security;
+alter table public.case_sessions enable row level security;
+alter table public.patient_contexts enable row level security;
+alter table public.procedure_contexts enable row level security;
+alter table public.clinical_state_snapshots enable row level security;
+alter table public.clinical_impressions enable row level security;
+alter table public.protocol_definitions enable row level security;
+alter table public.protocol_runs enable row level security;
+alter table public.protocol_run_steps enable row level security;
+alter table public.intervention_events enable row level security;
+alter table public.reassessment_events enable row level security;
+alter table public.disposition_plans enable row level security;
+alter table public.evidence_bundles enable row level security;
+alter table public.documentation_bundles enable row level security;
+alter table public.audit_events enable row level security;
+
+drop policy if exists "case_sessions_select_own" on public.case_sessions;
+create policy "case_sessions_select_own"
+on public.case_sessions
+for select
+to authenticated
+using (created_by_user_id = auth.uid());
+
+drop policy if exists "case_sessions_insert_own" on public.case_sessions;
+create policy "case_sessions_insert_own"
+on public.case_sessions
+for insert
+to authenticated
+with check (created_by_user_id = auth.uid());
+
+drop policy if exists "case_sessions_update_own" on public.case_sessions;
+create policy "case_sessions_update_own"
+on public.case_sessions
+for update
+to authenticated
+using (created_by_user_id = auth.uid())
+with check (created_by_user_id = auth.uid());
+
+drop policy if exists "case_sessions_delete_own" on public.case_sessions;
+create policy "case_sessions_delete_own"
+on public.case_sessions
+for delete
+to authenticated
+using (created_by_user_id = auth.uid());
+
+drop policy if exists "patient_contexts_all_by_case_owner" on public.patient_contexts;
+create policy "patient_contexts_all_by_case_owner"
+on public.patient_contexts
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = patient_contexts.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = patient_contexts.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "procedure_contexts_all_by_case_owner" on public.procedure_contexts;
+create policy "procedure_contexts_all_by_case_owner"
+on public.procedure_contexts
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = procedure_contexts.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = procedure_contexts.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "clinical_state_snapshots_all_by_case_owner" on public.clinical_state_snapshots;
+create policy "clinical_state_snapshots_all_by_case_owner"
+on public.clinical_state_snapshots
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = clinical_state_snapshots.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = clinical_state_snapshots.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "clinical_impressions_all_by_case_owner" on public.clinical_impressions;
+create policy "clinical_impressions_all_by_case_owner"
+on public.clinical_impressions
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = clinical_impressions.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = clinical_impressions.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "protocol_runs_all_by_case_owner" on public.protocol_runs;
+create policy "protocol_runs_all_by_case_owner"
+on public.protocol_runs
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = protocol_runs.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = protocol_runs.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "protocol_run_steps_all_by_case_owner" on public.protocol_run_steps;
+create policy "protocol_run_steps_all_by_case_owner"
+on public.protocol_run_steps
+for all
+to authenticated
+using (
+  exists (
+    select 1
+    from public.protocol_runs pr
+    join public.case_sessions cs on cs.id = pr.case_id
+    where pr.id = protocol_run_steps.protocol_run_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.protocol_runs pr
+    join public.case_sessions cs on cs.id = pr.case_id
+    where pr.id = protocol_run_steps.protocol_run_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "intervention_events_all_by_case_owner" on public.intervention_events;
+create policy "intervention_events_all_by_case_owner"
+on public.intervention_events
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = intervention_events.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = intervention_events.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "reassessment_events_all_by_case_owner" on public.reassessment_events;
+create policy "reassessment_events_all_by_case_owner"
+on public.reassessment_events
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = reassessment_events.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = reassessment_events.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "disposition_plans_all_by_case_owner" on public.disposition_plans;
+create policy "disposition_plans_all_by_case_owner"
+on public.disposition_plans
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = disposition_plans.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = disposition_plans.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "evidence_bundles_all_by_case_owner" on public.evidence_bundles;
+create policy "evidence_bundles_all_by_case_owner"
+on public.evidence_bundles
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = evidence_bundles.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = evidence_bundles.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "documentation_bundles_all_by_case_owner" on public.documentation_bundles;
+create policy "documentation_bundles_all_by_case_owner"
+on public.documentation_bundles
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = documentation_bundles.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = documentation_bundles.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "audit_events_all_by_case_owner" on public.audit_events;
+create policy "audit_events_all_by_case_owner"
+on public.audit_events
+for all
+to authenticated
+using (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = audit_events.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.case_sessions cs
+    where cs.id = audit_events.case_id
+      and cs.created_by_user_id = auth.uid()
+  )
+);
+
+drop policy if exists "protocol_definitions_read_authenticated" on public.protocol_definitions;
+create policy "protocol_definitions_read_authenticated"
+on public.protocol_definitions
+for select
+to authenticated
+using (true);
+
+-- =========================================
+-- Seed protocol: vascular occlusion
+-- =========================================
+
+insert into public.protocol_definitions (
+  id,
+  condition_code,
+  title,
+  applicable_when,
+  contraindications,
+  required_inputs,
+  review_status,
+  version,
+  step_definitions
+)
+values (
+  'vascular_occlusion_v1',
+  'vascular_occlusion_filler',
+  'Vascular Occlusion After HA Filler',
+  '{
+    "procedure_types": ["injectable_filler"],
+    "product_categories": ["HA_filler"]
+  }'::jsonb,
+  '[]'::jsonb,
+  array[
+    'anatomical_areas',
+    'time_since_procedure_minutes',
+    'visual_symptoms.present'
+  ],
+  'internal_draft',
+  1,
+  '[
+    {
+      "step_code": "stop_injection",
+      "step_order": 1,
+      "title": "Stop further injection immediately",
+      "action_type": "immediate_action",
+      "criticality": "critical"
+    },
+    {
+      "step_code": "assess_vision",
+      "step_order": 2,
+      "title": "Assess immediately for visual symptoms",
+      "action_type": "assessment",
+      "criticality": "critical"
+    },
+    {
+      "step_code": "administer_hyaluronidase",
+      "step_order": 3,
+      "title": "Administer hyaluronidase to the affected vascular territory",
+      "action_type": "treatment",
+      "criticality": "critical"
+    },
+    {
+      "step_code": "reassess_perfusion",
+      "step_order": 4,
+      "title": "Reassess perfusion and pain after initial treatment",
+      "action_type": "reassessment",
+      "criticality": "high"
+    },
+    {
+      "step_code": "repeat_or_escalate",
+      "step_order": 5,
+      "title": "Repeat treatment or escalate if signs persist or worsen",
+      "action_type": "escalation",
+      "criticality": "high"
+    }
+  ]'::jsonb
+)
+on conflict (id) do nothing;
+
+
+# ============================================================
+# 2) src/lib/clinical-state-types.ts
+# ============================================================
+
+export type UUID = string;
+export type ISODateTime = string;
+
+export type CaseStatus = "draft" | "active" | "paused" | "closed";
+export type CaseMode =
+  | "acute_complication"
+  | "pre_procedure_safety"
+  | "post_procedure_followup";
+
+export type ClinicalPhase =
+  | "intake"
+  | "assessment"
+  | "intervention"
+  | "reassessment"
+  | "disposition";
+
+export type SeverityLevel = "low" | "moderate" | "high" | "critical";
+
+export type ProtocolRunStatus = "in_progress" | "completed" | "aborted";
+
+export type ProtocolStepStatus =
+  | "pending"
+  | "ready"
+  | "completed"
+  | "skipped"
+  | "blocked";
+
+export type InterventionCategory =
+  | "assessment"
+  | "drug_administration"
+  | "escalation"
+  | "advice_given"
+  | "referral"
+  | "documentation"
+  | "observation";
+
+export type ClinicalDirection =
+  | "improving"
+  | "unchanged"
+  | "worsening"
+  | "resolved";
+
+export type DispositionType =
+  | "managed_in_clinic_with_close_followup"
+  | "urgent_hospital_referral"
+  | "ophthalmology_emergency_referral"
+  | "ambulance_transfer"
+  | "resolved_and_discharged";
+
+export type ReviewStatus =
+  | "internal_draft"
+  | "clinical_review"
+  | "approved"
+  | "retired";
+
+export interface Allergy {
+  substance: string;
+  reaction?: string | null;
+  severity?: string | null;
+}
+
+export interface ProductUsed {
+  product_name: string;
+  category?: string | null;
+  lot_number?: string | null;
+  volume_ml?: number | null;
+}
+
+export interface Technique {
+  device?: "needle" | "cannula" | "mixed" | "unknown" | string;
+  gauge?: string | null;
+  plane?: string | null;
+  bolus_or_linear?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SymptomEntry {
+  name: string;
+  present: boolean;
+  severity?: number | null;
+  onset?: string | null;
+  distribution?: string | null;
+}
+
+export interface VitalSigns {
+  heart_rate?: number | null;
+  systolic_bp?: number | null;
+  diastolic_bp?: number | null;
+  spo2?: number | null;
+  temperature_c?: number | null;
+  [key: string]: unknown;
+}
+
+export interface VisualSymptoms {
+  present?: boolean;
+  symptoms?: string[];
+  [key: string]: unknown;
+}
+
+export interface DiagnosisCandidate {
+  code: string;
+  label: string;
+  confidence: number;
+}
+
+export interface ProtocolStepDefinition {
+  step_code: string;
+  step_order: number;
+  title: string;
+  action_type?: string;
+  criticality?: SeverityLevel | string;
+}
+
+export interface DoseSupport {
+  calculator_id?: string;
+  suggested_range_units?: number[];
+  [key: string]: unknown;
+}
+
+export interface RecommendedNextAction {
+  action_code?: string;
+  urgency?: SeverityLevel | string;
+  rationale?: string;
+  [key: string]: unknown;
+}
+
+export interface LinkedObjectRef {
+  type: string;
+  id: string;
+}
+
+export interface EvidenceItem {
+  source_id: string;
+  rank: number;
+  citation_label: string;
+  document_type?: string;
+  title: string;
+  year?: number | null;
+  relevance_score?: number | null;
+  evidence_level?: string | null;
+  quote_snippet?: string | null;
+  url?: string | null;
+}
+
+export interface EvidenceStrengthSummary {
+  aci_score: number;
+  confidence_label: string;
+  guideline_count?: number;
+  review_count?: number;
+  rct_count?: number;
+  recency_score?: number;
+  [key: string]: unknown;
+}
+
+export interface DocumentationItem {
+  document_type: string;
+  status: string;
+  version?: number | null;
+}
+
+export interface CaseSession {
+  id: UUID;
+  clinic_id?: UUID | null;
+  created_by_user_id: UUID;
+  status: CaseStatus;
+  mode: CaseMode;
+  chief_concern?: string | null;
+  language: string;
+  country?: string | null;
+  tags: string[];
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface PatientContext {
+  id: UUID;
+  case_id: UUID;
+  patient_ref?: string | null;
+  age?: number | null;
+  sex?: string | null;
+  pregnancy_status?: string | null;
+  weight_kg?: number | null;
+  known_allergies: Allergy[];
+  relevant_history: string[];
+  current_medications: string[];
+  risk_flags: string[];
+  consent_status?: string | null;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface ProcedureContext {
+  id: UUID;
+  case_id: UUID;
+  procedure_type: string;
+  subtype?: string | null;
+  treatment_date_time?: ISODateTime | null;
+  operator_role?: string | null;
+  anatomical_areas: string[];
+  products_used: ProductUsed[];
+  technique: Technique;
+  procedure_notes?: string | null;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface ClinicalStateSnapshot {
+  id: UUID;
+  case_id: UUID;
+  state_version: number;
+  phase: ClinicalPhase;
+  time_since_procedure_minutes?: number | null;
+  symptoms: SymptomEntry[];
+  vital_signs: VitalSigns;
+  red_flags: string[];
+  airway_risk: boolean;
+  visual_symptoms: VisualSymptoms;
+  photos_attached: boolean;
+  free_text_observations?: string | null;
+  recorded_at: ISODateTime;
+  created_at: ISODateTime;
+}
+
+export interface ClinicalImpression {
+  id: UUID;
+  case_id: UUID;
+  derived_from_state_id?: UUID | null;
+  primary_diagnosis: DiagnosisCandidate;
+  differentials: DiagnosisCandidate[];
+  severity_level: SeverityLevel;
+  severity_rationale: string[];
+  vision_emergency: boolean;
+  anaphylaxis_probability?: number | null;
+  needs_immediate_action: boolean;
+  generated_at: ISODateTime;
+  created_at: ISODateTime;
+}
+
+export interface ProtocolDefinition {
+  id: string;
+  condition_code: string;
+  title: string;
+  applicable_when: Record<string, unknown>;
+  contraindications: unknown[];
+  required_inputs: string[];
+  review_status: ReviewStatus;
+  version: number;
+  step_definitions: ProtocolStepDefinition[];
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface ProtocolRun {
+  id: UUID;
+  case_id: UUID;
+  protocol_id: string;
+  status: ProtocolRunStatus;
+  current_step_order?: number | null;
+  started_at: ISODateTime;
+  completed_at?: ISODateTime | null;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface ProtocolRunStep {
+  id: UUID;
+  protocol_run_id: UUID;
+  step_code: string;
+  step_order: number;
+  title: string;
+  status: ProtocolStepStatus;
+  performed_by?: string | null;
+  notes?: string | null;
+  dose_support: DoseSupport;
+  completed_at?: ISODateTime | null;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface InterventionEvent {
+  id: UUID;
+  case_id: UUID;
+  linked_run_step_id?: UUID | null;
+  category: InterventionCategory;
+  action: string;
+  details: Record<string, unknown>;
+  performed_by?: string | null;
+  immediate_response?: string | null;
+  performed_at: ISODateTime;
+  created_at: ISODateTime;
+}
+
+export interface ReassessmentEvent {
+  id: UUID;
+  case_id: UUID;
+  findings: Record<string, unknown>;
+  clinical_direction: ClinicalDirection;
+  recommended_next_action: RecommendedNextAction;
+  next_reassessment_due_in_minutes?: number | null;
+  time_since_last_intervention_minutes?: number | null;
+  performed_at: ISODateTime;
+  created_at: ISODateTime;
+}
+
+export interface DispositionPlan {
+  id: UUID;
+  case_id: UUID;
+  disposition: DispositionType;
+  escalation_required: boolean;
+  escalation_reason?: string | null;
+  followup_plan: string[];
+  patient_advice: string[];
+  owner?: string | null;
+  decision_time: ISODateTime;
+  created_at: ISODateTime;
+}
+
+export interface EvidenceBundle {
+  id: UUID;
+  case_id: UUID;
+  linked_to: LinkedObjectRef;
+  claim: string;
+  evidence_items: EvidenceItem[];
+  evidence_strength_summary: EvidenceStrengthSummary;
+  uncertainties: string[];
+  created_at: ISODateTime;
+}
+
+export interface DocumentationBundle {
+  id: UUID;
+  case_id: UUID;
+  documents: DocumentationItem[];
+  audit_trail_included: boolean;
+  export_formats: string[];
+  generated_at: ISODateTime;
+  created_at: ISODateTime;
+}
+
+export interface CaseLiveView {
+  case_header: {
+    case_id: UUID;
+    chief_concern?: string | null;
+    status: CaseStatus;
+    severity?: SeverityLevel | null;
+  };
+  patient_summary?: {
+    age?: number | null;
+    risk_flags?: string[];
+  };
+  procedure_summary?: {
+    procedure_type?: string;
+    area?: string[];
+    product?: string[];
+  };
+  current_impression?: {
+    primary_diagnosis?: string;
+    confidence?: number | null;
+    needs_immediate_action?: boolean;
+  };
+  current_protocol?: {
+    title?: string;
+    current_step_order?: number | null;
+    next_step?: string | null;
+  };
+  timers?: {
+    minutes_since_procedure?: number | null;
+    next_reassessment_due_in_minutes?: number | null;
+  };
+  alerts?: Array<{
+    type: string;
+    message: string;
+  }>;
+  evidence_summary?: {
+    aci_score?: number | null;
+    confidence_label?: string | null;
+    top_sources?: string[];
+  };
+}
+
+
+# ============================================================
+# 3) src/lib/supabase/clinical-state.ts
+# ============================================================
+
+import type {
+  CaseSession,
+  PatientContext,
+  ProcedureContext,
+  ClinicalStateSnapshot,
+  ClinicalImpression,
+  ProtocolRun,
+  ProtocolRunStep,
+  InterventionEvent,
+  ReassessmentEvent,
+  DispositionPlan,
+  CaseLiveView,
+} from "@/lib/clinical-state-types";
+import { createClient } from "@supabase/supabase-js";
+
+export function createBrowserSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
+}
+
+export async function createCase(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<CaseSession, "id" | "created_at" | "updated_at">
+) {
+  return supabase.from("case_sessions").insert(payload).select().single();
+}
+
+export async function getCaseLiveView(caseId: string): Promise<CaseLiveView> {
+  const res = await fetch(`/api/cases/${caseId}/live-view`, { method: "GET" });
+  if (!res.ok) throw new Error("Failed to fetch live view");
+  return res.json();
+}
+
+export async function upsertPatientContext(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<PatientContext, "id" | "created_at" | "updated_at">
+) {
+  return supabase
+    .from("patient_contexts")
+    .upsert(payload, { onConflict: "case_id" })
+    .select()
+    .single();
+}
+
+export async function upsertProcedureContext(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<ProcedureContext, "id" | "created_at" | "updated_at">
+) {
+  return supabase
+    .from("procedure_contexts")
+    .upsert(payload, { onConflict: "case_id" })
+    .select()
+    .single();
+}
+
+export async function addStateSnapshot(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<ClinicalStateSnapshot, "id" | "created_at" | "recorded_at">
+) {
+  return supabase.from("clinical_state_snapshots").insert(payload).select().single();
+}
+
+export async function addClinicalImpression(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<ClinicalImpression, "id" | "created_at" | "generated_at">
+) {
+  return supabase.from("clinical_impressions").insert(payload).select().single();
+}
+
+export async function addInterventionEvent(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<InterventionEvent, "id" | "created_at" | "performed_at">
+) {
+  return supabase.from("intervention_events").insert(payload).select().single();
+}
+
+export async function addReassessmentEvent(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<ReassessmentEvent, "id" | "created_at" | "performed_at">
+) {
+  return supabase.from("reassessment_events").insert(payload).select().single();
+}
+
+export async function setDisposition(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  payload: Omit<DispositionPlan, "id" | "created_at" | "decision_time">
+) {
+  return supabase.from("disposition_plans").insert(payload).select().single();
+}
+
+export async function createProtocolRunForCase(
+  supabase: ReturnType<typeof createBrowserSupabase>,
+  caseId: string,
+  protocolId: string
+) {
+  const { data: protocol, error: protocolError } = await supabase
+    .from("protocol_definitions")
+    .select("*")
+    .eq("id", protocolId)
+    .single();
+
+  if (protocolError) throw protocolError;
+
+  const { data: run, error: runError } = await supabase
+    .from("protocol_runs")
+    .insert({
+      case_id: caseId,
+      protocol_id: protocolId,
+      status: "in_progress",
+      current_step_order: 1,
+    })
+    .select()
+    .single();
+
+  if (runError) throw runError;
+
+  const steps = (protocol.step_definitions ?? []).map((s: any) => ({
+    protocol_run_id: run.id,
+    step_code: s.step_code,
+    step_order: s.step_order,
+    title: s.title,
+    status: s.step_order === 1 ? "ready" : "pending",
+    dose_support: {},
+  }));
+
+  const { error: stepsError } = await supabase.from("protocol_run_steps").insert(steps);
+  if (stepsError) throw stepsError;
+
+  return run as ProtocolRun;
+}
+
+
+# ============================================================
+# 4) app/models/clinical_state.py
+# ============================================================
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CaseStatus(str, Enum):
+    draft = "draft"
+    active = "active"
+    paused = "paused"
+    closed = "closed"
+
+
+class CaseMode(str, Enum):
+    acute_complication = "acute_complication"
+    pre_procedure_safety = "pre_procedure_safety"
+    post_procedure_followup = "post_procedure_followup"
+
+
+class ClinicalPhase(str, Enum):
+    intake = "intake"
+    assessment = "assessment"
+    intervention = "intervention"
+    reassessment = "reassessment"
+    disposition = "disposition"
+
+
+class SeverityLevel(str, Enum):
+    low = "low"
+    moderate = "moderate"
+    high = "high"
+    critical = "critical"
+
+
+class ProtocolRunStatus(str, Enum):
+    in_progress = "in_progress"
+    completed = "completed"
+    aborted = "aborted"
+
+
+class ProtocolStepStatus(str, Enum):
+    pending = "pending"
+    ready = "ready"
+    completed = "completed"
+    skipped = "skipped"
+    blocked = "blocked"
+
+
+class InterventionCategory(str, Enum):
+    assessment = "assessment"
+    drug_administration = "drug_administration"
+    escalation = "escalation"
+    advice_given = "advice_given"
+    referral = "referral"
+    documentation = "documentation"
+    observation = "observation"
+
+
+class ClinicalDirection(str, Enum):
+    improving = "improving"
+    unchanged = "unchanged"
+    worsening = "worsening"
+    resolved = "resolved"
+
+
+class DispositionType(str, Enum):
+    managed_in_clinic_with_close_followup = "managed_in_clinic_with_close_followup"
+    urgent_hospital_referral = "urgent_hospital_referral"
+    ophthalmology_emergency_referral = "ophthalmology_emergency_referral"
+    ambulance_transfer = "ambulance_transfer"
+    resolved_and_discharged = "resolved_and_discharged"
+
+
+class ReviewStatus(str, Enum):
+    internal_draft = "internal_draft"
+    clinical_review = "clinical_review"
+    approved = "approved"
+    retired = "retired"
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class Allergy(BaseModel):
+    substance: str
+    reaction: Optional[str] = None
+    severity: Optional[str] = None
+
+
+class ProductUsed(BaseModel):
+    product_name: str
+    category: Optional[str] = None
+    lot_number: Optional[str] = None
+    volume_ml: Optional[float] = None
+
+
+class Technique(BaseModel):
+    device: Optional[str] = None
+    gauge: Optional[str] = None
+    plane: Optional[str] = None
+    bolus_or_linear: Optional[str] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class SymptomEntry(BaseModel):
+    name: str
+    present: bool
+    severity: Optional[int] = Field(default=None, ge=0, le=10)
+    onset: Optional[str] = None
+    distribution: Optional[str] = None
+
+
+class VitalSigns(BaseModel):
+    heart_rate: Optional[int] = None
+    systolic_bp: Optional[int] = None
+    diastolic_bp: Optional[int] = None
+    spo2: Optional[float] = None
+    temperature_c: Optional[float] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class VisualSymptoms(BaseModel):
+    present: Optional[bool] = None
+    symptoms: List[str] = Field(default_factory=list)
+    model_config = ConfigDict(extra="allow")
+
+
+class DiagnosisCandidate(BaseModel):
+    code: str
+    label: str
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class ProtocolStepDefinition(BaseModel):
+    step_code: str
+    step_order: int
+    title: str
+    action_type: Optional[str] = None
+    criticality: Optional[str] = None
+
+
+class DoseSupport(BaseModel):
+    calculator_id: Optional[str] = None
+    suggested_range_units: List[float] = Field(default_factory=list)
+    model_config = ConfigDict(extra="allow")
+
+
+class RecommendedNextAction(BaseModel):
+    action_code: Optional[str] = None
+    urgency: Optional[str] = None
+    rationale: Optional[str] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class LinkedObjectRef(BaseModel):
+    type: str
+    id: str
+
+
+class EvidenceItem(BaseModel):
+    source_id: str
+    rank: int
+    citation_label: str
+    document_type: Optional[str] = None
+    title: str
+    year: Optional[int] = None
+    relevance_score: Optional[float] = None
+    evidence_level: Optional[str] = None
+    quote_snippet: Optional[str] = None
+    url: Optional[str] = None
+
+
+class EvidenceStrengthSummary(BaseModel):
+    aci_score: float
+    confidence_label: str
+    guideline_count: Optional[int] = None
+    review_count: Optional[int] = None
+    rct_count: Optional[int] = None
+    recency_score: Optional[float] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class DocumentationItem(BaseModel):
+    document_type: str
+    status: str
+    version: Optional[int] = None
+
+
+class CaseSessionBase(BaseModel):
+    clinic_id: Optional[UUID] = None
+    status: CaseStatus = CaseStatus.draft
+    mode: CaseMode
+    chief_concern: Optional[str] = None
+    language: str = "en"
+    country: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class CaseSessionCreate(CaseSessionBase):
+    created_by_user_id: UUID
+
+
+class CaseSessionUpdate(BaseModel):
+    clinic_id: Optional[UUID] = None
+    status: Optional[CaseStatus] = None
+    mode: Optional[CaseMode] = None
+    chief_concern: Optional[str] = None
+    language: Optional[str] = None
+    country: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class CaseSessionRead(CaseSessionBase, ORMModel):
+    id: UUID
+    created_by_user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class PatientContextBase(BaseModel):
+    patient_ref: Optional[str] = None
+    age: Optional[int] = Field(default=None, ge=0)
+    sex: Optional[str] = None
+    pregnancy_status: Optional[str] = None
+    weight_kg: Optional[float] = None
+    known_allergies: List[Allergy] = Field(default_factory=list)
+    relevant_history: List[str] = Field(default_factory=list)
+    current_medications: List[str] = Field(default_factory=list)
+    risk_flags: List[str] = Field(default_factory=list)
+    consent_status: Optional[str] = None
+
+
+class PatientContextCreate(PatientContextBase):
+    case_id: UUID
+
+
+class PatientContextRead(PatientContextBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProcedureContextBase(BaseModel):
+    procedure_type: str
+    subtype: Optional[str] = None
+    treatment_date_time: Optional[datetime] = None
+    operator_role: Optional[str] = None
+    anatomical_areas: List[str] = Field(default_factory=list)
+    products_used: List[ProductUsed] = Field(default_factory=list)
+    technique: Technique = Field(default_factory=Technique)
+    procedure_notes: Optional[str] = None
+
+
+class ProcedureContextCreate(ProcedureContextBase):
+    case_id: UUID
+
+
+class ProcedureContextRead(ProcedureContextBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClinicalStateSnapshotBase(BaseModel):
+    state_version: int = Field(ge=1)
+    phase: ClinicalPhase
+    time_since_procedure_minutes: Optional[int] = None
+    symptoms: List[SymptomEntry] = Field(default_factory=list)
+    vital_signs: VitalSigns = Field(default_factory=VitalSigns)
+    red_flags: List[str] = Field(default_factory=list)
+    airway_risk: bool = False
+    visual_symptoms: VisualSymptoms = Field(default_factory=VisualSymptoms)
+    photos_attached: bool = False
+    free_text_observations: Optional[str] = None
+    recorded_at: Optional[datetime] = None
+
+
+class ClinicalStateSnapshotCreate(ClinicalStateSnapshotBase):
+    case_id: UUID
+
+
+class ClinicalStateSnapshotRead(ClinicalStateSnapshotBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    recorded_at: datetime
+    created_at: datetime
+
+
+class ClinicalImpressionBase(BaseModel):
+    primary_diagnosis: DiagnosisCandidate
+    differentials: List[DiagnosisCandidate] = Field(default_factory=list)
+    severity_level: SeverityLevel
+    severity_rationale: List[str] = Field(default_factory=list)
+    vision_emergency: bool = False
+    anaphylaxis_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    needs_immediate_action: bool = False
+
+
+class ClinicalImpressionCreate(ClinicalImpressionBase):
+    case_id: UUID
+    derived_from_state_id: Optional[UUID] = None
+
+
+class ClinicalImpressionRead(ClinicalImpressionBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    derived_from_state_id: Optional[UUID] = None
+    generated_at: datetime
+    created_at: datetime
+
+
+class ProtocolDefinitionRead(ORMModel):
+    id: str
+    condition_code: str
+    title: str
+    applicable_when: Dict[str, Any]
+    contraindications: List[Any]
+    required_inputs: List[str]
+    review_status: ReviewStatus
+    version: int
+    step_definitions: List[ProtocolStepDefinition]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProtocolRunBase(BaseModel):
+    protocol_id: str
+    status: ProtocolRunStatus = ProtocolRunStatus.in_progress
+    current_step_order: Optional[int] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class ProtocolRunCreate(ProtocolRunBase):
+    case_id: UUID
+
+
+class ProtocolRunUpdate(BaseModel):
+    status: Optional[ProtocolRunStatus] = None
+    current_step_order: Optional[int] = None
+    completed_at: Optional[datetime] = None
+
+
+class ProtocolRunRead(ProtocolRunBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    started_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProtocolRunStepBase(BaseModel):
+    step_code: str
+    step_order: int
+    title: str
+    status: ProtocolStepStatus = ProtocolStepStatus.pending
+    performed_by: Optional[str] = None
+    notes: Optional[str] = None
+    dose_support: DoseSupport = Field(default_factory=DoseSupport)
+    completed_at: Optional[datetime] = None
+
+
+class ProtocolRunStepCreate(ProtocolRunStepBase):
+    protocol_run_id: UUID
+
+
+class ProtocolRunStepUpdate(BaseModel):
+    status: Optional[ProtocolStepStatus] = None
+    performed_by: Optional[str] = None
+    notes: Optional[str] = None
+    dose_support: Optional[DoseSupport] = None
+    completed_at: Optional[datetime] = None
+
+
+class ProtocolRunStepRead(ProtocolRunStepBase, ORMModel):
+    id: UUID
+    protocol_run_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class InterventionEventBase(BaseModel):
+    linked_run_step_id: Optional[UUID] = None
+    category: InterventionCategory
+    action: str
+    details: Dict[str, Any] = Field(default_factory=dict)
+    performed_by: Optional[str] = None
+    immediate_response: Optional[str] = None
+    performed_at: Optional[datetime] = None
+
+
+class InterventionEventCreate(InterventionEventBase):
+    case_id: UUID
+
+
+class InterventionEventRead(InterventionEventBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    performed_at: datetime
+    created_at: datetime
+
+
+class ReassessmentEventBase(BaseModel):
+    findings: Dict[str, Any] = Field(default_factory=dict)
+    clinical_direction: ClinicalDirection
+    recommended_next_action: RecommendedNextAction = Field(default_factory=RecommendedNextAction)
+    next_reassessment_due_in_minutes: Optional[int] = None
+    time_since_last_intervention_minutes: Optional[int] = None
+    performed_at: Optional[datetime] = None
+
+
+class ReassessmentEventCreate(ReassessmentEventBase):
+    case_id: UUID
+
+
+class ReassessmentEventRead(ReassessmentEventBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    performed_at: datetime
+    created_at: datetime
+
+
+class DispositionPlanBase(BaseModel):
+    disposition: DispositionType
+    escalation_required: bool = False
+    escalation_reason: Optional[str] = None
+    followup_plan: List[str] = Field(default_factory=list)
+    patient_advice: List[str] = Field(default_factory=list)
+    owner: Optional[str] = None
+    decision_time: Optional[datetime] = None
+
+
+class DispositionPlanCreate(DispositionPlanBase):
+    case_id: UUID
+
+
+class DispositionPlanRead(DispositionPlanBase, ORMModel):
+    id: UUID
+    case_id: UUID
+    decision_time: datetime
+    created_at: datetime
+
+
+class CaseHeaderLive(BaseModel):
+    case_id: UUID
+    chief_concern: Optional[str] = None
+    status: CaseStatus
+    severity: Optional[SeverityLevel] = None
+
+
+class PatientSummaryLive(BaseModel):
+    age: Optional[int] = None
+    risk_flags: List[str] = Field(default_factory=list)
+
+
+class ProcedureSummaryLive(BaseModel):
+    procedure_type: Optional[str] = None
+    area: List[str] = Field(default_factory=list)
+    product: List[str] = Field(default_factory=list)
+
+
+class CurrentImpressionLive(BaseModel):
+    primary_diagnosis: Optional[str] = None
+    confidence: Optional[float] = None
+    needs_immediate_action: Optional[bool] = None
+
+
+class CurrentProtocolLive(BaseModel):
+    title: Optional[str] = None
+    current_step_order: Optional[int] = None
+    next_step: Optional[str] = None
+
+
+class TimersLive(BaseModel):
+    minutes_since_procedure: Optional[int] = None
+    next_reassessment_due_in_minutes: Optional[int] = None
+
+
+class AlertItemLive(BaseModel):
+    type: str
+    message: str
+
+
+class EvidenceSummaryLive(BaseModel):
+    aci_score: Optional[float] = None
+    confidence_label: Optional[str] = None
+    top_sources: List[str] = Field(default_factory=list)
+
+
+class CaseLiveView(BaseModel):
+    case_header: CaseHeaderLive
+    patient_summary: Optional[PatientSummaryLive] = None
+    procedure_summary: Optional[ProcedureSummaryLive] = None
+    current_impression: Optional[CurrentImpressionLive] = None
+    current_protocol: Optional[CurrentProtocolLive] = None
+    timers: Optional[TimersLive] = None
+    alerts: List[AlertItemLive] = Field(default_factory=list)
+    evidence_summary: Optional[EvidenceSummaryLive] = None
+
+
+# ============================================================
+# 5) app/services/supabase_client.py
+# ============================================================
+
+import os
+from supabase import create_client, Client
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+
+def get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+# ============================================================
+# 6) app/services/protocol_engine.py
+# ============================================================
+
+from typing import Any, Dict, List
+
+def choose_protocol(
+    procedure_type: str | None,
+    subtype: str | None,
+    symptoms: List[Dict[str, Any]],
+    visual_symptoms: Dict[str, Any] | None = None,
+) -> str | None:
+    symptom_names = {s.get("name") for s in symptoms if s.get("present")}
+
+    if procedure_type == "injectable_filler":
+        if {"pain", "blanching", "livedo"} & symptom_names:
+            return "vascular_occlusion_v1"
+
+    return None
+
+def compute_alerts(
+    symptoms: List[Dict[str, Any]],
+    visual_symptoms: Dict[str, Any] | None = None,
+    needs_immediate_action: bool = False,
+) -> list[dict]:
+    alerts: list[dict] = []
+    symptom_names = {s.get("name") for s in symptoms if s.get("present")}
+
+    if needs_immediate_action:
+        alerts.append({
+            "type": "critical",
+            "message": "Immediate clinical action is indicated."
+        })
+
+    if visual_symptoms and visual_symptoms.get("present"):
+        alerts.append({
+            "type": "critical",
+            "message": "Visual symptoms present. Escalate immediately as an ocular emergency."
+        })
+
+    if "blanching" in symptom_names or "livedo" in symptom_names:
+        alerts.append({
+            "type": "high",
+            "message": "Signs compatible with ischemia require urgent reassessment."
+        })
+
+    return alerts
+
+
+# ============================================================
+# 7) app/services/live_view_service.py
+# ============================================================
+
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from app.models.clinical_state import CaseLiveView
+from app.services.protocol_engine import compute_alerts
+
+
+def _safe_first(data):
+    if not data:
+        return None
+    return data[0]
+
+
+def build_case_live_view(
+    case_row: Dict[str, Any],
+    patient_row: Optional[Dict[str, Any]],
+    procedure_row: Optional[Dict[str, Any]],
+    latest_state: Optional[Dict[str, Any]],
+    latest_impression: Optional[Dict[str, Any]],
+    latest_protocol_run: Optional[Dict[str, Any]],
+    next_step: Optional[Dict[str, Any]],
+    latest_reassessment: Optional[Dict[str, Any]],
+    latest_evidence: Optional[Dict[str, Any]],
+) -> CaseLiveView:
+    severity = latest_impression["severity_level"] if latest_impression else None
+
+    minutes_since_procedure = None
+    if procedure_row and procedure_row.get("treatment_date_time"):
+        try:
+            t = datetime.fromisoformat(
+                procedure_row["treatment_date_time"].replace("Z", "+00:00")
+            )
+            now = datetime.now(timezone.utc)
+            minutes_since_procedure = int((now - t).total_seconds() // 60)
+        except Exception:
+            minutes_since_procedure = latest_state.get("time_since_procedure_minutes") if latest_state else None
+    elif latest_state:
+        minutes_since_procedure = latest_state.get("time_since_procedure_minutes")
+
+    alerts = compute_alerts(
+        symptoms=latest_state.get("symptoms", []) if latest_state else [],
+        visual_symptoms=latest_state.get("visual_symptoms", {}) if latest_state else {},
+        needs_immediate_action=latest_impression.get("needs_immediate_action", False) if latest_impression else False,
+    )
+
+    evidence_summary = None
+    if latest_evidence:
+        ess = latest_evidence.get("evidence_strength_summary", {})
+        evidence_summary = {
+            "aci_score": ess.get("aci_score"),
+            "confidence_label": ess.get("confidence_label"),
+            "top_sources": [
+                item.get("citation_label")
+                for item in latest_evidence.get("evidence_items", [])[:3]
+                if item.get("citation_label")
+            ],
+        }
+
+    return CaseLiveView(
+        case_header={
+            "case_id": case_row["id"],
+            "chief_concern": case_row.get("chief_concern"),
+            "status": case_row["status"],
+            "severity": severity,
+        },
+        patient_summary={
+            "age": patient_row.get("age") if patient_row else None,
+            "risk_flags": patient_row.get("risk_flags", []) if patient_row else [],
+        } if patient_row else None,
+        procedure_summary={
+            "procedure_type": procedure_row.get("procedure_type") if procedure_row else None,
+            "area": procedure_row.get("anatomical_areas", []) if procedure_row else [],
+            "product": [p.get("product_name") for p in procedure_row.get("products_used", [])] if procedure_row else [],
+        } if procedure_row else None,
+        current_impression={
+            "primary_diagnosis": latest_impression.get("primary_diagnosis", {}).get("label") if latest_impression else None,
+            "confidence": latest_impression.get("primary_diagnosis", {}).get("confidence") if latest_impression else None,
+            "needs_immediate_action": latest_impression.get("needs_immediate_action") if latest_impression else None,
+        } if latest_impression else None,
+        current_protocol={
+            "title": latest_protocol_run.get("protocol_definition", {}).get("title") if latest_protocol_run else None,
+            "current_step_order": latest_protocol_run.get("current_step_order") if latest_protocol_run else None,
+            "next_step": next_step.get("title") if next_step else None,
+        } if latest_protocol_run else None,
+        timers={
+            "minutes_since_procedure": minutes_since_procedure,
+            "next_reassessment_due_in_minutes": latest_reassessment.get("next_reassessment_due_in_minutes") if latest_reassessment else None,
+        },
+        alerts=alerts,
+        evidence_summary=evidence_summary,
+    )
+
+
+# ============================================================
+# 8) app/api/routes/cases.py
+# ============================================================
+
+from fastapi import APIRouter, HTTPException
+from app.models.clinical_state import (
+    CaseSessionCreate,
+    CaseSessionRead,
+    CaseSessionUpdate,
+    PatientContextCreate,
+    PatientContextRead,
+    ProcedureContextCreate,
+    ProcedureContextRead,
+    ClinicalStateSnapshotCreate,
+    ClinicalStateSnapshotRead,
+    ClinicalImpressionCreate,
+    ClinicalImpressionRead,
+    InterventionEventCreate,
+    InterventionEventRead,
+    ReassessmentEventCreate,
+    ReassessmentEventRead,
+    DispositionPlanCreate,
+    DispositionPlanRead,
+    ProtocolRunRead,
+    ProtocolRunUpdate,
+    ProtocolRunStepRead,
+    ProtocolRunStepUpdate,
+    CaseLiveView,
+)
+from app.services.supabase_client import get_supabase
+from app.services.protocol_engine import choose_protocol
+from app.services.live_view_service import build_case_live_view
+
+router = APIRouter(prefix="/cases", tags=["cases"])
+
+
+@router.post("", response_model=CaseSessionRead)
+def create_case(payload: CaseSessionCreate):
+    sb = get_supabase()
+    res = sb.table("case_sessions").insert(payload.model_dump()).execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not create case")
+    return res.data[0]
+
+
+@router.get("/{case_id}", response_model=CaseSessionRead)
+def get_case(case_id: str):
+    sb = get_supabase()
+    res = sb.table("case_sessions").select("*").eq("id", case_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return res.data
+
+
+@router.patch("/{case_id}", response_model=CaseSessionRead)
+def update_case(case_id: str, payload: CaseSessionUpdate):
+    sb = get_supabase()
+    body = {k: v for k, v in payload.model_dump().items() if v is not None}
+    res = sb.table("case_sessions").update(body).eq("id", case_id).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return res.data
+
+
+@router.put("/{case_id}/patient-context", response_model=PatientContextRead)
+def upsert_patient_context(case_id: str, payload: PatientContextCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("patient_contexts").upsert(body, on_conflict="case_id").select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save patient context")
+    return res.data
+
+
+@router.put("/{case_id}/procedure-context", response_model=ProcedureContextRead)
+def upsert_procedure_context(case_id: str, payload: ProcedureContextCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("procedure_contexts").upsert(body, on_conflict="case_id").select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save procedure context")
+    return res.data
+
+
+@router.post("/{case_id}/states", response_model=ClinicalStateSnapshotRead)
+def add_state_snapshot(case_id: str, payload: ClinicalStateSnapshotCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("clinical_state_snapshots").insert(body).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save state snapshot")
+    return res.data
+
+
+@router.post("/{case_id}/impressions", response_model=ClinicalImpressionRead)
+def add_clinical_impression(case_id: str, payload: ClinicalImpressionCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("clinical_impressions").insert(body).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save clinical impression")
+    return res.data
+
+
+@router.post("/{case_id}/auto-start-protocol", response_model=ProtocolRunRead)
+def auto_start_protocol(case_id: str):
+    sb = get_supabase()
+
+    proc_res = sb.table("procedure_contexts").select("*").eq("case_id", case_id).single().execute()
+    state_res = (
+        sb.table("clinical_state_snapshots")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("state_version", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    procedure = proc_res.data if proc_res.data else None
+    latest_state = state_res.data[0] if state_res.data else None
+
+    if not procedure or not latest_state:
+        raise HTTPException(status_code=400, detail="Procedure context and latest state are required")
+
+    protocol_id = choose_protocol(
+        procedure_type=procedure.get("procedure_type"),
+        subtype=procedure.get("subtype"),
+        symptoms=latest_state.get("symptoms", []),
+        visual_symptoms=latest_state.get("visual_symptoms", {}),
+    )
+
+    if not protocol_id:
+        raise HTTPException(status_code=400, detail="No matching protocol found")
+
+    existing = (
+        sb.table("protocol_runs")
+        .select("*")
+        .eq("case_id", case_id)
+        .eq("status", "in_progress")
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return existing.data[0]
+
+    protocol_def = sb.table("protocol_definitions").select("*").eq("id", protocol_id).single().execute()
+    if not protocol_def.data:
+        raise HTTPException(status_code=404, detail="Protocol definition not found")
+
+    run_res = (
+        sb.table("protocol_runs")
+        .insert({
+            "case_id": case_id,
+            "protocol_id": protocol_id,
+            "status": "in_progress",
+            "current_step_order": 1,
+        })
+        .select("*")
+        .single()
+        .execute()
+    )
+    run = run_res.data
+
+    steps = []
+    for step in protocol_def.data["step_definitions"]:
+        steps.append({
+            "protocol_run_id": run["id"],
+            "step_code": step["step_code"],
+            "step_order": step["step_order"],
+            "title": step["title"],
+            "status": "ready" if step["step_order"] == 1 else "pending",
+            "dose_support": {},
+        })
+
+    sb.table("protocol_run_steps").insert(steps).execute()
+    return run
+
+
+@router.patch("/protocol-runs/{protocol_run_id}", response_model=ProtocolRunRead)
+def update_protocol_run(protocol_run_id: str, payload: ProtocolRunUpdate):
+    sb = get_supabase()
+    body = {k: v for k, v in payload.model_dump().items() if v is not None}
+    res = sb.table("protocol_runs").update(body).eq("id", protocol_run_id).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Protocol run not found")
+    return res.data
+
+
+@router.patch("/protocol-run-steps/{step_id}", response_model=ProtocolRunStepRead)
+def update_protocol_run_step(step_id: str, payload: ProtocolRunStepUpdate):
+    sb = get_supabase()
+    body = {k: v for k, v in payload.model_dump().items() if v is not None}
+    res = sb.table("protocol_run_steps").update(body).eq("id", step_id).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Protocol step not found")
+
+    step = res.data
+    run_id = step["protocol_run_id"]
+
+    run_res = sb.table("protocol_runs").select("*").eq("id", run_id).single().execute()
+    if run_res.data:
+        current_order = step["step_order"]
+        next_step_res = (
+            sb.table("protocol_run_steps")
+            .select("*")
+            .eq("protocol_run_id", run_id)
+            .eq("step_order", current_order + 1)
+            .limit(1)
+            .execute()
+        )
+
+        if step["status"] == "completed" and next_step_res.data:
+            next_step = next_step_res.data[0]
+            if next_step["status"] == "pending":
+                sb.table("protocol_run_steps").update({"status": "ready"}).eq("id", next_step["id"]).execute()
+            sb.table("protocol_runs").update({"current_step_order": current_order + 1}).eq("id", run_id).execute()
+
+    return step
+
+
+@router.post("/{case_id}/interventions", response_model=InterventionEventRead)
+def add_intervention(case_id: str, payload: InterventionEventCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("intervention_events").insert(body).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save intervention")
+    return res.data
+
+
+@router.post("/{case_id}/reassessments", response_model=ReassessmentEventRead)
+def add_reassessment(case_id: str, payload: ReassessmentEventCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("reassessment_events").insert(body).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save reassessment")
+    return res.data
+
+
+@router.post("/{case_id}/disposition", response_model=DispositionPlanRead)
+def add_disposition(case_id: str, payload: DispositionPlanCreate):
+    sb = get_supabase()
+    body = payload.model_dump()
+    body["case_id"] = case_id
+    res = sb.table("disposition_plans").insert(body).select("*").single().execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Could not save disposition")
+    return res.data
+
+
+@router.get("/{case_id}/live-view", response_model=CaseLiveView)
+def get_case_live_view(case_id: str):
+    sb = get_supabase()
+
+    case_res = sb.table("case_sessions").select("*").eq("id", case_id).single().execute()
+    if not case_res.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    patient_res = sb.table("patient_contexts").select("*").eq("case_id", case_id).limit(1).execute()
+    procedure_res = sb.table("procedure_contexts").select("*").eq("case_id", case_id).limit(1).execute()
+
+    state_res = (
+        sb.table("clinical_state_snapshots")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("state_version", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    impression_res = (
+        sb.table("clinical_impressions")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("generated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    run_res = (
+        sb.table("protocol_runs")
+        .select("*, protocol_definition:protocol_definitions(*)")
+        .eq("case_id", case_id)
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    reassessment_res = (
+        sb.table("reassessment_events")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("performed_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    evidence_res = (
+        sb.table("evidence_bundles")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    patient_row = patient_res.data[0] if patient_res.data else None
+    procedure_row = procedure_res.data[0] if procedure_res.data else None
+    latest_state = state_res.data[0] if state_res.data else None
+    latest_impression = impression_res.data[0] if impression_res.data else None
+    latest_protocol_run = run_res.data[0] if run_res.data else None
+    latest_reassessment = reassessment_res.data[0] if reassessment_res.data else None
+    latest_evidence = evidence_res.data[0] if evidence_res.data else None
+
+    next_step = None
+    if latest_protocol_run:
+        next_order = latest_protocol_run.get("current_step_order")
+        if next_order:
+            step_res = (
+                sb.table("protocol_run_steps")
+                .select("*")
+                .eq("protocol_run_id", latest_protocol_run["id"])
+                .eq("step_order", next_order)
+                .limit(1)
+                .execute()
+            )
+            if step_res.data:
+                next_step = step_res.data[0]
+
+    return build_case_live_view(
+        case_row=case_res.data,
+        patient_row=patient_row,
+        procedure_row=procedure_row,
+        latest_state=latest_state,
+        latest_impression=latest_impression,
+        latest_protocol_run=latest_protocol_run,
+        next_step=next_step,
+        latest_reassessment=latest_reassessment,
+        latest_evidence=latest_evidence,
+    )
+
+
+# ============================================================
+# 9) app/main.py
+# ============================================================
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes.cases import router as cases_router
+
+app = FastAPI(title="AesthetiCite Clinical Safety API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(cases_router)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# ============================================================
+# 10) Example payloads
+# ============================================================
+
+# POST /cases
+# {
+#   "created_by_user_id": "11111111-1111-1111-1111-111111111111",
+#   "mode": "acute_complication",
+#   "chief_concern": "Possible vascular occlusion after HA filler to left nasolabial fold",
+#   "language": "en",
+#   "country": "UK",
+#   "tags": ["filler", "vascular_occlusion", "urgent"]
+# }
+
+# PUT /cases/{case_id}/procedure-context
+# {
+#   "case_id": "ignored-by-route",
+#   "procedure_type": "injectable_filler",
+#   "subtype": "hyaluronic_acid_filler",
+#   "treatment_date_time": "2026-03-25T15:10:00Z",
+#   "operator_role": "doctor",
+#   "anatomical_areas": ["left_nasolabial_fold"],
+#   "products_used": [
+#     {
+#       "product_name": "Juvederm Ultra",
+#       "category": "HA_filler",
+#       "volume_ml": 0.6
+#     }
+#   ],
+#   "technique": {
+#     "device": "needle",
+#     "gauge": "30G",
+#     "plane": "subdermal",
+#     "bolus_or_linear": "linear_threading"
+#   },
+#   "procedure_notes": "Pain during injection followed by blanching"
+# }
+
+# POST /cases/{case_id}/states
+# {
+#   "case_id": "ignored-by-route",
+#   "state_version": 1,
+#   "phase": "assessment",
+#   "time_since_procedure_minutes": 10,
+#   "symptoms": [
+#     {"name": "pain", "present": true, "severity": 8, "onset": "immediate"},
+#     {"name": "blanching", "present": true, "distribution": "left_nasolabial_fold"},
+#     {"name": "livedo", "present": true, "distribution": "left_ala_to_upper_lip"}
+#   ],
+#   "vital_signs": {"heart_rate": 92, "systolic_bp": 128, "diastolic_bp": 78, "spo2": 99},
+#   "red_flags": ["skin_blanching", "livedo", "severe_pain"],
+#   "airway_risk": false,
+#   "visual_symptoms": {"present": false, "symptoms": []},
+#   "photos_attached": true,
+#   "free_text_observations": "Capillary refill delayed in affected area"
+# }
+
+# POST /cases/{case_id}/auto-start-protocol
+# {}
+
+# PATCH /cases/protocol-run-steps/{step_id}
+# {
+#   "status": "completed",
+#   "performed_by": "doctor",
+#   "notes": "Visual symptoms checked; none reported"
+# }
+
+
+# ============================================================
+# 11) Deployment notes
+# ============================================================
+
+# Python packages:
+# pip install fastapi uvicorn supabase pydantic
+
+# Run API:
+# uvicorn app.main:app --reload --port 8000
+
+# Frontend:
+# - Put clinical-state-types.ts in src/lib/
+# - Put supabase helper in src/lib/supabase/
+# - Point /api/* either to Next.js route proxy or directly to FastAPI backend
+
+# ============================================================
+# END
+# ============================================================

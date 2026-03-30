@@ -1,0 +1,11 @@
+Four files. Here's exactly what each does and how to deploy:
+
+skingpt_integration.py → app/api/skingpt_integration.py
+Implements the full SkinGPT integration with a SkinGPTClient that runs in mock mode until you get the Haut.AI B2B key (HAUTAI_API_KEY). The key architectural piece is the SCENARIO_LIBRARY — it maps AesthetiCite complication signals directly to SkinGPT simulation parameters. For a Tyndall effect detection it runs two simulations: skin after 4-week hyaluronidase treatment and without treatment. For vascular blanching it runs treated within 1h vs delayed >6h — showing the clinician exactly what the tissue stakes are. Add to main.py with one import line and 7 proxy routes in routes.ts.
+PoseCaptureGuide.tsx → client/src/components/vision/PoseCaptureGuide.tsx
+DermEngine-style 3-angle standardised capture (0°/left 45°/right 45°) with SVG silhouette overlays drawn in pure SVG — no external assets. Each pose shows a head guide with corner registration marks, central axis reference, and the Frankfort horizontal on profile views. Auto-advances to the next pose on capture. Front-only mode available for quick single captures. Only front is required by default, all three enable serial comparison.
+VisualScoreCard.tsx → client/src/components/vision/VisualScoreCard.tsx
+VISIA output format: 7 clinical signals as scored bars and flags, not prose. Each row has its own icon, a labelled progress bar with severity text at every integer, and colour coding that escalates from green → yellow → orange → red. Fitzpatrick type renders as a coloured swatch matching the actual skin tone range. Overall concern level drives the card's header colour. Drops directly into any page that receives visual_scores from the API.
+ConsultationFlow.tsx → client/src/components/vision/ConsultationFlow.tsx
+The complete Nextmotion-style 5-step orchestrator. Replaces the current visual counselling page. All five steps are wired: capture triggers auto-upload, analysis streams GPT-4o output live, signals display the protocol bridge cards, simulate calls the SkinGPT endpoint, export generates and downloads the PDF. Has a live timer — target is under 60 seconds front-to-PDF. Use it as: <ConsultationFlow token={token} clinicianId={user.id} /> replacing the current page content.
+Integration is 4 file placements + 2 import lines in main.py + 9 proxy routes in routes.ts.

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Bootstrap shim: installs node_modules if absent, then delegates to real tsx
+set -e
+WORKSPACE="/home/runner/workspace"
+cd "$WORKSPACE"
+if [ ! -f "$WORKSPACE/node_modules/.bin/tsx" ]; then
+  echo "[tsx-shim] node_modules missing – running npm install..."
+  npm install --ignore-scripts --no-audit --no-fund
+fi
+exec "$WORKSPACE/node_modules/.bin/tsx" "$@"

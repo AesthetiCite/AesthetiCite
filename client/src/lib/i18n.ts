@@ -1,7 +1,7 @@
 /**
  * AesthetiCite Frontend i18n Configuration
  * 
- * Supports 25 languages covering ~90% of world population
+ * Supports 22+ languages covering ~90% of world population
  */
 
 export const locales = [

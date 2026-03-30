@@ -37,6 +37,8 @@ from app.engine.improvements import compute_aci as compute_aci_deterministic
 from app.engine.improvements import Source as ImpSource
 from app.engine.evidence_hierarchy import enrich_chunks_for_api, rewrite_query_for_evidence
 from app.engine.safety_layer import enrich_meta_payload as _enrich_safety, safety_block_for_prompt as _safety_prompt
+from app.engine.self_rag import wrap_with_self_rag, build_calibration_block, CALIBRATION_TEMPLATES
+from app.engine.model_router import graph_enrich_query, route_model
 from app.engine.protocol_gap_fix import (
     build_enhanced_answer_context,
     enforce_protocol_completeness,
@@ -157,19 +159,37 @@ def _get_headers() -> dict:
 SYSTEM_COMPOSE = "Be concise. Follow citation rules exactly. No invented facts."
 
 
-async def _llm_stream(prompt: str, system: str) -> AsyncGenerator[str, None]:
+async def _llm_stream(prompt: str, system: str, model_config=None) -> AsyncGenerator[str, None]:
+    """
+    Streams tokens from the configured model.
+    model_config: optional ModelConfig from route_model(). Falls back to COMPOSE_MODEL.
+    """
+    if model_config is not None and model_config.api_key:
+        model_id  = model_config.model_id
+        api_key   = model_config.api_key
+        base_url  = model_config.base_url.rstrip("/") + "/chat/completions"
+        max_tok   = model_config.max_tokens
+        temp      = model_config.temperature
+    else:
+        model_id  = COMPOSE_MODEL
+        api_key   = settings.OPENAI_API_KEY
+        base_url  = _AI_PROXY_URL
+        max_tok   = COMPOSE_MAX_TOKENS
+        temp      = COMPOSE_TEMPERATURE
+
     payload = {
-        "model": COMPOSE_MODEL,
+        "model":       model_id,
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
+            {"role": "user",   "content": prompt},
         ],
-        "temperature": COMPOSE_TEMPERATURE,
-        "max_tokens": COMPOSE_MAX_TOKENS,
+        "temperature": temp,
+        "max_tokens":  max_tok,
         "stream": True,
     }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     async with httpx.AsyncClient(timeout=None) as client:  # nosec B113
-        async with client.stream("POST", _AI_PROXY_URL, json=payload, headers=_get_headers()) as resp:
+        async with client.stream("POST", base_url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data: "):
@@ -607,27 +627,43 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
         t1 = time.perf_counter()
         rkey = _cache_key(retrieval_query, f"retrieval:{translation_strategy}:{detected_lang}:k={body.k}")
         chunks = _retrieval_cache.get(rkey)
-        if chunks is None:
+        async def _retrieve(question_: str) -> list:
+            """Async retrieval with a 30s timeout and a 25s-capped sync fallback.
+            
+            Neon vector search over 846K chunks takes 10-18s depending on load.
+            The previous 12s timeout was too short and caused constant fallbacks.
+            Returns empty list (never raises) so callers can yield a graceful error event.
+            """
             if _ar._pool is not None:
-                chunks = await _ar.retrieve_hardened_async(
-                    question=retrieval_query, domain=body.domain, k=body.k
+                try:
+                    t_ret0 = time.perf_counter()
+                    result = await asyncio.wait_for(
+                        _ar.retrieve_hardened_async(question=question_, domain=body.domain, k=body.k),
+                        timeout=30.0,
+                    )
+                    logger.info(f"[v2/stream] Async retrieval: {len(result)} chunks in {(time.perf_counter()-t_ret0)*1000:.0f}ms")
+                    return result
+                except Exception as _e:
+                    logger.warning(f"[v2/stream] Async retrieval failed ({_e}), falling back to sync retriever")
+            # Sync fallback — capped at 25 s to prevent indefinite hangs
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(
+                        retrieve_db, db=db, question=question_, domain=body.domain, k=body.k
+                    ),
+                    timeout=25.0,
                 )
-            else:
-                chunks = await asyncio.to_thread(
-                    retrieve_db, db=db, question=retrieval_query, domain=body.domain, k=body.k
-                )
+            except Exception as _se:
+                logger.warning(f"[v2/stream] Sync fallback also failed ({_se}), returning empty")
+                return []
+
+        if chunks is None:
+            chunks = await _retrieve(retrieval_query)
             if translation_strategy == "dual" and original_native_query:
                 native_key = _cache_key(q, f"retrieval_native:k={body.k}")
                 native_chunks = _retrieval_cache.get(native_key)
                 if native_chunks is None:
-                    if _ar._pool is not None:
-                        native_chunks = await _ar.retrieve_hardened_async(
-                            question=q, domain=body.domain, k=body.k
-                        )
-                    else:
-                        native_chunks = await asyncio.to_thread(
-                            retrieve_db, db=db, question=q, domain=body.domain, k=body.k
-                        )
+                    native_chunks = await _retrieve(q)
                     _retrieval_cache.put(native_key, native_chunks)
                 seen_ids = {c.get("id") or c.get("doc_id") or c.get("title", "") for c in chunks}
                 for nc in (native_chunks or []):
@@ -642,8 +678,31 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
         intent = detect_intent(q)
         chunks = rerank_by_domain(chunks, intent)
 
+        # Self-RAG: iterative retrieval when initial evidence is insufficient (improvements #1, #14)
+        _self_rag_meta: dict = {
+            "self_rag_iterations": 0,
+            "self_rag_sufficient": True,
+            "calibration_block": "",
+            "calibration_level": "moderate",
+        }
+        try:
+            _sr_retrieve = lambda query, k=8: retrieve_db(db=db, question=query, domain=body.domain, k=k)
+            chunks, _self_rag_meta = await wrap_with_self_rag(
+                question=q,
+                initial_chunks=chunks,
+                retrieve_fn=_sr_retrieve,
+                max_iterations=2,
+            )
+        except Exception as _sr_err:
+            logger.warning(f"[v2/stream] Self-RAG failed (non-fatal): {_sr_err}")
+
         if not chunks or len(chunks) < 2:
-            yield _sse("error", {"message": "Insufficient evidence to answer with citations."})
+            elapsed_ms = int((time.perf_counter() - t1) * 1000)
+            if elapsed_ms >= 50_000:
+                err_msg = "The evidence search timed out. The database may be under load — please try again in a moment."
+            else:
+                err_msg = "Insufficient evidence found to answer this question with citations."
+            yield _sse("error", {"message": err_msg})
             return
 
         t2 = time.perf_counter()
@@ -655,61 +714,21 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
                 logger.warning(f"Quality fusion retrieval error: {e}")
                 return []
 
-        # Rewrite query to boost high-tier evidence retrieval
-        _qf_rewrite = rewrite_query_for_evidence(q)
-        qf_retrieval_query = _qf_rewrite["rewritten_query"] if _qf_rewrite["boost_types"] else retrieval_query
+        # Quality fusion is bypassed: it always exceeds the Neon query time (25s+)
+        # and its asyncio.to_thread workers run for minutes after timeout, starving
+        # the asyncpg pool for subsequent requests. Use the deterministic path directly.
         protocol_prompt_block = ""
         _eh_badge: dict = {}
+        qf_aci = None
 
-        try:
-            qf_bundle = await asyncio.to_thread(
-                retrieve_with_quality_fusion,
-                qf_retrieval_query,
-                _sync_retrieve_adapter,
-                k_final=40,
-                k_quality=25,
-                k_general=40,
-            )
-            qf_sources: List[QFSource] = qf_bundle["sources"]
-            qf_aci = qf_bundle["aci"]
-
-            if qf_sources and len(qf_sources) >= 2:
-                chunks_for_prompt = []
-                for s in qf_sources:
-                    raw = s._raw if s._raw else {}
-                    raw.update({
-                        "title": s.title, "year": s.year, "journal": s.journal,
-                        "source_id": s.source_id, "evidence_type": s.evidence_type,
-                        "evidence_tier": s.evidence_tier, "publication_type": s.publication_type,
-                        "chunk_text": s.chunk_text or raw.get("chunk_text", ""),
-                    })
-                    chunks_for_prompt.append(raw)
-                citations_payload, _eh_badge = enrich_chunks_for_api(chunks_for_prompt)
-                gap_ctx = build_enhanced_answer_context(q, chunks_for_prompt)
-                chunks = gap_ctx["reranked_chunks"]
-                protocol_prompt_block = gap_ctx["protocol_prompt_block"]
-                if gap_ctx["coverage_gaps"]:
-                    logger.info(f"Protocol coverage gaps: {gap_ctx['coverage_gaps']}")
-                logger.info(
-                    f"Quality fusion: {len(qf_sources)} sources, "
-                    f"tiers={sum(1 for s in qf_sources if s.evidence_tier == 'A')}A/"
-                    f"{sum(1 for s in qf_sources if s.evidence_tier == 'B')}B/"
-                    f"{sum(1 for s in qf_sources if s.evidence_tier == 'C')}C, "
-                    f"ACI={qf_aci.score_0_to_10}"
-                )
-            else:
-                gap_ctx = build_enhanced_answer_context(q, chunks)
-                chunks = gap_ctx["reranked_chunks"]
-                protocol_prompt_block = gap_ctx["protocol_prompt_block"]
-                citations_payload, _eh_badge = enrich_chunks_for_api(chunks)
-                qf_aci = None
-        except Exception as e:
-            logger.warning(f"Quality fusion failed, falling back: {e}")
+        if False:  # quality fusion disabled — placeholder to preserve diff structure
+            pass
+        else:
+            logger.debug("[v2/stream] Quality fusion bypassed — using direct gap analysis")
             gap_ctx = build_enhanced_answer_context(q, chunks)
             chunks = gap_ctx["reranked_chunks"]
             protocol_prompt_block = gap_ctx["protocol_prompt_block"]
             citations_payload, _eh_badge = enrich_chunks_for_api(chunks)
-            qf_aci = None
 
         badge_payload = {
             "level":     _eh_badge.get("level", "Low"),
@@ -767,11 +786,38 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
                 meta_payload["aci_rationale"] = aci_result.rationale
             except Exception as e:
                 logger.warning(f"Deterministic ACI failed: {e}")
+
+        # Bug fix: promote calibration level using ACI score now that it's computed.
+        # The prompt hasn't been built yet (that happens below at line ~800), so
+        # updating _self_rag_meta here ensures the calibration_block injected into
+        # the prompt correctly reflects the ACI-informed confidence level.
+        _aci_score_val = meta_payload.get("aci_score")
+        if _aci_score_val is not None:
+            _current_calib = _self_rag_meta.get("calibration_level", "moderate")
+            if _aci_score_val >= 7.0 and _current_calib in ("moderate", "low"):
+                _self_rag_meta["calibration_level"] = "high"
+                _self_rag_meta["calibration_block"] = (
+                    f"\n\nEVIDENCE CALIBRATION INSTRUCTION:\n{CALIBRATION_TEMPLATES['high']}\n"
+                )
+                logger.debug(f"[v2/stream] Calibration promoted to 'high' (ACI={_aci_score_val})")
+            elif _aci_score_val < 4.0 and _current_calib not in ("insufficient", "low"):
+                _self_rag_meta["calibration_level"] = "low"
+                _self_rag_meta["calibration_block"] = (
+                    f"\n\nEVIDENCE CALIBRATION INSTRUCTION:\n{CALIBRATION_TEMPLATES['low']}\n"
+                )
+
         meta_payload = _enrich_safety(
             meta_payload, q,
             region=getattr(body, "region", None),
             procedure=getattr(body, "procedure", None),
         )
+        # Self-RAG metadata (improvements #1, #3, #14)
+        meta_payload["self_rag"] = {
+            "iterations":        _self_rag_meta.get("self_rag_iterations", 0),
+            "sufficient":        _self_rag_meta.get("self_rag_sufficient", True),
+            "confidence":        _self_rag_meta.get("self_rag_confidence"),
+            "calibration_level": _self_rag_meta.get("calibration_level", "moderate"),
+        }
         yield _sse("meta", meta_payload)
 
         skeleton = _skeleton_from_sources(q, citations_payload)
@@ -782,9 +828,24 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
         # Context limiter — reduce prompt tokens for complication queries
         chunks = limit_context(chunks, q)
 
+        # Graph RAG: prepend complication entity context (improvements #2, #10)
+        _graph_ctx = graph_enrich_query(q)
         prompt = _build_single_call_prompt(q, chunks, conversation_context=conv_context, lang=lang, protocol_block=protocol_prompt_block)
+        if _graph_ctx:
+            prompt = f"KNOWLEDGE GRAPH CONTEXT:\n{_graph_ctx}\n\n" + prompt
+        # Self-RAG calibration: embed ACI-informed confidence language into prompt (improvement #3)
+        if _self_rag_meta.get("calibration_block"):
+            prompt += _self_rag_meta["calibration_block"]
         prompt += f"\n\n{_safety_prompt(q)}"
         system = SYSTEM_COMPOSE
+
+        # Model routing: DeepSeek-R1 for deep/complex queries (improvement #4)
+        _model_config = route_model(q, body.mode)
+        if _model_config.model_id != COMPOSE_MODEL:
+            logger.info(f"[v2/stream] Routed to {_model_config.label} for mode={body.mode}")
+            timing["model"] = _model_config.model_id
+        else:
+            timing["model"] = COMPOSE_MODEL
 
         yield _sse("replace", {"message": "Verified answer:"})
 
@@ -799,7 +860,7 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
         t_first_token: Optional[float] = None
 
         try:
-            async for tok in _llm_stream(prompt, system):
+            async for tok in _llm_stream(prompt, system, model_config=_model_config):
                 if t_first_token is None:
                     t_first_token = time.perf_counter()
                 streamed_tokens.append(tok)
@@ -862,7 +923,7 @@ async def ask_v2_stream(body: AskV2Body, request: Request, db: Session = Depends
             set_hot_answer(q, {"answer": full_answer, "citations": citations_payload})
 
         record_latency("ask_v2", total_ms)
-        timing["model"] = COMPOSE_MODEL
+        timing.setdefault("model", COMPOSE_MODEL)  # already set by route_model above
         timing["conversation_id"] = conversation_id or None
         timing["caps"] = {
             "compose_max_tokens": COMPOSE_MAX_TOKENS,

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
+import { Link } from "wouter"
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   BookOpen,
   Clock3,
@@ -260,6 +262,12 @@ export default function DailyClinicHomePage() {
         <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
+              <div className="mb-3">
+                <Link href="/ask" className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-800 text-sm transition-colors" data-testid="link-daily-home-back">
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Back</span>
+                </Link>
+              </div>
               <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
                 <Sparkles className="h-4 w-4" />
                 Daily-use feature

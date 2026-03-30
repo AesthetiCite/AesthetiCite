@@ -159,6 +159,46 @@ export function ComplicationQuickStart({
         </p>
       </div>
 
+      <div className="w-full relative mb-4">
+        <Textarea
+          ref={textRef}
+          rows={2}
+          placeholder="Describe your clinical question…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit();
+            }
+          }}
+          disabled={isLoading}
+          className="resize-none text-sm rounded-xl border-2 border-muted-foreground/20
+                     focus:border-blue-400 bg-background shadow-sm
+                     px-4 pt-3 pb-3 pr-24 min-h-[64px] transition-all"
+          data-testid="input-question-quick"
+        />
+        <Button
+          onClick={handleSubmit}
+          disabled={isLoading || !input.trim()}
+          size="sm"
+          className="absolute right-2.5 bottom-2.5 rounded-lg h-9 px-3 gap-1.5"
+          data-testid="button-ask-quick"
+        >
+          {isLoading ? (
+            <span className="flex items-center gap-1.5">
+              <span className="h-3.5 w-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Searching…
+            </span>
+          ) : (
+            <>
+              <Search className="h-3.5 w-3.5" />
+              Ask
+            </>
+          )}
+        </Button>
+      </div>
+
       <div className="w-full grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-4">
         {QUICK_OPTIONS.map((opt) => {
           const Icon = opt.icon;
@@ -204,46 +244,6 @@ export function ComplicationQuickStart({
             </button>
           );
         })}
-      </div>
-
-      <div className="w-full relative mb-4">
-        <Textarea
-          ref={textRef}
-          rows={2}
-          placeholder="Or describe any other clinical question…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSubmit();
-            }
-          }}
-          disabled={isLoading}
-          className="resize-none text-sm rounded-xl border-2 border-muted-foreground/20
-                     focus:border-blue-400 bg-background shadow-sm
-                     px-4 pt-3 pb-3 pr-24 min-h-[64px] transition-all"
-          data-testid="input-question-quick"
-        />
-        <Button
-          onClick={handleSubmit}
-          disabled={isLoading || !input.trim()}
-          size="sm"
-          className="absolute right-2.5 bottom-2.5 rounded-lg h-9 px-3 gap-1.5"
-          data-testid="button-ask-quick"
-        >
-          {isLoading ? (
-            <span className="flex items-center gap-1.5">
-              <span className="h-3.5 w-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Searching…
-            </span>
-          ) : (
-            <>
-              <Search className="h-3.5 w-3.5" />
-              Ask
-            </>
-          )}
-        </Button>
       </div>
 
       <div className="w-full mb-4">

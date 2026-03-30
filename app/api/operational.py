@@ -43,10 +43,10 @@ pdf_storage = _LocalPDFStorage()
 def _safe_db_scalar(sql: str, params=None, default=None):
     try:
         import psycopg2
-        url = os.environ.get("DATABASE_URL", "")
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
         if not url:
             return default
-        conn = psycopg2.connect(url)
+        conn = psycopg2.connect(url, connect_timeout=10)
         cur = conn.cursor()
         cur.execute(sql, params or ())
         row = cur.fetchone()
@@ -59,10 +59,10 @@ def _safe_db_scalar(sql: str, params=None, default=None):
 def _safe_db_query(sql: str, params=None):
     try:
         import psycopg2
-        url = os.environ.get("DATABASE_URL", "")
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
         if not url:
             return []
-        conn = psycopg2.connect(url)
+        conn = psycopg2.connect(url, connect_timeout=10)
         cur = conn.cursor()
         cur.execute(sql, params or ())
         rows = cur.fetchall()
@@ -268,10 +268,10 @@ def corpus_count_fast() -> dict:
     """Returns a near-instant row estimate from pg_class statistics."""
     try:
         import psycopg2
-        url = os.environ.get("DATABASE_URL", "")
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
         if not url:
             raise ValueError("No DATABASE_URL")
-        conn = psycopg2.connect(url)
+        conn = psycopg2.connect(url, connect_timeout=10)
         cur = conn.cursor()
         cur.execute(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'documents'"
@@ -376,8 +376,8 @@ async def forgot_password(payload: _ForgotPasswordPayload) -> dict:
 
     try:
         import psycopg2
-        url = os.environ.get("DATABASE_URL", "")
-        conn = psycopg2.connect(url)
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+        conn = psycopg2.connect(url, connect_timeout=10)
         cur = conn.cursor()
         cur.execute(
             """
@@ -436,8 +436,8 @@ async def verify_email(payload: _VerifyEmailPayload) -> dict:
 
     try:
         import psycopg2
-        url = os.environ.get("DATABASE_URL", "")
-        conn = psycopg2.connect(url)
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+        conn = psycopg2.connect(url, connect_timeout=10)
         cur = conn.cursor()
         cur.execute(
             """

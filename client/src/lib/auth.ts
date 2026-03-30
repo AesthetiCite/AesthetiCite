@@ -17,6 +17,76 @@ export function isAuthenticated(): boolean {
   return !!getToken();
 }
 
+// ── Refresh token storage ──────────────────────────────────────────────────
+export function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("aestheticite_refresh");
+}
+
+export function setRefreshToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("aestheticite_refresh", token);
+}
+
+export function clearRefreshToken(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("aestheticite_refresh");
+}
+
+// ── Refresh access token ───────────────────────────────────────────────────
+export async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+  try {
+    const res = await fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) {
+      clearToken();
+      clearRefreshToken();
+      return null;
+    }
+    const data = await res.json();
+    setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+// ── Authenticated fetch with auto-refresh ──────────────────────────────────
+// Use instead of raw fetch() for all API calls that need auth.
+// Automatically retries with a fresh token if the first call returns 401.
+export async function authedFetch(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> || {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(url, { ...options, headers });
+
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (!newToken) {
+      clearToken();
+      clearRefreshToken();
+      window.location.href = "/login";
+      return res;
+    }
+    headers["Authorization"] = `Bearer ${newToken}`;
+    return fetch(url, { ...options, headers });
+  }
+
+  return res;
+}
+
 interface LoginResponse {
   access_token: string;
   token_type: string;
@@ -42,7 +112,9 @@ export async function login(email: string, password: string): Promise<string> {
   if (!res.ok) {
     throw new Error(data?.detail || "Login failed");
   }
-  return (data as LoginResponse).access_token;
+  setToken(data.access_token);
+  if (data.refresh_token) setRefreshToken(data.refresh_token);
+  return data.access_token;
 }
 
 export async function getMe(token: string): Promise<UserInfo> {
@@ -193,6 +265,7 @@ export interface StreamCallbacks {
   onDone: (fullAnswer: string) => void;
   onError: (error: string) => void;
   onProtocolCard?: (data: any) => void;
+  onProtocolAlert?: (protocols: any[]) => void;
 }
 
 export async function askQuestionStream(
@@ -631,6 +704,9 @@ export async function askVisualStream(
             }
             case "protocol_card":
               if (callbacks.onProtocolCard) callbacks.onProtocolCard(data);
+              break;
+            case "protocol_alert":
+              if (callbacks.onProtocolAlert) callbacks.onProtocolAlert(data.triggered_protocols ?? []);
               break;
             case "related":
               callbacks.onRelated(data.data || []);

@@ -1,0 +1,228 @@
+
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K6:48:48 PM [express] serving on port 5000
+Starting Python FastAPI backend on port 8000...
+[startup] Using direct Python binary: /home/runner/workspace/.pythonlibs/bin/python3
+[startup] Spawning: /home/runner/workspace/.pythonlibs/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+Proxy attempt 1 failed for /api/workspace/clinics/me, retrying in 2000ms...
+Proxy attempt 2 failed for /api/workspace/clinics/me, retrying in 2000ms...
+Proxy error for /api/workspace/clinics/me after 3 attempts: TypeError: fetch failed
+[90m    at node:internal/deps/undici/undici:14902:13[39m
+[90m    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)[39m
+    at async proxyToFastAPI [90m(/home/runner/workspace/[39mserver/routes.ts:414:26[90m)[39m {
+  [cause]: Error: connect ECONNREFUSED 127.0.0.1:8000
+  [90m    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16)[39m {
+    errno: [33m-111[39m,
+    code: [32m'ECONNREFUSED'[39m,
+    syscall: [32m'connect'[39m,
+    address: [32m'127.0.0.1'[39m,
+    port: [33m8000[39m
+  }
+}
+[python] INFO:     Started server process [4931]
+[python] INFO:     Waiting for application startup.
+[python] 2026-03-21 18:49:05,047 [INFO] Visuals table ensured
+[python] 2026-03-21 18:49:05,062 [INFO] [operational] Safety engines already patched or unavailable
+[python] 2026-03-21 18:49:05,062 [INFO] [operational] Operational patches applied
+[python] 2026-03-21 18:49:05,063 [INFO] [startup] Background init dispatched — server ready to handle /health immediately
+[python] 2026-03-21 18:49:05,063 [INFO] Visuals table ensured
+[python] INFO:     Application startup complete.
+[python] INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[python] 2026-03-21 18:49:05,177 [INFO] Embedding cache warmed: 0 new, 22 already cached
+[python] [network_migrations] schema OK
+[python] [intelligence_migrations] OK
+[python] 2026-03-21 18:49:05,241 [INFO] asyncpg retrieval pool initialized (min=5, max=20)
+[python] 2026-03-21 18:49:05,244 [INFO] [startup/bg] Mass upload agent started
+[python] 2026-03-21 18:49:05,245 [INFO] [startup/bg] Index rebuild thread started
+[python] 2026-03-21 18:49:05,245 [INFO] [startup/bg] Background initialization complete
+[python] INFO:     127.0.0.1:33046 - "GET /health HTTP/1.1" 200 OK
+Python API started successfully (health check passed)
+[migrations] Drizzle migrations applied successfully
+[python] 2026-03-21 18:49:05,449 [INFO] [index_rebuild] idx_chunks_embedding_hnsw: present
+[python] 2026-03-21 18:49:05,450 [INFO] [index_rebuild] chunks_text_norm_trgm: present
+[python] 2026-03-21 18:49:05,451 [INFO] [index_rebuild] chunks_tsv_gin: present
+[python] 2026-03-21 18:49:05,451 [INFO] [index_rebuild] idx_documents_trgm_title: present
+[python] 2026-03-21 18:49:05,452 [INFO] [index_rebuild] idx_documents_fts: present
+[python] 2026-03-21 18:49:05,453 [INFO] [index_rebuild] All indexes checked/rebuilt
+[python] INFO:     127.0.0.1:33334 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:49:20,244 [INFO] [progress] Loaded — M1=True M2=True M3=True M4=True M5=False | policy: multilang_fixed=True guideline_priority=True cleanup_verified=True | resume: phase=5 qi=173
+[python] [split] [18:49:26] Split started — folder=backups, chunk=500MB, prefix=aestheticite_part_
+[python] INFO:     127.0.0.1:35250 - "POST /api/backup/split?folder=backups&chunk_mb=500&prefix=aestheticite_part_ HTTP/1.1" 200 OK
+[python] 2026-03-21 18:49:26,747 [INFO] =================================================================
+[python] 2026-03-21 18:49:26,747 [INFO]   AesthetiCite Corpus Engine — 5-Milestone Strategy
+2026-03-21 18:49:26,747 [INFO]   Current: 971,398  Target: 1,500,000
+2026-03-21 18:49:26,747 [INFO]   Priority: M1=clean → M2=authoritative → M3=global → M4=broad → M5=aesthetic-deep-dive
+2026-03-21 18:49:26,747 [INFO]   Completion: M1=True M2=True M3=True M4=True M5=False
+2026-03-21 18:49:26,748 [INFO]   Policy: multilang_fixed=True guideline_priority=True cleanup_verified=True
+[python] 2026-03-21 18:49:26,748 [INFO] =================================================================
+2026-03-21 18:49:26,748 [INFO] [M1] Already completed — skipping cleanup.
+2026-03-21 18:49:26,748 [INFO] [M2] Already completed — skipping guideline ingestion.
+[python] 2026-03-21 18:49:26,748 [INFO] [M3] Already completed — skipping multilingual ingestion.
+2026-03-21 18:49:26,748 [INFO] [M4] Already completed.
+[python] 2026-03-21 18:49:26,748 [INFO] [M5] Starting aesthetic medicine deep-dive + recency sweep + safety data. Queries: 173. Target: 1,500,000 docs.
+2026-03-21 18:49:26,748 [INFO] === PHASE 5: Aesthetic Deep-Dive — Subspecialties + Recency + Safety | queries=173 | resuming_from=173 ===
+[python] 2026-03-21 18:49:26,748 [INFO] [QA] M5: Auditing aesthetic medicine corpus coverage ...
+[python] INFO:     127.0.0.1:35256 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:43906 - "GET /api/backup/split/status HTTP/1.1" 200 OK
+[python] 2026-03-21 18:49:56,988 [INFO] Unified retrieval: 40 candidates in 51.74s (embed 0.01s)
+[python] 2026-03-21 18:49:56,989 [INFO] [speed_optimizer] precomputed 'vascular occlusion management hyaluronidase treatm' → 8 chunks in 51749.8ms
+2026-03-21 18:49:56,989 [INFO] Numerical query detected: hyaluronidase dose vascular occlusion...
+[python] INFO:     127.0.0.1:53664 - "GET /api/backup/split/status HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:53666 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:44304 - "GET /api/backup/split/status HTTP/1.1" 200 OK
+[python] 2026-03-21 18:51:00,568 [INFO] Unified retrieval: 40 candidates in 63.57s (embed 0.01s)
+[python] 2026-03-21 18:51:13,219 [INFO] [speed_optimizer] precomputed 'hyaluronidase dose vascular occlusion' → 8 chunks in 76230.6ms
+[python] INFO:     127.0.0.1:54520 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:52:24,188 [INFO] Unified retrieval: 40 candidates in 70.96s (embed 0.01s)
+[python] 2026-03-21 18:52:24,189 [INFO] [speed_optimizer] precomputed 'visual symptoms after filler emergency management' → 8 chunks in 70969.1ms
+[python] INFO:     127.0.0.1:57262 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:53:01,403 [INFO] Unified retrieval: 40 candidates in 37.20s (embed 0.01s)
+2026-03-21 18:53:01,404 [INFO] [speed_optimizer] precomputed 'anaphylaxis emergency management aesthetic injecta' → 8 chunks in 37214.9ms
+[python] INFO:     127.0.0.1:60742 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:54:06,743 [INFO] Unified retrieval: 40 candidates in 65.33s (embed 0.01s)
+[python] 2026-03-21 18:54:06,744 [INFO] [speed_optimizer] precomputed 'filler nodule granuloma treatment management' → 8 chunks in 65340.1ms
+[python] INFO:     127.0.0.1:48784 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:56736 - "GET /health HTTP/1.1" 200 OK
+[python] [split] [18:55:41] Split DONE — 8 parts created
+[split] [18:55:41]   aestheticite_part_aa  500.0 MB
+[split] [18:55:41]   aestheticite_part_ab  500.0 MB
+[python] [split] [18:55:41]   aestheticite_part_ac  500.0 MB
+[split] [18:55:41]   aestheticite_part_ad  500.0 MB
+[split] [18:55:41]   aestheticite_part_ae  500.0 MB
+[split] [18:55:41]   aestheticite_part_af  500.0 MB
+[split] [18:55:41]   aestheticite_part_ag  500.0 MB
+[split] [18:55:41]   aestheticite_part_ah  471.4 MB
+[python] 2026-03-21 18:56:01,896 [INFO] Unified retrieval: 40 candidates in 115.14s (embed 0.01s)
+[python] 2026-03-21 18:56:01,896 [INFO] [speed_optimizer] precomputed '5-FU triamcinolone filler nodule injection' → 8 chunks in 115152.5ms
+[python] INFO:     127.0.0.1:48838 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:56:27,213 [INFO] Unified retrieval: 40 candidates in 25.31s (embed 0.01s)
+[python] 2026-03-21 18:56:27,214 [INFO] [speed_optimizer] precomputed 'post-filler infection biofilm treatment antibiotic' → 8 chunks in 25317.5ms
+[python] 2026-03-21 18:57:26,185 [INFO] Unified retrieval: 40 candidates in 58.96s (embed 0.01s)
+[python] 2026-03-21 18:57:26,185 [INFO] [speed_optimizer] precomputed 'botulinum toxin induced ptosis management apraclon' → 8 chunks in 58971.4ms
+[python] INFO:     127.0.0.1:58208 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:54136 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:58:32,344 [INFO] Unified retrieval: 40 candidates in 66.15s (embed 0.01s)
+[python] 2026-03-21 18:58:32,344 [INFO] [speed_optimizer] precomputed 'tyndall effect filler hyaluronidase treatment' → 8 chunks in 66158.9ms
+[python] INFO:     127.0.0.1:60022 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 18:59:33,420 [INFO] Unified retrieval: 40 candidates in 61.07s (embed 0.01s)
+[python] 2026-03-21 18:59:33,420 [INFO] [speed_optimizer] precomputed 'delayed inflammatory reaction filler management tr' → 8 chunks in 61076.1ms
+[python] 2026-03-21 18:59:33,420 [INFO] [speed_optimizer] precomputed 10/10 hot queries
+[python] INFO:     127.0.0.1:58734 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46614 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:48264 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:53774 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:51448 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:47040 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:35984 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:45976 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:60210 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:55674 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:55876 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:52112 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:37896 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:35170 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:35934 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:33962 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:42720 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:54554 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:48096 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:49034 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:50222 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59020 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46772 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:38908 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:55494 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:39202 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:37214 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:49254 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:48932 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:33374 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:45030 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:37084 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:37794 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:58514 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46008 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46586 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:35208 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:34532 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46842 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59074 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59590 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:36196 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:60026 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:35534 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:43304 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:57288 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:47264 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:40704 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59968 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46308 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-21 19:50:03,286 [ERROR] [QA] M5 error: (psycopg.errors.IoError) could not read block 182476 in file "base/16384/171515.1": Input/output error
+[SQL: 
+            UPDATE chunks c
+            SET evidence_level = CASE
+                WHEN d.document_type = 'guideline'       THEN 'I'
+                WHEN d.document_type = 'review'          THEN 'II'
+                WHEN d.document_type = 'journal_article' THEN 'III'
+                WHEN d.document_type = 'case_series'     THEN 'IV'
+                WHEN d.document_type = 'case_report'     THEN 'IV'
+                ELSE 'III'
+            END
+            FROM documents d
+            WHERE c.document_id = d.id
+              AND c.evidence_level IS NULL
+        ]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+[python] 2026-03-21 19:50:03,287 [INFO] [M5] Phase complete.
+[python] 2026-03-21 19:50:03,289 [ERROR] Mass upload crashed: (psycopg.errors.IoError) could not read block 0 in file "base/16384/1990659": Input/output error
+[SQL: SELECT COUNT(*) FROM documents]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+[python] INFO:     127.0.0.1:47106 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:60212 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:54244 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:32800 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:33452 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:54382 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59286 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:33198 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:38676 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:57544 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:53026 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:40018 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:56156 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:44030 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:34348 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:50034 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:52094 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:48102 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:40368 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:55758 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:45278 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:60790 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:50700 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:33892 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:51648 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:45660 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:49788 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:36624 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:37938 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:42890 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:39242 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:54448 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:52114 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:40622 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:57230 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:36250 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:33162 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:59398 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:38016 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:38216 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:55000 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:43714 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:36940 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:42650 - "GET /health HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:45246 - "GET /health HTTP/1.1" 200 OK

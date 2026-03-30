@@ -1,0 +1,14 @@
+Orchestrated production-ready code for six backend system improvementsOrchestrated production-ready code for six backend system improvementsSix files, one per improvement. Building them all now.Created 6 files, ran a command, read a fileCreated 6 files, ran a command, read a fileSix files. Here's exactly where each one goes and what to call:
+Fix 1 — fix1_case_store_postgres.py → app/api/case_store_postgres.py
+In complication_protocol_engine.py, replace CASE_STORE.append(case) with log_case_to_postgres(...). Replace the /stats endpoint logic with get_dataset_stats(). Call init_cases_table() in main.py startup. Run the migration SQL once.
+Fix 2 — fix2_visual_store.py → app/api/visual_store.py
+In visual_counseling.py upload endpoint, replace _VISUAL_STORE[visual_id] = bytes with register_visual(visual_id, bytes, content_type). In visual_differential.py and vision_analysis.py, replace _load_image_bytes() and _load_image() with load_image(). The disk fallback was already there — this just makes the write side persistent too.
+Fix 3 — fix3_growth_postgres.py → app/api/growth_postgres.py
+Run python fix3_growth_postgres.py migrate once to create the tables. Then replace the six SQLite function calls in growth_engine.py with the equivalents from this file. The function signatures are identical.
+Fix 4 — fix4_drug_interactions.py → app/api/drug_interactions.py
+In growth_engine.py, replace drug_adapter = DrugInteractionAdapter() with from app.api.drug_interactions import AestheticDrugChecker; drug_adapter = AestheticDrugChecker(). Covers 25 drugs across 9 categories including GLP-1 agonists, immunosuppressants, and isotretinoin.
+Fix 5 — fix5_rate_limiting.py
+Not a drop-in file — it shows the exact three decorator lines to add to vision_analysis.py and visual_differential.py. Each endpoint needs request: Request added as first parameter and @limiter.limit("10/minute") above it. The existing slowapi setup in main.py handles everything else.
+Fix 6 — fix6_hnsw.py → app/api/hnsw_retriever.py
+Run python fix6_hnsw.py migrate once to create the HNSW index (runs CONCURRENTLY so the database stays online). Then replace retrieve_fn=some_keyword_fn with retrieve_fn=hnsw_retrieve_fn in the AesthetiCiteEngine initialisation. This is the biggest answer quality improvement of the six.
+Do fixes 1 and 2 today — they are data loss risks. Fix 3 before any B2B demo. Fixes 5 and 6 before any clinic goes live.

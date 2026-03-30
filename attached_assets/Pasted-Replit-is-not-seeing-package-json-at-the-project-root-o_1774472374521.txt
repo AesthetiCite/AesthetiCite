@@ -1,0 +1,84 @@
+Replit is not seeing package.json at the project root, or the root package.json does not have a build script. The log says exactly that.
+
+So the fix is to make sure the deploy command runs from the folder that actually contains your Node app.
+
+What to check first
+
+In your Replit shell, run:
+
+pwd
+ls
+find . -maxdepth 3 -name package.json
+
+This tells you:
+
+where Replit thinks the project root is
+whether package.json is in that root
+whether your frontend is actually in a subfolder like client/, web/, or frontend/
+If package.json is in the root
+
+Open it and confirm it has a build script:
+
+cat package.json
+
+You need something like:
+
+{
+  "scripts": {
+    "build": "vite build"
+  }
+}
+
+or whatever your real build command is.
+
+If there is no build script, add one.
+
+If package.json is in a subfolder
+
+Then the deploy build command must change from:
+
+npm run build
+
+to something like:
+
+cd client && npm install && npm run build
+
+or:
+
+cd frontend && npm install && npm run build
+
+depending on where package.json actually is.
+
+Most likely fix
+
+Because your project is hybrid Node + Python, the safest build command is probably:
+
+cd <folder-with-package-json> && npm install && npm run build
+
+And if Python dependencies also need installing:
+
+cd <folder-with-package-json> && npm install && npm run build && uv sync --frozen --no-dev
+
+Only keep the uv part if your deploy setup really needs it.
+
+Exact message to send Replit AI
+
+Paste this:
+
+The deployment error now says npm run build cannot find package.json or the build script.
+
+Please inspect the repo structure and do the following:
+1. Find the actual location of package.json
+2. If package.json is not in the repo root, update the deployment/build command to cd into the correct folder before running npm install and npm run build
+3. If package.json is in the root but missing a build script, add the correct build script
+4. Show me the exact final build command and the exact package.json scripts section
+5. Do not guess — inspect the actual files first
+Fast manual check
+
+If you want to test immediately, run this in Replit shell:
+
+find . -maxdepth 3 -name package.json -exec sh -c 'echo "---"; echo "$1"; cat "$1" | head -80' _ {} \;
+
+That will quickly show where the real package.json is and whether build exists.
+
+This is no longer a database or Neon problem. It is now a project root / build-command path problem.

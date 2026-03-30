@@ -1,5 +1,37 @@
 # AesthetiCite - AI-Powered Evidence Search
 
+## Security Hardening (March 2026 — 5-patch sequence complete)
+
+All 5 security patches applied:
+
+### Patch 1 — main.py
+- **CORS fail-closed**: reads `CORS_ORIGINS` env var; raises `RuntimeError` in production if unset; expands allowed headers
+- **SecurityHeadersMiddleware** injected after CORS: HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; Cache-Control: no-store on all `/api/` paths
+- **`/metrics-lite` locked** behind `Depends(require_admin_user)` — requires valid JWT with admin role
+- **`audit_log` table SQL** added to `DOC_META_MIGRATION_SQL` (created on startup): id, logged_at, event_type, request_id, user_id, email, ip_address, path, event_data (JSONB), indexes on user_id + event_type + logged_at
+
+### Patch 2 — Input sanitisation + rate limits
+- **`sanitize_input()`** applied to all LLM-facing fields in: `vision_analysis.py` (procedure_type, injected_region, product_type, clinical_notes, patient_symptoms), `clinical_tools_engine.py` (all 5 endpoints)
+- **Rate limits** added to all 5 clinical_tools endpoints (`@limiter.limit("20/minute")` / `10/minute` for consent)
+- **Server-side magic bytes check** in `visual_counseling.py` upload: `_detect_mime_fallback()` validates file signature independently of client-supplied Content-Type header
+
+### Patch 3 — Auth hardening
+- **`create_refresh_token()`** / **`decode_refresh_token()`** added to `app/core/auth.py` (30-day, type=refresh claim)
+- **Brute-force lockout** in `app/api/auth.py`: 5-attempt threshold, exponential backoff (30s base, doubles per extra failure)
+- **`POST /auth/refresh`** endpoint added; proxied via `server/routes.ts` at `/api/auth/refresh`
+- **Login response** now returns `refresh_token`, `expires_in` alongside `access_token`
+- **`TokenResponse` schema** updated: optional `refresh_token` + `expires_in` fields
+
+### Patch 4 — Durable audit log
+- **`app/core/audit.py`** created: async `write_audit_event()`, sync `write_audit_sync()`, `get_recent_events()` admin helper
+- **`governance.py`** now calls `write_audit_sync("query_answered", ...)` for every answered clinical query — events persist in Postgres, survive deploys
+
+### Patch 5 — Frontend security
+- **`client/src/lib/auth.ts`**: `getRefreshToken()`, `setRefreshToken()`, `clearRefreshToken()`, `refreshAccessToken()`, `authedFetch()` (auto-refresh wrapper); `login()` now stores refresh token
+- **`client/src/main.tsx`**: Sentry SDK initialised conditionally on `VITE_SENTRY_DSN` env var; auth paths scrubbed before send
+- **`client/index.html`**: security meta tags (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, robots noindex, Cache-Control)
+- **`@sentry/react`** installed
+
 ## Overview
 AesthetiCite is an AI-powered research platform providing evidence-based answers to medical research questions with citations from trusted sources. It offers comprehensive, structured responses with inline citations, related questions, and source references. The platform aims to support clinicians and medical students, leveraging a React frontend with a real-time streaming search interface.
 
@@ -7,6 +39,155 @@ The project's ambition is to become a leading tool for evidence-based medicine, 
 
 ## User Preferences
 Preferred communication style: Simple, everyday language.
+
+## Vision Engine — Consultation Flow (March 2026)
+
+### New Components
+- **`app/api/skingpt_integration.py`** — SkinGPT × Haut.AI outcome simulation engine. 5 complication scenario types (Tyndall, erythema, swelling, infection, vascular compromise), each with treated vs untreated simulations. Mock mode active until `HAUTAI_API_KEY` + `HAUTAI_MOCK_MODE=false` are set.
+- **`client/src/components/vision/PoseCaptureGuide.tsx`** — DermEngine-style 3-angle standardised capture (front 0°, left 45°, right 45°) with SVG anatomical overlays and serial comparison protocol.
+- **`client/src/components/vision/VisualScoreCard.tsx`** — VISIA-inspired clinical scoring card. Displays 7 structured signals (perfusion, swelling, infection, asymmetry, ptosis, Tyndall, Fitzpatrick) with score bars and flag badges.
+- **`client/src/components/vision/ConsultationFlow.tsx`** — Nextmotion-style 5-step orchestrator: Capture → Analyse (GPT-4o stream) → Signals (protocol bridge) → Simulate (SkinGPT) → Export PDF. Key bug fix: SSE `visual_scores` payload accessed as `data.data` (not `data.scores`).
+
+### Wiring
+- `skingpt_router` registered in `app/main.py` at `/visual` prefix
+- 3 new Express proxy routes in `server/routes.ts`: `POST /api/visual/simulate-outcome`, `POST /api/visual/simulate-scenarios`, `GET /api/visual/available-scenarios`
+- `ConsultationFlow` added as default "Consult" tab in `vision-analysis.tsx` (existing Analyse/Ask/Healing tabs preserved)
+
+### SkinGPT Mock Mode
+`HAUTAI_API_KEY` not set → runs in mock mode. Returns structured placeholder simulations. Contact haut.ai/contact for B2B pricing to enable live photorealistic outcome simulation.
+
+## Vision Engine v2 + Landmarks + PWA Offline (March 2026)
+
+### New Backend — `app/api/vision_engine_v2.py`
+Router prefix: `/visual/v2`. Implements improvements 1, 2, 3, 5, 7, 8, 9, 10.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/visual/v2/analyse` | POST | Full pipeline: preprocessing → model routing → calibrated scoring → protocol bridge |
+| `/visual/v2/stream` | POST | Real-time SSE streaming (improvement 2): status → content tokens → visual_scores → protocol_alert → done |
+| `/visual/v2/multi-analyse` | POST | Before+after images in a single model call (improvement 3) — coherent change comparison |
+| `/visual/v2/video` | POST | Video frame extraction + per-frame scoring with trajectory (improvement 7) — requires opencv |
+| `/visual/v2/dicom-export` | POST | DICOM-wrapped image export for PACS/EMR (improvement 8) — requires pydicom |
+| `/visual/v2/similar` | POST | CLIP embedding similarity search across indexed cases (improvement 9) |
+| `/visual/v2/index-case` | POST | Add a case image to the in-memory CLIP embedding store |
+| `/visual/v2/calibrate-scores` | POST | Build per-field AI correction offsets from clinician-labelled cases (improvement 10) |
+| `/visual/v2/calibration-table` | GET | Return current correction offsets |
+
+Key internals:
+- `_get_vision_model()` — routes to Claude 3.7 or GPT-4o based on `VISION_MODEL` env var (improvement 1)
+- `preprocess_image()` — PIL auto-contrast + unsharp mask + colour enhancement (improvement 5)
+- `apply_calibration()` — applies `_CALIBRATION_TABLE` correction offsets to raw scores
+- `_EMBEDDING_STORE` — in-memory CLIP embedding store (swap for pgvector in production)
+
+### New Backend — `app/api/vision_landmarks.py`
+Router prefix: `/visual`. Implements improvement 4.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/visual/landmark-analyse` | POST | Haar cascade face detection → 9 zone crops → zone-specific GPT-4o JSON per zone → aggregated report |
+| `/visual/landmark-preview` | POST | Returns JPEG with face bounding box and zone outlines drawn |
+
+Zone set: forehead, glabella, right/left periorbital, nose, right/left cheek, lips/perioral, chin/jawline.
+Each zone has mapped danger zones (e.g. supratrochlear artery for glabella) and relevant complications.
+Cascade XML auto-downloaded from opencv/opencv GitHub on first use; cached to `/tmp/aestheticite_cascades/`.
+
+### New Frontend — `client/src/components/vision/VisionStreamingAnalysis.tsx`
+React component for the `/api/visual/v2/stream` SSE endpoint (improvement 2 frontend).
+Features: offline detection, IndexedDB queue banner (PWA), live token display with cursor blink,
+protocol alert cards mid-stream, 3-score summary grid on completion.
+Props: `file`, `token`, `question?`, `context?`, `onDone?`.
+
+### New Frontend — `client/public/vision-sw.js`
+Service worker for offline PWA mode (improvement 6).
+- Caches `/visual-counsel` and icon assets for offline access
+- Queues POST to vision analysis endpoints in IndexedDB when offline (202 Accepted response)
+- Replays queue on reconnect via `online` event + periodic sync
+- Safety-critical routes (`/api/complications/`, `/api/ask/`) always network-first (never cached)
+
+Registration: add `if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/vision-sw.js'); }` to `client/src/main.tsx` when enabling offline mode.
+
+## Vision Advanced (March 2026)
+
+### New Backend — `app/api/vision_advanced.py`
+9 new endpoints under the `/visual` prefix (shares router prefix with `skingpt_integration.py`):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/visual/serial-delta` | POST | Quantified score diff between two visits — per-field deltas (% change, direction), overall trajectory |
+| `/visual/confidence-badge` | POST | Confidence score 0–100 from image quality + signal count + structured output completeness |
+| `/visual/symmetry` | POST | Bilateral symmetry score via GPT-4o — left/right balance, asymmetry regions, clinical significance |
+| `/visual/share` | POST | Time-limited shared review link (1–168h) with SHA-256 audit trail; stores in `_STORE` dict |
+| `/visual/share/{token}` | GET | Retrieve shared session; returns `is_expired` flag; access logged |
+| `/visual/calibrate-colour` | POST | Colour calibration from uploaded image; detects reference card, notes colour shift |
+| `/visual/population-baseline` | POST | Expected appearance at day-N post-procedure with amber/red flags; RAG-enriched from 846K-chunk corpus |
+| `/visual/auto-log` | POST | 1-click session log → `_AUTO_LOG_STORE` + `CASE_STORE` (if protocol triggered) + `_TRAINING_CASES` |
+| `/visual/auto-log/stats` | GET | Dataset accumulator stats |
+
+### New Frontend — `client/src/components/vision/VisionAdvancedUI.tsx`
+8 exported React components:
+- `ImageAnnotator` — canvas drawing layer: pen, arrow, circle, text label, eraser, colour picker, export
+- `MeasurementRuler` — click-to-calibrate + click-to-measure distance overlay in mm
+- `SerialDeltaDisplay` — renders serial delta API response as scored cards with direction arrows and % change
+- `AnalysisConfidenceBadge` — expandable badge showing confidence score and limiting factors
+- `ColourCalibrationGuide` — pre-capture instructions with light condition examples
+- `SharedReviewBanner` — shows active/expired share link with copy button and countdown
+- `PopulationBaseline` — collapsible card showing expected day-N appearance with amber/red flag lists
+- `AutoLogButton` — 1-click log with loading/done/error states
+
+### Wiring
+- `vision_advanced_router` registered in `app/main.py` after `clinical_workflow_v2_router`
+- 9 Express proxy routes added to `server/routes.ts` in the Vision Advanced block
+
+## RAG Engine v2 + ClinicalUIKit (March 2026)
+
+### New Engine Files
+- **`app/engine/self_rag.py`** — Self-RAG iterative retrieval (improvements #1, #3, #14). After initial retrieval, GPT-4o-mini evaluates evidence sufficiency; if insufficient, reformulates the query and retrieves again (max 2 iterations). Injects a calibration confidence block into the answer prompt. Controlled by `SELF_RAG_ENABLED` env var (default: `true`).
+- **`app/engine/model_router.py`** — Model router + Graph RAG + Prompt optimizer (improvements #2, #4, #10, #15). Contains: `route_model()` for DeepSeek-R1 routing on DeepConsult/complex queries; `ComplicationGraph` — in-memory aesthetic medicine knowledge graph with 30+ nodes and 40+ edges; `graph_enrich_query()` — returns entity context string to prepend to answer prompts; `PromptOptimizer` — offline DSPy-style A/B evaluator.
+- **`app/api/clinical_workflow_v2.py`** — Clinical workflow router (improvements #5, #6, #7, #13). Endpoints: `POST /workflow/consultation-note` (voice→structured note), `POST /workflow/consent` (digital consent with SHA-256 audit hash), `GET /workflow/consent/{id}`, `POST /workflow/preflight` (8 red-flag rules + medication check), `POST /workflow/tag-chunk` (NER tagging with 6 entity categories).
+
+### New Frontend
+- **`client/src/components/ClinicalUIKit.tsx`** — 6-component UI library (improvements #8, #9, #11, #12, #13): `EmergencyDropdown` (3-tap protocol access, Alt+E keyboard shortcut), `ClinicalTooltip` + `CLINICAL_TOOLTIPS`, `MHRABadge` (regulatory status, compact & full), `RoleSwitch` (clinician / clinic-owner toggle), `useAutoDarkMode`, `NERTagsDisplay`.
+
+### Wiring
+- `clinical_workflow_v2_router` registered in `app/main.py` at `/workflow` prefix
+- 5 new Express proxy routes in `server/routes.ts`: `/api/workflow/{consultation-note,consent,consent/:id,preflight,tag-chunk}`
+- `ask.tsx`: Emergency button replaced with `EmergencyDropdown` (Alt+E, 1–3 keyboard shortcuts); `MHRABadge compact` added to header
+- `ask_v2.py`: Self-RAG wraps initial retrieval; graph context prepended to every answer prompt; self_rag metadata (`iterations`, `sufficient`, `calibration_level`) emitted in SSE `meta` event
+
+## Clinical State Engine (March 2026)
+
+### DB Session Fix
+- `app/db/session.py` now bypasses Pydantic Settings and resolves the canonical DB URL directly via `os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")`. This fixes a split-brain where Pydantic was overriding the NEON priority with the local helium DB URL.
+- Both sync and async sessions now connect to the Neon production DB.
+
+### Clinical State Integration
+All 5 uploaded files are now wired and live:
+
+| File | Path | Status |
+|---|---|---|
+| `cases.py` | `app/api/routes/cases.py` | Live at `/api/clinical-cases/*` |
+| `live_view_service.py` | `app/services/live_view_service.py` | Serving `GET /api/clinical-cases/{id}/live-view` |
+| `audit_service.py` | `app/services/audit_service.py` | Called on every mutating route |
+| `seed_vascular_occlusion.sql` | Run against Neon | 2 protocols seeded: `vascular-occlusion-v1`, `anaphylaxis-v1` |
+| `supabase-queries.ts` | `client/src/lib/case-queries.ts` + `clinical-state-types.ts` | Adapted to project backend (no Supabase SDK) |
+
+### New DB Tables (Neon)
+`protocol_definitions`, `case_sessions`, `patient_contexts`, `procedure_contexts`, `clinical_state_snapshots`, `clinical_impressions`, `protocol_runs`, `protocol_run_steps`, `intervention_events`, `reassessment_events`, `disposition_plans`, `audit_events`, `evidence_bundles`
+
+### New Python Modules
+- `app/models/clinical_state.py` — SQLAlchemy 2.0 ORM models (13 mapped classes)
+- `app/schemas/clinical_state.py` — Pydantic schemas (all Create/Read/Update + live view)
+- `app/services/audit_service.py` — async audit trail helper
+- `app/services/live_view_service.py` — assembles live view from 8 async DB reads
+- `app/api/routes/cases.py` — 16 endpoints (14 CRUD + 2 protocol lookup)
+
+### Async Session
+`app/db/session.py` now exports both `get_db` (sync, legacy routes) and `get_async_db` (async, clinical state routes) using SQLAlchemy's `create_async_engine` with psycopg3.
+
+### Route Prefixes
+- Clinical cases CRUD: `/api/clinical-cases/*`
+- Protocol definitions: `GET /api/protocols`, `GET /api/protocols/{id}`
+- Protocol run management: `PATCH /api/protocol-runs/{id}`, `PATCH /api/protocol-run-steps/{id}`
 
 ## Audit Fixes (March 2026)
 All 14 TypeScript errors resolved and 2 API/routing bugs fixed:
@@ -38,7 +219,7 @@ All 14 TypeScript errors resolved and 2 API/routing bugs fixed:
   - **Database**: PostgreSQL with pgvector for semantic search.
   - **Embeddings**: fastembed (all-MiniLM-L6-v2).
   - **Authentication**: JWT-based for users, API-key based for admin.
-  - **Data Flow**: User queries are validated, relevant evidence chunks are retrieved via RAG (semantic + keyword search), and an LLM synthesizes an evidence-grounded answer with strict citation enforcement, streaming the response via Server-Sent Events (SSE).
+  - **Data Flow**: User queries are validated, hot-cache is checked first (~250ms if hit), then relevant evidence chunks are retrieved via asyncpg pool (RAG: vector IVFFlat + keyword FTS hybrid), and an LLM synthesizes a concise 3-section evidence-grounded answer with strict citation enforcement. Streaming via SSE. `/ask` endpoint is async (`async def ask`) using `retrieve_db_async` from the asyncpg pool.
 
 ### Clinical Decision Engine (Master Build v1 — newest)
 - **Page**: `/decide` — single-screen real-time interface. 8 quick-select complication buttons + symptom chips → 6 structured sections rendered in <300ms.
@@ -101,7 +282,12 @@ All 14 TypeScript errors resolved and 2 API/routing bugs fixed:
 - **OpenAI API**: Used for text generation, image generation, speech-to-text, and text-to-speech.
 
 ### Database
-- **PostgreSQL**: Primary database, utilized with the `pgvector` extension.
+- **PostgreSQL (Neon)**: Primary database migrated to Neon (PostgreSQL 17.8 at `ep-odd-star-amqythz1.c-5.us-east-1.aws.neon.tech`). pgvector 0.8.0 and pg_trgm enabled. Connection via `NEON_DATABASE_URL` env var which overrides the Replit-managed `DATABASE_URL` at startup in `server/index.ts`.
+  - **1,988,360 active documents**, **846,442 chunks** (all with 384-dim embeddings)
+  - **6 indexes on chunks**: `chunks_pkey` (PK), `idx_chunks_document_id`, `idx_chunks_chunk_index`, `chunks_tsv_gin` (GIN FTS), `chunks_text_norm_trgm` (GIN trgm), `idx_chunks_embedding_hnsw` (IVFFlat, lists=100)
+  - **IVFFlat SQL optimization** (March 2026): Removed JOIN from vector CTE in `SQL_UNIFIED_ALL` and `SQL_UNIFIED_DOMAIN` to allow IVFFlat index usage. Active-doc filtering deferred to final SELECT. Reduced retrieval from 66s → 9s (7× speedup).
+  - **asyncpg pool**: min=1, max=20 connections, `ivfflat.probes=5` set at session level in `_init_connection`, `statement_timeout=120s`. Maintains persistent connections to keep Neon compute warm.
+  - **Performance profile** (March 2026): Cold questions average 6-7s end-to-end (1-8s retrieval + 2.5-3.5s LLM); hot-cache hits serve in ~250ms. Hot answer cache (1-hour TTL) in `app/engine/speed_optimizer.py`.
 
 ### APIs
 - **NIH RxNav API**: Used for drug interaction checking within the Clinical Tools API.
@@ -118,11 +304,12 @@ All 14 TypeScript errors resolved and 2 API/routing bugs fixed:
 - DB engine has `connect_timeout=10` to prevent hung connections from blocking startup.
 
 ### Database Schema Management (CRITICAL)
-- **NEVER run `npm run db:push --force`** on dev — the dev DB has 36 Python-managed tables (including 772K document corpus). `db:push --force` would drop all non-Drizzle tables, destroying the corpus.
+- **NEVER run `npm run db:push --force`** — this project uses Neon with 53 Python-managed tables including 1.988M document corpus + GIN/tsvector indexes. `db:push --force` would drop all non-Drizzle tables/sequences, destroying everything.
 - Use `npx drizzle-kit migrate` instead — it only CREATES tables, never drops anything.
 - `drizzle.config.ts` has `tablesFilter: ["conversations", "messages", "search_history"]` to scope Drizzle to 3 Node-managed tables.
-- Production build runs `npm run build && npx drizzle-kit migrate` to set up the 3 Node-managed tables in the fresh production DB.
-- Python manages all other 36 tables (documents, chunks, users, etc.) directly via SQLAlchemy/psycopg.
+- Python manages all other 50+ tables (documents, chunks, users, etc.) directly via SQLAlchemy/psycopg.
+- **Neon DB connection**: `NEON_DATABASE_URL` env var → overridden as `DATABASE_URL` at startup in `server/index.ts` line 10. This affects both Node.js Drizzle and Python asyncpg/SQLAlchemy.
+
 ## Clinic Network Safety Workspace (Implemented 2026-03-19)
 
 ### Route
@@ -160,3 +347,57 @@ Router prefix: `/api/workspace/` — 20 routes total:
 - Clinics: London Clinic (b1000000-…), Manchester Clinic (b2000000-…)
 - Membership IDs: admin c1000000-…, clinician c2000000-…, reviewer c3000000-…
 - Uncomment `run_network_seed()` in app/main.py bg thread to populate sample data
+
+## Corpus & Background Jobs (March 2026)
+
+### Corpus status
+- **Documents**: 975,888+ (target: 1,000,000)
+- **Chunks**: ~800K+ (re-chunking ongoing; target: all 971K+ docs chunked)
+- **Embedding model**: `BAAI/bge-small-en-v1.5` (384-dim, via fastembed ONNX) — matches ingest pipeline
+
+### Active background jobs (persist across workflow restarts — must be re-started manually)
+Both jobs must be relaunched after each workflow restart by calling their API endpoints with the ADMIN_API_KEY:
+
+**M5 Extension** (`/api/m5ext/start?target=1000000`)
+- Script: `app/scripts/m5_extension.py` | API: `app/api/m5_ext.py`
+- Phase D: 21 new journals (Dermatologic Surgery, JCD, Aesthetic PS, JPRAS, etc.)
+- Phase E: 88 aesthetic-medicine topic queries (biostimulators, thread lift, energy devices, patient outcomes…)
+- Uses `fetch_full_abstracts=False` for speed (10x faster — esummary abstract is used)
+- Self-stops when corpus reaches 1,000,000 docs
+- Status: `GET /api/m5ext/status`
+
+**Re-chunk missing docs** (`/api/rechunk/start?batch=64`)
+- Script: `app/scripts/rechunk_missing.py` | API: `app/api/rechunk.py`
+- Chunks all documents that have zero existing chunks (~164K remaining as of March 2026)
+- Model: `BAAI/bge-small-en-v1.5` (matches existing chunks for vector-space consistency)
+- Idempotent — safe to restart; resumes from unchunked docs automatically
+- Status: `GET /api/rechunk/status`
+
+### Critical schema rules
+- NEVER run `npm run db:push` or `npm run db:push --force` — drizzle-kit 0.31.x bug drops Python-managed sequences and corrupts GIN/tsvector indexes
+- Use ONLY `npx drizzle-kit migrate` for schema changes
+- Python-managed tables: `documents`, `chunks`, `ingestion_runs`, `pipeline_checkpoints`, `pmid_queue`, `publication_syncs`
+
+## Production Deployment Fix (March 2026)
+
+### Root cause of "Python API failed to become healthy within timeout"
+**Two-phase analysis:**
+
+**Phase 1 (earlier fix):** `warm_embedding_cache()` was called at module level, triggering an 83 MB ONNX model download before uvicorn bound. Fixed by moving it to a background thread.
+
+**Phase 2 (final fix):** Even after Phase 1, port 8000 stayed closed for 8–11 minutes in production. Stack dump (SIGUSR1) confirmed Python was stuck in `exec_module` — running module-level import code. The real cause: **43+ router modules were imported at module level** in `app/main.py` (lines 31–74). On a fresh production VM with a cold disk, reading thousands of `.py`/`.pyc` files for the first time (numpy, sqlalchemy, fastembed, asyncpg, openai, etc.) takes 8–11 minutes before uvicorn even gets a chance to bind.
+
+### Final fixes applied (Phase 2)
+1. **`app/main.py` — deferred router loading**: All 43+ `from app.api.* import router` statements moved from module level into `@app.on_event("startup")`. Only 7 lightweight packages remain at module level (fastapi, cors, slowapi, sqlalchemy.text, config, limiter). Result: module import ~1s → uvicorn binds in ~1–2s → `port8000=1` at the first 15s watchdog probe. The startup handler imports routers over ~30–60s (acceptable within the 600s Node.js wait window).
+2. **`build.sh` — explicit router bytecode warmup**: Build step now explicitly imports all 43 router modules (not just `compileall app/`) so their `.pyc` files are in the deployment image. Cold-disk `.pyc` reads are ~10× faster than compiling `.py` files.
+
+### Earlier fixes (Phase 1)
+1. **`app/main.py`**: `warm_embedding_cache()` moved from module level to startup background thread
+2. **`start.sh`**: `PYTHONUNBUFFERED=1`; 15-second watchdog logging Python/Node/port8000 status; SIGUSR1 stack dump trigger at 3 min
+3. **`app/rag/async_retriever.py`**: `timeout=15` on pool creation; `min_size=2` for faster cold start
+4. **`app/rag/cache.py`**: `_fastembed_model_is_cached()` guard prevents ONNX download on startup
+
+### Database architecture
+- `DATABASE_URL` = Replit-managed local PostgreSQL (Drizzle 3 tables: conversations, messages, search_history)
+- `NEON_DATABASE_URL` = Neon (Python RAG: 1.9M+ docs, 846K chunks, pgvector)
+- These are fully decoupled — NEVER set `DATABASE_URL = NEON_DATABASE_URL`

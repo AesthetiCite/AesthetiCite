@@ -374,7 +374,12 @@ def parse_summary(pmid: str, summary: Dict[str, Any]) -> Optional[Dict[str, Any]
         url = f"https://doi.org/{doi}"
 
     # Publication type → document_type
-    pub_types = [p.get("value", "").lower() for p in summary.get("pubtype", [])]
+    # Guard: PubMed esummary occasionally returns bare strings in the pubtype list
+    pub_types = [
+        p.get("value", "").lower()
+        for p in summary.get("pubtype", [])
+        if isinstance(p, dict)
+    ]
 
     if any("guideline" in p or "practice guideline" in p or "consensus" in p for p in pub_types):
         document_type = "guideline"

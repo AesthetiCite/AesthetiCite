@@ -359,7 +359,11 @@ function QuestionCard({
               )}
 
               {state.status === "error" && (
-                <p className="text-xs text-destructive">API unavailable — Python still loading. Try again in 60s.</p>
+                <p className="text-xs text-destructive">
+                  {state.latencyMs && state.latencyMs >= 89_000
+                    ? "Request timed out — server is under load. Try again."
+                    : "Unable to retrieve evidence. Try again."}
+                </p>
               )}
             </div>
 
@@ -454,6 +458,8 @@ export default function Hardest10Page() {
       const t0 = Date.now();
       startTimeRefs.current[qid] = t0;
 
+      const clientTimeout = setTimeout(() => ctl.abort(), 90_000);
+
       updateState(qid, { status: "running", answer: "", aciScore: null, citations: 0, evidenceBadge: null, latencyMs: null, elapsedMs: 0 });
 
       tickerRefs.current[qid] = setInterval(() => {
@@ -501,27 +507,38 @@ export default function Hardest10Page() {
               if (data.type === "content" && typeof data.data === "string") {
                 fullText += data.data;
                 updateState(qid, { answer: fullText });
+              } else if (data.type === "replace") {
+                fullText = "";
+                updateState(qid, { answer: "" });
               } else if (data.type === "citations") {
-                const raw = data.aci_score;
-                const aci =
-                  raw && typeof raw === "object" ? raw.overall_confidence_0_10 : raw;
                 updateState(qid, {
-                  citations: (data.citations || []).length,
-                  aciScore: typeof aci === "number" ? aci / 10 : null,
+                  citations: Array.isArray(data.data) ? data.data.length : 0,
                 });
-              } else if (data.type === "badge") {
-                updateState(qid, { evidenceBadge: data.data || null });
+              } else if (data.type === "meta") {
+                const rawAci = data.aci_score;
+                const aci = typeof rawAci === "number" ? rawAci / 10 : null;
+                updateState(qid, { aciScore: aci });
+              } else if (data.type === "evidence_badge") {
+                const badge = data.level || data.label || data.data || null;
+                updateState(qid, { evidenceBadge: typeof badge === "string" ? badge : null });
+              } else if (data.type === "error") {
+                updateState(qid, { status: "error", latencyMs: Date.now() - t0 });
               }
             } catch {}
           }
         }
 
+        clearTimeout(clientTimeout);
         stopTicker(qid);
         const finalMs = Date.now() - t0;
         updateState(qid, { status: "done", latencyMs: finalMs, elapsedMs: finalMs });
       } catch (err: unknown) {
+        clearTimeout(clientTimeout);
         stopTicker(qid);
-        if ((err as Error)?.name === "AbortError") return;
+        if ((err as Error)?.name === "AbortError") {
+          updateState(qid, { status: "error", latencyMs: Date.now() - t0 });
+          return;
+        }
         updateState(qid, { status: "error", latencyMs: Date.now() - t0 });
       }
     },
@@ -656,7 +673,7 @@ export default function Hardest10Page() {
         {/* Footer note */}
         <p className="text-xs text-center text-muted-foreground pb-6">
           General AI responses are representative examples showing typical output from general medical AI tools — not verbatim OpenEvidence output.
-          {BRAND.name} responses are fully live from the real API with 217K+ publications.
+          {BRAND.name} responses are fully live from the real API with 1.9M+ publications.
         </p>
       </main>
     </div>

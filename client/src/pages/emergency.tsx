@@ -41,7 +41,8 @@ interface ProtocolResponse {
 
 const PROTOCOLS = [
   {
-    key: "vascular_occlusion_ha_filler",
+    key: "vascular_occlusion",
+    query: "vascular occlusion blanching mottling livedo ischemia pain after filler hyaluronidase",
     label: "Vascular Occlusion",
     subtitle: "Blanching · pain · mottling after filler",
     severity: "critical",
@@ -49,7 +50,8 @@ const PROTOCOLS = [
     ringColor: "ring-red-300",
   },
   {
-    key: "anaphylaxis_allergic_reaction",
+    key: "anaphylaxis",
+    query: "anaphylaxis anaphylactic allergic reaction urticaria angioedema epinephrine adrenaline hypotension",
     label: "Anaphylaxis",
     subtitle: "Urticaria · hypotension · throat tightness",
     severity: "critical",
@@ -57,7 +59,26 @@ const PROTOCOLS = [
     ringColor: "ring-red-300",
   },
   {
-    key: "infection_or_biofilm_after_filler",
+    key: "skin_necrosis",
+    query: "necrosis dusky skin livedo violaceous ischemia tissue necrosis after filler",
+    label: "Skin Necrosis",
+    subtitle: "Ischaemic tissue injury · delayed VO outcome",
+    severity: "critical",
+    bg: "bg-red-500 hover:bg-red-600",
+    ringColor: "ring-red-300",
+  },
+  {
+    key: "vision_change",
+    query: "vision loss blurring diplopia visual symptoms after filler ophthalmic artery retinal artery ocular",
+    label: "Vision Change",
+    subtitle: "Any visual symptom post-filler — emergency",
+    severity: "critical",
+    bg: "bg-red-500 hover:bg-red-600",
+    ringColor: "ring-red-300",
+  },
+  {
+    key: "infection_biofilm",
+    query: "infection after filler biofilm abscess infected filler erythema warmth fluctuance drainage",
     label: "Infection / Biofilm",
     subtitle: "Warmth · erythema · fluctuance · fever",
     severity: "high",
@@ -65,7 +86,8 @@ const PROTOCOLS = [
     ringColor: "ring-orange-300",
   },
   {
-    key: "botulinum_toxin_ptosis",
+    key: "ptosis",
+    query: "ptosis after botox eyelid drooping brow ptosis diplopia botulinum toxin ptosis management",
     label: "Ptosis",
     subtitle: "Eyelid droop after botulinum toxin",
     severity: "high",
@@ -73,7 +95,8 @@ const PROTOCOLS = [
     ringColor: "ring-amber-300",
   },
   {
-    key: "tyndall_effect_ha_filler",
+    key: "tyndall_effect",
+    query: "tyndall effect blue discoloration filler bluish tinge superficial filler blue grey",
     label: "Tyndall Effect",
     subtitle: "Blue-grey discolouration · superficial HA",
     severity: "moderate",
@@ -81,7 +104,8 @@ const PROTOCOLS = [
     ringColor: "ring-sky-300",
   },
   {
-    key: "filler_nodules_inflammatory_or_noninflammatory",
+    key: "filler_nodules",
+    query: "filler nodule lump after filler bump granuloma delayed nodule hard lump",
     label: "Filler Nodules",
     subtitle: "Palpable lumps · weeks to months post-treatment",
     severity: "moderate",
@@ -90,27 +114,12 @@ const PROTOCOLS = [
   },
   {
     key: "neuromodulator_resistance",
+    query: "neuromodulator resistance no response to toxin shortened duration pseudo-resistance botulinum",
     label: "Toxin Resistance",
     subtitle: "No response · shortened duration · pseudo-resistance",
     severity: "routine",
     bg: "bg-violet-600 hover:bg-violet-700",
     ringColor: "ring-violet-300",
-  },
-  {
-    key: "skin_necrosis_after_filler",
-    label: "Skin Necrosis",
-    subtitle: "Dusky/grey skin · livedo · post-filler ischaemia",
-    severity: "critical",
-    bg: "bg-red-700 hover:bg-red-800",
-    ringColor: "ring-red-400",
-  },
-  {
-    key: "vision_change_after_filler",
-    label: "Vision Change",
-    subtitle: "Visual loss · blurring · diplopia after filler",
-    severity: "critical",
-    bg: "bg-red-600 hover:bg-red-700",
-    ringColor: "ring-red-300",
   },
 ];
 
@@ -158,6 +167,7 @@ export default function EmergencyPage() {
   const urlProtocol = new URLSearchParams(location.split("?")[1] || "").get("protocol") || "";
 
   const [activeKey, setActiveKey] = useState(urlProtocol);
+  const [activeQuery, setActiveQuery] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [timerActive, setTimerActive] = useState(false);
 
@@ -167,8 +177,11 @@ export default function EmergencyPage() {
 
   useEffect(() => {
     if (urlProtocol) {
+      const found = PROTOCOLS.find(p => p.key === urlProtocol);
+      const q = found?.query ?? urlProtocol;
       setActiveKey(urlProtocol);
-      protocolMutation.mutate(urlProtocol);
+      setActiveQuery(q);
+      protocolMutation.mutate(q);
       setTimerActive(true);
       setElapsedSeconds(0);
     }
@@ -180,9 +193,10 @@ export default function EmergencyPage() {
     return () => clearInterval(id);
   }, [timerActive]);
 
-  function handleSelectProtocol(key: string) {
-    setActiveKey(key);
-    protocolMutation.mutate(key);
+  function handleSelectProtocol(p: typeof PROTOCOLS[0]) {
+    setActiveKey(p.key);
+    setActiveQuery(p.query);
+    protocolMutation.mutate(p.query);
     setTimerActive(true);
     setElapsedSeconds(0);
   }
@@ -202,9 +216,13 @@ export default function EmergencyPage() {
       <header className="border-b border-red-900/50 bg-red-950/80 backdrop-blur-sm sticky top-0 z-20">
         <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link href="/">
-              <button className="text-red-400 hover:text-red-200 transition-colors" data-testid="button-emergency-back">
+            <Link href="/home">
+              <button
+                className="flex items-center gap-1.5 text-red-300 hover:text-white hover:bg-white/10 transition-colors rounded-lg px-2.5 py-1.5 text-sm font-medium"
+                data-testid="button-emergency-back"
+              >
                 <ArrowLeft className="w-4 h-4" />
+                <span>Back</span>
               </button>
             </Link>
             <div className="flex items-center gap-2">
@@ -226,7 +244,7 @@ export default function EmergencyPage() {
             )}
             {protocol && (
               <button
-                onClick={() => exportPDF(activeKey)}
+                onClick={() => exportPDF(activeQuery)}
                 data-testid="button-export-pdf"
                 className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg px-3 py-1.5 transition-colors"
               >
@@ -245,17 +263,25 @@ export default function EmergencyPage() {
             <button
               key={p.key}
               data-testid={`button-protocol-${p.key}`}
-              onClick={() => handleSelectProtocol(p.key)}
+              onClick={() => handleSelectProtocol(p)}
               className={`
                 w-full text-left rounded-xl p-3 transition-all border
                 ${activeKey === p.key
                   ? `${p.bg} text-white border-transparent shadow-lg ring-2 ${p.ringColor}`
-                  : "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10"
+                  : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 hover:border-slate-500"
                 }
               `}
             >
-              <p className="text-xs font-bold leading-none">{p.label}</p>
-              <p className={`text-[10px] mt-1 leading-tight ${activeKey === p.key ? "text-white/80" : "text-slate-500"}`}>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                  p.severity === "critical" ? "bg-red-500" :
+                  p.severity === "high"     ? "bg-orange-400" :
+                  p.severity === "moderate" ? "bg-amber-400" :
+                                              "bg-slate-500"
+                }`} />
+                <p className="text-xs font-bold leading-none">{p.label}</p>
+              </div>
+              <p className={`text-[10px] mt-1.5 leading-tight pl-4 ${activeKey === p.key ? "text-white/80" : "text-slate-400"}`}>
                 {p.subtitle}
               </p>
             </button>
@@ -271,22 +297,34 @@ export default function EmergencyPage() {
           )}
 
           {!activeKey && !protocolMutation.isPending && (
-            <div className="bg-white/5 rounded-2xl border border-white/10 p-12 flex flex-col items-center text-center gap-4">
-              <div className="w-14 h-14 rounded-full bg-red-900/50 flex items-center justify-center">
-                <Zap className="w-7 h-7 text-red-500" />
+            <div className="bg-white/5 rounded-2xl border border-white/10 p-6 flex flex-col gap-5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-red-900/50 flex items-center justify-center flex-shrink-0">
+                  <Zap className="w-5 h-5 text-red-500" />
+                </div>
+                <div>
+                  <p className="text-base font-bold text-white">Select a protocol</p>
+                  <p className="text-sm text-slate-400">Choose the complication type below or from the list on the left</p>
+                </div>
               </div>
-              <div>
-                <p className="text-base font-bold text-white">Select a protocol</p>
-                <p className="text-sm text-slate-400 mt-1">Choose the complication from the list</p>
-              </div>
-              <div className="flex flex-wrap gap-2 justify-center mt-2">
-                {PROTOCOLS.filter(p => p.severity === "critical").map(p => (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {PROTOCOLS.map(p => (
                   <button
                     key={p.key}
-                    onClick={() => handleSelectProtocol(p.key)}
-                    className={`${p.bg} text-white text-xs font-bold rounded-lg px-4 py-2 transition-all`}
+                    onClick={() => handleSelectProtocol(p)}
+                    className={`flex items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-all ${p.bg} text-white`}
+                    data-testid={`button-quicklaunch-${p.key}`}
                   >
-                    {p.label}
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      p.severity === "critical" ? "bg-white animate-pulse" :
+                      p.severity === "high"     ? "bg-orange-200" :
+                      p.severity === "moderate" ? "bg-amber-200" :
+                                                  "bg-slate-300"
+                    }`} />
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold leading-none truncate">{p.label}</p>
+                      <p className="text-[10px] mt-0.5 text-white/70 leading-tight truncate">{p.subtitle}</p>
+                    </div>
                   </button>
                 ))}
               </div>

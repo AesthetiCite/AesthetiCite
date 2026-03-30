@@ -11,6 +11,7 @@ VeriDoc Engine (new, activated via VERIDOC_ENABLED=1):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from app.db.session import get_db
 from app.core.config import settings
 from app.core.safety import safety_screen
 from app.core.limiter import limiter
+from app.core.query_translator import get_retrieval_query
 from app.rag.retriever import retrieve_db
 from app.rag.embedder import embed_text
 from app.engine.veridoc import AesthetiCiteEngine, TTLCache
@@ -1021,7 +1023,6 @@ async def answer_question_veridoc(
     include_tools: bool = True,
     mode: str = "fast",
 ) -> AskOEResponse:
-    import asyncio
     t0 = time.time()
 
     retrieve_fn = _veridoc_retrieve_adapter(db, domain)
@@ -1079,21 +1080,33 @@ async def ask_oe(request: Request, body: AskOERequest, db: Session = Depends(get
             refusal_reason=safety.refusal_reason or "Request refused by safety policy.",
         )
 
+    detected_lang = (body.lang or "auto").lower().split("-")[0]
+
+    # Pre-translate non-English queries so retrieval, claim planning and grounding
+    # all operate on English text against our English-only RAG corpus.
+    retrieval_query, original_lang = await asyncio.get_event_loop().run_in_executor(
+        None, get_retrieval_query, query, detected_lang
+    )
+    if original_lang and original_lang != detected_lang:
+        logger.info(f"[ask_oe] auto-detected lang={original_lang}; translated query for retrieval")
+    if retrieval_query != query:
+        logger.info(f"[ask_oe] translated ({detected_lang}→en): {retrieval_query[:80]!r}")
+
     if VERIDOC_ENABLED:
         return await answer_question_veridoc(
-            question=query,
+            question=retrieval_query,
             db=db,
             domain=body.domain,
-            lang=(body.lang or "en").lower().split("-")[0],
+            lang="en",
             include_related=body.include_related_questions,
             include_tools=body.include_inline_tools,
         )
 
     return await answer_question(
-        question=query,
+        question=retrieval_query,
         db=db,
         domain=body.domain,
-        lang=(body.lang or "en").lower().split("-")[0],
+        lang="en",
         include_related=body.include_related_questions,
         include_tools=body.include_inline_tools,
     )

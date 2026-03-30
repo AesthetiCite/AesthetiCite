@@ -449,10 +449,14 @@ export async function registerRoutes(
         method: "POST",
         headers,
         body: JSON.stringify(req.body),
+        signal: AbortSignal.timeout(120_000),
       });
 
       if (!upstream.ok || !upstream.body) {
-        res.write(`data: ${JSON.stringify({ type: "error", message: "Backend unavailable" })}\n\n`);
+        const msg = upstream.status === 503
+          ? "The AI engine is starting up — please wait a moment and try again."
+          : "Backend unavailable";
+        res.write(`data: ${JSON.stringify({ type: "error", message: msg })}\n\n`);
         res.end();
         return;
       }
@@ -510,6 +514,7 @@ export async function registerRoutes(
   }
 
   app.post("/api/auth/login", (req, res) => proxyToFastAPI(req, res, "/auth/login"));
+  app.post("/api/auth/refresh", (req, res) => proxyToFastAPI(req, res, "/auth/refresh"));
   app.post("/api/auth/register", (req, res) => proxyToFastAPI(req, res, "/auth/register"));
   app.get("/api/auth/me", (req, res) => proxyToFastAPI(req, res, "/auth/me"));
   app.post("/api/auth/request-access", (req, res) => proxyToFastAPI(req, res, "/auth/request-access"));
@@ -632,6 +637,12 @@ export async function registerRoutes(
   app.get("/api/health", (req, res) => proxyToFastAPI(req, res, "/health"));
   app.get("/api/health/deep", (req, res) => proxyToFastAPI(req, res, "/health/deep"));
   app.get("/api/ready", (req, res) => proxyToFastAPI(req, res, "/ready"));
+  app.post("/api/admin/auth/set-password", (req, res) => proxyToFastAPI(req, res, "/auth/admin/set-password"));
+  app.get("/api/admin/dashboard/overview", (req, res) => proxyToFastAPI(req, res, "/admin/dashboard/overview"));
+  app.get("/api/admin/dashboard/users", (req, res) => proxyToFastAPI(req, res, "/admin/dashboard/users"));
+  app.get("/api/admin/dashboard/analytics", (req, res) => proxyToFastAPI(req, res, "/admin/dashboard/analytics"));
+  app.get("/api/admin/dashboard/recent-logins", (req, res) => proxyToFastAPI(req, res, "/admin/dashboard/recent-logins"));
+  app.get("/api/admin/dashboard/health", (req, res) => proxyToFastAPI(req, res, "/admin/dashboard/health"));
   app.get("/api/admin/metrics", (req, res) => proxyToFastAPI(req, res, "/admin/metrics"));
   app.get("/api/admin/metrics/summary", (req, res) => proxyToFastAPI(req, res, "/admin/metrics/summary"));
   app.get("/api/admin/benchmark/summary", (req, res) => proxyToFastAPI(req, res, "/admin/benchmark/summary"));
@@ -665,6 +676,11 @@ export async function registerRoutes(
   app.post("/api/tools/calc/dilution",          (req, res) => proxyToFastAPI(req, res, "/tools/calc/dilution"));
   app.post("/api/tools/aesthetic/toxin/dilution",(req, res) => proxyToFastAPI(req, res, "/tools/aesthetic/toxin/dilution"));
   app.post("/api/tools/aesthetic/risk-flags/check",(req,res) => proxyToFastAPI(req, res, "/tools/aesthetic/risk-flags/check"));
+  app.post("/api/tools/glp1-assessment",   (req, res) => proxyToFastAPI(req, res, "/api/tools/glp1-assessment"));
+  app.post("/api/tools/vascular-risk",     (req, res) => proxyToFastAPI(req, res, "/api/tools/vascular-risk"));
+  app.post("/api/tools/consent-checklist", (req, res) => proxyToFastAPI(req, res, "/api/tools/consent-checklist"));
+  app.post("/api/tools/aftercare",         (req, res) => proxyToFastAPI(req, res, "/api/tools/aftercare"));
+  app.post("/api/tools/toxin-dosing",      (req, res) => proxyToFastAPI(req, res, "/api/tools/toxin-dosing"));
 
   // Voice transcription with file upload
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -921,6 +937,118 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/visual/differential", (req, res) => proxyToFastAPI(req, res, "/api/visual/differential"));
+  app.post("/api/visual/patient-explanation", (req, res) => proxyToFastAPI(req, res, "/api/visual/patient-explanation"));
+  app.delete("/api/visual/delete/:visual_id", (req, res) => proxyToFastAPI(req, res, `/api/visual/delete/${req.params.visual_id}`));
+  app.post("/api/vision/analyse",          (req, res) => proxyToFastAPI(req, res, "/api/vision/analyse"));
+  app.post("/api/vision/serial-compare",   (req, res) => proxyToFastAPI(req, res, "/api/vision/serial-compare"));
+  app.get ("/api/vision/feature-glossary", (req, res) => proxyToFastAPI(req, res, "/api/vision/feature-glossary"));
+
+  // ── Vision Extensions (Gap 1–4) ──────────────────────────────────────────
+  app.post("/api/visual/export-pdf", (req, res) => proxyToFastAPI(req, res, "/visual/export-pdf"));
+  app.get("/api/visual/download-pdf/:filename", (req, res) =>
+    proxyToFastAPI(req, res, `/visual/download-pdf/${req.params.filename}`)
+  );
+  app.post("/api/visual/log-serial-case", (req, res) => proxyToFastAPI(req, res, "/visual/log-serial-case"));
+  app.get("/api/visual/serial-cases", (req, res) => proxyToFastAPI(req, res, "/visual/serial-cases"));
+  app.get("/api/visual/glossary", (req, res) => proxyToFastAPI(req, res, "/visual/glossary"));
+  app.get("/api/visual/glossary/:term", (req, res) =>
+    proxyToFastAPI(req, res, `/visual/glossary/${req.params.term}`)
+  );
+  app.post("/api/visual/preprocedure-from-vision", (req, res) =>
+    proxyToFastAPI(req, res, "/visual/preprocedure-from-vision")
+  );
+
+  // ── Vision Quality Engine (Improvement 1, 4, 5) ────────────────────────────
+  app.post("/api/visual/validate-capture", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ detail: "No image file provided" });
+      const formData = new FormData();
+      formData.append("file", req.file.buffer, {
+        filename: req.file.originalname || "photo.jpg",
+        contentType: req.file.mimetype,
+      });
+      const response = await fetch(`${PYTHON_API_BASE}/visual/validate-capture`, {
+        method: "POST",
+        headers: {
+          ...formData.getHeaders(),
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+        },
+        body: formData as unknown as BodyInit,
+      });
+      const data = await response.json();
+      res.status(response.status).json(data);
+    } catch (error) {
+      console.error("Capture validation error:", error);
+      res.status(502).json({ detail: "Image quality check unavailable" });
+    }
+  });
+
+  app.post("/api/visual/fitzpatrick", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ detail: "No image file provided" });
+      const formData = new FormData();
+      formData.append("file", req.file.buffer, {
+        filename: req.file.originalname || "photo.jpg",
+        contentType: req.file.mimetype,
+      });
+      const response = await fetch(`${PYTHON_API_BASE}/visual/fitzpatrick`, {
+        method: "POST",
+        headers: {
+          ...formData.getHeaders(),
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization as string } : {}),
+        },
+        body: formData as unknown as BodyInit,
+      });
+      const data = await response.json();
+      res.status(response.status).json(data);
+    } catch (error) {
+      console.error("Fitzpatrick detection error:", error);
+      res.status(502).json({ detail: "Fitzpatrick assessment unavailable" });
+    }
+  });
+
+  app.post("/api/visual/training-case", (req, res) => proxyToFastAPI(req, res, "/visual/training-case"));
+  app.get("/api/visual/training-dataset/stats", (req, res) => proxyToFastAPI(req, res, "/visual/training-dataset/stats"));
+
+  // Clinical Workflow v2 (improvements #5, #6, #7, #13)
+  app.post("/api/workflow/consultation-note", (req, res) => proxyToFastAPI(req, res, "/workflow/consultation-note"));
+  app.post("/api/workflow/consent",           (req, res) => proxyToFastAPI(req, res, "/workflow/consent"));
+  app.get("/api/workflow/consent/:id",        (req, res) => proxyToFastAPI(req, res, `/workflow/consent/${req.params.id}`));
+  app.post("/api/workflow/preflight",         (req, res) => proxyToFastAPI(req, res, "/workflow/preflight"));
+  app.post("/api/workflow/tag-chunk",         (req, res) => proxyToFastAPI(req, res, "/workflow/tag-chunk"));
+
+  // Vision Advanced endpoints (serial delta, confidence badge, symmetry, share, calibration, baseline, auto-log)
+  app.post("/api/visual/serial-delta",        (req, res) => proxyToFastAPI(req, res, "/visual/serial-delta"));
+  app.post("/api/visual/confidence-badge",    (req, res) => proxyToFastAPI(req, res, "/visual/confidence-badge"));
+  app.post("/api/visual/symmetry",            (req, res) => proxyToFastAPI(req, res, "/visual/symmetry"));
+  app.post("/api/visual/share",               (req, res) => proxyToFastAPI(req, res, "/visual/share"));
+  app.get("/api/visual/share/:token",         (req, res) => proxyToFastAPI(req, res, `/visual/share/${req.params.token}`));
+  app.post("/api/visual/calibrate-colour",    (req, res) => proxyToFastAPI(req, res, "/visual/calibrate-colour"));
+  app.post("/api/visual/population-baseline", (req, res) => proxyToFastAPI(req, res, "/visual/population-baseline"));
+  app.post("/api/visual/auto-log",            (req, res) => proxyToFastAPI(req, res, "/visual/auto-log"));
+  app.get("/api/visual/auto-log/stats",       (req, res) => proxyToFastAPI(req, res, "/visual/auto-log/stats"));
+
+  // Vision Engine v2 endpoints (improvements 1-3, 5, 7-10)
+  app.post("/api/visual/v2/analyse",          (req, res) => proxyToFastAPI(req, res, "/visual/v2/analyse"));
+  app.post("/api/visual/v2/stream",           (req, res) => proxyToFastAPI(req, res, "/visual/v2/stream"));
+  app.post("/api/visual/v2/multi-analyse",    (req, res) => proxyToFastAPI(req, res, "/visual/v2/multi-analyse"));
+  app.post("/api/visual/v2/video",            (req, res) => proxyToFastAPI(req, res, "/visual/v2/video"));
+  app.post("/api/visual/v2/dicom-export",     (req, res) => proxyToFastAPI(req, res, "/visual/v2/dicom-export"));
+  app.post("/api/visual/v2/similar",          (req, res) => proxyToFastAPI(req, res, "/visual/v2/similar"));
+  app.post("/api/visual/v2/index-case",       (req, res) => proxyToFastAPI(req, res, "/visual/v2/index-case"));
+  app.post("/api/visual/v2/calibrate-scores", (req, res) => proxyToFastAPI(req, res, "/visual/v2/calibrate-scores"));
+  app.get("/api/visual/v2/calibration-table", (req, res) => proxyToFastAPI(req, res, "/visual/v2/calibration-table"));
+
+  // Vision Landmarks — anatomical zone analysis (improvement 4)
+  app.post("/api/visual/landmark-analyse",    (req, res) => proxyToFastAPI(req, res, "/visual/landmark-analyse"));
+  app.post("/api/visual/landmark-preview",    (req, res) => proxyToFastAPI(req, res, "/visual/landmark-preview"));
+
+  // SkinGPT outcome simulation endpoints
+  app.post("/api/visual/simulate-outcome", (req, res) => proxyToFastAPI(req, res, "/visual/simulate-outcome"));
+  app.post("/api/visual/simulate-scenarios", (req, res) => proxyToFastAPI(req, res, "/visual/simulate-scenarios"));
+  app.get("/api/visual/available-scenarios", (req, res) => proxyToFastAPI(req, res, "/visual/available-scenarios"));
+
   app.post("/api/ask/visual/stream", async (req, res) => {
     try {
       res.setHeader("Content-Type", "text/event-stream");
@@ -935,7 +1063,7 @@ export async function registerRoutes(
         headers["Authorization"] = req.headers.authorization as string;
       }
 
-      const fastApiRes = await fetch(`${PYTHON_API_BASE}/ask/visual/stream`, {
+      const fastApiRes = await fetch(`${PYTHON_API_BASE}/visual/stream`, {
         method: "POST",
         headers,
         body: JSON.stringify(req.body),
@@ -1307,6 +1435,23 @@ self.addEventListener('fetch',e=>{});`);
   app.post("/api/backup/start",  (req, res) => proxyToFastAPI(req, res, "/api/backup/start"));
   app.get("/api/backup/status",  (req, res) => proxyToFastAPI(req, res, "/api/backup/status"));
   app.get("/api/backup/files",   (req, res) => proxyToFastAPI(req, res, "/api/backup/files"));
+
+  // ─── Re-chunk missing docs (admin-only) ─────────────────────────────────────
+  app.post("/api/rechunk/start",  (req, res) => proxyToFastAPI(req, res, "/api/rechunk/start"));
+  app.get("/api/rechunk/status",  (req, res) => proxyToFastAPI(req, res, "/api/rechunk/status"));
+  app.post("/api/rechunk/stop",   (req, res) => proxyToFastAPI(req, res, "/api/rechunk/stop"));
+
+  // Session tracker
+  app.post("/api/admin/sessions/start",                   (req, res) => proxyToFastAPI(req, res, "/admin/sessions/start"));
+  app.post("/api/admin/sessions/heartbeat",               (req, res) => proxyToFastAPI(req, res, "/admin/sessions/heartbeat"));
+  app.post("/api/admin/sessions/end",                     (req, res) => proxyToFastAPI(req, res, "/admin/sessions/end"));
+  app.get("/api/admin/sessions/user/:email/stats",        (req, res) => proxyToFastAPI(req, res, `/admin/sessions/user/${req.params.email}/stats`));
+  app.get("/api/admin/sessions/user/:email",              (req, res) => proxyToFastAPI(req, res, `/admin/sessions/user/${req.params.email}`));
+
+  // ─── M5 Extension — Phase D+E ingest to 1M (admin-only) ─────────────────────
+  app.post("/api/m5ext/start",  (req, res) => proxyToFastAPI(req, res, "/api/m5ext/start"));
+  app.get("/api/m5ext/status",  (req, res) => proxyToFastAPI(req, res, "/api/m5ext/status"));
+  app.post("/api/m5ext/stop",   (req, res) => proxyToFastAPI(req, res, "/api/m5ext/stop"));
 
   app.post("/api/decide/report", async (req: Request, res: Response) => {
     try {

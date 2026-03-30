@@ -1,0 +1,24 @@
+# ── Large corpus ingestion archives ─────────────────────────────────────────
+# These files were used to populate the Neon vector DB (now complete at 1.99M
+# docs). They must not be included in the deployment image.
+aestheticite_documents.tar.gz
+aestheticite_part_aa
+aestheticite_part_ab
+aestheticite_part_ac
+aestheticite_part_ad
+aestheticite_part_ae
+aestheticite_part_af
+aestheticite_part_ag
+aestheticite_part_ah
+aestheticite.zip
+aestheticite_codebase.txt
+
+# ── Source corpus text files (already ingested into Neon) ────────────────────
+data/pmc_fulltext/
+
+# ── Mobile stubs (not used in the web deployment) ───────────────────────────
+android/
+ios/
+
+# ── Test / temporary artifacts ───────────────────────────────────────────────
+.pytest_cache/

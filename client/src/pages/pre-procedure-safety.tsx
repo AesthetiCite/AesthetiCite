@@ -400,7 +400,7 @@ function CheckField({
           className="sr-only"
         />
         <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
-          ${checked ? "bg-slate-700 border-slate-700" : "border-slate-300 group-hover:border-slate-400"}`}>
+          ${checked ? "bg-slate-700 border-slate-700" : "border-border group-hover:border-slate-400"}`}>
           {checked && <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 10 10">
             <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           </svg>}
@@ -427,11 +427,11 @@ function SelectField({
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">{label}</label>
+      <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">{label}</label>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent transition-all"
+        className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent transition-all"
       >
         <option value="">{placeholder || `Select ${label.toLowerCase()}`}</option>
         {options.map(o => (
@@ -449,13 +449,13 @@ function TextInputField({
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">{label}</label>
+      <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">{label}</label>
       <input
         type="text"
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder || ""}
-        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent transition-all"
+        className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent transition-all"
       />
     </div>
   );
@@ -591,16 +591,16 @@ export default function PreProcedureSafetyPage() {
   const probColor = (p: string) =>
     p === "high" ? "bg-red-100 text-red-700 border-red-200"
     : p === "moderate" ? "bg-amber-100 text-amber-700 border-amber-200"
-    : "bg-slate-100 text-slate-600 border-slate-200";
+    : "bg-slate-100 text-muted-foreground border-border";
 
   return (
-    <div className="min-h-screen bg-slate-50 font-[system-ui]">
+    <div className="min-h-screen bg-background font-[system-ui]">
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur-sm">
+      <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur-sm">
         <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link href="/ask" className="flex items-center gap-1 text-slate-400 hover:text-slate-600 text-sm transition-colors">
+            <Link href="/ask" className="flex items-center gap-1 text-muted-foreground hover:text-foreground text-sm transition-colors">
               <ArrowLeft className="w-4 h-4" />
             </Link>
             <div className="flex items-center gap-2">
@@ -608,25 +608,25 @@ export default function PreProcedureSafetyPage() {
                 <ShieldAlert className="w-4 h-4 text-white" />
               </div>
               <div>
-                <h1 className="text-sm font-bold text-slate-800 leading-none">AesthetiCite</h1>
-                <p className="text-[10px] text-slate-500 leading-none mt-0.5">Pre-Procedure Safety Check</p>
+                <h1 className="text-sm font-bold text-foreground leading-none">AesthetiCite</h1>
+                <p className="text-[10px] text-muted-foreground leading-none mt-0.5">Pre-Procedure Safety Check</p>
               </div>
             </div>
           </div>
 
           {/* Tabs */}
-          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/60 rounded-xl p-1 shadow-inner">
             <button
               data-testid="tab-safety-check"
               onClick={() => setActiveTab("check")}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === "check" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeTab === "check" ? "bg-teal-700 text-white shadow-md shadow-teal-900/20" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/50"}`}
             >
               Safety Check
             </button>
             <button
               data-testid="tab-differential"
               onClick={() => setActiveTab("differential")}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center gap-1.5 ${activeTab === "differential" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${activeTab === "differential" ? "bg-teal-700 text-white shadow-md shadow-teal-900/20" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/50"}`}
             >
               <Microscope className="w-3 h-3" />
               Complication Differential
@@ -634,7 +634,7 @@ export default function PreProcedureSafetyPage() {
             <button
               data-testid="tab-prescan"
               onClick={() => setActiveTab("prescan")}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center gap-1.5 ${activeTab === "prescan" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${activeTab === "prescan" ? "bg-teal-700 text-white shadow-md shadow-teal-900/20" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/50"}`}
             >
               <Waves className="w-3 h-3" />
               Pre-Scan Briefing
@@ -655,9 +655,9 @@ export default function PreProcedureSafetyPage() {
           {/* ── Form ──────────────────────────────────────────────────── */}
           <div className="lg:col-span-2 space-y-5">
 
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-              <h2 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <Zap className="w-4 h-4 text-slate-600" />
+            <div className="bg-card rounded-2xl border border-border p-5 shadow-sm">
+              <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
+                <Zap className="w-4 h-4 text-muted-foreground" />
                 Procedure Details
               </h2>
               <div className="space-y-3">
@@ -732,8 +732,8 @@ export default function PreProcedureSafetyPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-              <h2 className="text-sm font-bold text-slate-800 mb-4">Patient Risk Factors</h2>
+            <div className="bg-card rounded-2xl border border-border p-5 shadow-sm">
+              <h2 className="text-sm font-bold text-foreground mb-4">Patient Risk Factors</h2>
               <div className="space-y-3">
                 <CheckField
                   label="Prior filler in same area"
@@ -814,11 +814,11 @@ export default function PreProcedureSafetyPage() {
           <div className="lg:col-span-3 space-y-4">
 
             {!result && !safetyMutation.isPending && (
-              <div className="bg-white rounded-2xl border border-dashed border-slate-200 p-12 flex flex-col items-center justify-center text-center gap-3">
+              <div className="bg-card rounded-2xl border border-dashed border-border p-12 flex flex-col items-center justify-center text-center gap-3">
                 <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center">
                   <ShieldAlert className="w-6 h-6 text-slate-400" />
                 </div>
-                <p className="text-sm font-medium text-slate-500">Complete the form to run a safety assessment</p>
+                <p className="text-sm font-medium text-muted-foreground">Complete the form to run a safety assessment</p>
                 <p className="text-xs text-slate-400 max-w-xs">
                   AesthetiCite will return a decision badge, risk score, danger zones, ultrasound guidance flags, and evidence-based mitigation steps.
                 </p>
@@ -826,9 +826,9 @@ export default function PreProcedureSafetyPage() {
             )}
 
             {safetyMutation.isPending && (
-              <div className="bg-white rounded-2xl border border-slate-200 p-12 flex flex-col items-center gap-4">
-                <div className="w-10 h-10 border-[3px] border-slate-200 border-t-slate-700 rounded-full animate-spin" />
-                <p className="text-sm text-slate-500">Analysing procedure risk…</p>
+              <div className="bg-card rounded-2xl border border-border p-12 flex flex-col items-center gap-4">
+                <div className="w-10 h-10 border-[3px] border-border border-t-slate-700 rounded-full animate-spin" />
+                <p className="text-sm text-muted-foreground">Analysing procedure risk…</p>
               </div>
             )}
 
@@ -877,8 +877,8 @@ export default function PreProcedureSafetyPage() {
                 <BiostimulatorCard product={productType} />
 
                 {result.caution_flags.length > 0 && (
-                  <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Caution Flags</h3>
+                  <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                    <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Caution Flags</h3>
                     <div className="space-y-1.5">
                       {result.caution_flags.map((flag, i) => (
                         <div key={i} className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
@@ -890,8 +890,8 @@ export default function PreProcedureSafetyPage() {
                   </div>
                 )}
 
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Complication Risks</h3>
+                <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                  <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Top Complication Risks</h3>
                   <div className="space-y-3">
                     {result.top_risks.map((risk, i) => (
                       <div key={i}>
@@ -907,16 +907,16 @@ export default function PreProcedureSafetyPage() {
                             style={{ width: `${risk.risk_score}%` }}
                           />
                         </div>
-                        <p className="text-xs text-slate-500 mt-1">{risk.why_it_matters}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{risk.why_it_matters}</p>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Procedure Intelligence</h3>
+                <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                  <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Procedure Intelligence</h3>
                   {result.procedure_insight.likely_plane_or_target && (
-                    <p className="text-xs text-slate-600 mb-3 bg-slate-50 rounded-lg px-3 py-2">
+                    <p className="text-xs text-muted-foreground mb-3 bg-slate-50 rounded-lg px-3 py-2">
                       <span className="font-semibold">Plane / Target:</span> {result.procedure_insight.likely_plane_or_target}
                     </p>
                   )}
@@ -935,7 +935,7 @@ export default function PreProcedureSafetyPage() {
                   {result.procedure_insight.technical_notes.length > 0 && (
                     <div className="space-y-1.5">
                       {result.procedure_insight.technical_notes.map((note, i) => (
-                        <div key={i} className="flex items-start gap-2 text-xs text-slate-600">
+                        <div key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
                           <ChevronRight className="w-3 h-3 flex-shrink-0 mt-0.5 text-slate-400" />
                           {note}
                         </div>
@@ -944,12 +944,12 @@ export default function PreProcedureSafetyPage() {
                   )}
                 </div>
 
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Mitigation Steps</h3>
+                <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                  <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Mitigation Steps</h3>
                   <ol className="space-y-2">
                     {result.mitigation_steps.map((step, i) => (
                       <li key={i} className="flex items-start gap-2.5 text-xs text-slate-700">
-                        <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 text-slate-500 font-bold flex items-center justify-center text-[10px]">
+                        <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 text-muted-foreground font-bold flex items-center justify-center text-[10px]">
                           {i + 1}
                         </span>
                         {step}
@@ -959,8 +959,8 @@ export default function PreProcedureSafetyPage() {
                 </div>
 
                 {result.evidence.length > 0 && (
-                  <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                    <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
                       <Eye className="w-3 h-3" />
                       Supporting Evidence
                     </h3>
@@ -970,10 +970,10 @@ export default function PreProcedureSafetyPage() {
                           <div className="flex items-start justify-between gap-2">
                             <p className="text-xs font-semibold text-slate-700">{ev.title}</p>
                             {ev.source_type && (
-                              <span className="text-[10px] bg-slate-200 text-slate-600 rounded px-1.5 py-0.5 flex-shrink-0">{ev.source_type}</span>
+                              <span className="text-[10px] bg-slate-200 text-muted-foreground rounded px-1.5 py-0.5 flex-shrink-0">{ev.source_type}</span>
                             )}
                           </div>
-                          <p className="text-xs text-slate-500 mt-1">{ev.note}</p>
+                          <p className="text-xs text-muted-foreground mt-1">{ev.note}</p>
                           {ev.citation_text && (
                             <p className="text-xs text-slate-400 italic mt-1">"{ev.citation_text}"</p>
                           )}
@@ -983,7 +983,7 @@ export default function PreProcedureSafetyPage() {
                   </div>
                 )}
 
-                <div className="flex items-center justify-between gap-3 bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3 bg-card rounded-2xl border border-border p-4 shadow-sm">
                   <p className="text-[10px] text-slate-400 leading-relaxed max-w-sm">
                     {result.disclaimer}
                   </p>
@@ -1010,12 +1010,12 @@ export default function PreProcedureSafetyPage() {
         <div className="mx-auto max-w-5xl px-4 py-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
 
           <div className="lg:col-span-2 space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <div className="bg-card rounded-2xl border border-border p-5 shadow-sm">
               <div className="flex items-center gap-2 mb-1">
-                <Microscope className="w-4 h-4 text-slate-600" />
-                <h2 className="text-sm font-bold text-slate-800">Complication Differential</h2>
+                <Microscope className="w-4 h-4 text-muted-foreground" />
+                <h2 className="text-sm font-bold text-foreground">Complication Differential</h2>
               </div>
-              <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+              <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
                 Enter the clinical presentation. AesthetiCite will return a ranked differential with immediate action steps — the "Sherlock Holmes" complication framework from CMAC 2025.
               </p>
               <div className="space-y-3">
@@ -1111,11 +1111,11 @@ export default function PreProcedureSafetyPage() {
           <div className="lg:col-span-3 space-y-4">
 
             {!diffRun && (
-              <div className="bg-white rounded-2xl border border-dashed border-slate-200 p-12 flex flex-col items-center text-center gap-3">
+              <div className="bg-card rounded-2xl border border-dashed border-border p-12 flex flex-col items-center text-center gap-3">
                 <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center">
                   <Microscope className="w-6 h-6 text-slate-400" />
                 </div>
-                <p className="text-sm font-medium text-slate-500">Enter symptoms to generate a ranked complication differential</p>
+                <p className="text-sm font-medium text-muted-foreground">Enter symptoms to generate a ranked complication differential</p>
                 <p className="text-xs text-slate-400 max-w-xs">
                   Based on the structured complication framework presented at CMAC 2025 — onset, appearance, pain, and timing layered to surface the most likely diagnosis.
                 </p>
@@ -1123,13 +1123,13 @@ export default function PreProcedureSafetyPage() {
             )}
 
             {diffRun && differentials.map((diff) => (
-              <div key={diff.rank} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div key={diff.rank} className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
                   <div className="flex items-center gap-2.5">
-                    <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 text-xs font-bold flex items-center justify-center">
+                    <span className="w-6 h-6 rounded-full bg-slate-100 text-muted-foreground text-xs font-bold flex items-center justify-center">
                       {diff.rank}
                     </span>
-                    <h3 className="text-sm font-bold text-slate-800">{diff.diagnosis}</h3>
+                    <h3 className="text-sm font-bold text-foreground">{diff.diagnosis}</h3>
                   </div>
                   <span className={`text-xs font-semibold border rounded-full px-2.5 py-1 ${probColor(diff.probability)}`}>
                     {diff.probability.toUpperCase()} probability
@@ -1141,7 +1141,7 @@ export default function PreProcedureSafetyPage() {
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Key Clues</p>
                     <ul className="space-y-1">
                       {diff.key_clues.map((c, i) => (
-                        <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                        <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
                           <span className="text-slate-300 flex-shrink-0">•</span>{c}
                         </li>
                       ))}
@@ -1163,7 +1163,7 @@ export default function PreProcedureSafetyPage() {
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Rule Out</p>
                     <ul className="space-y-1">
                       {diff.rule_out.map((r, i) => (
-                        <li key={i} className="text-xs text-slate-500 flex items-start gap-1.5">
+                        <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
                           <span className="text-slate-300 flex-shrink-0">↳</span>{r}
                         </li>
                       ))}
@@ -1191,12 +1191,12 @@ export default function PreProcedureSafetyPage() {
 
           {/* Form */}
           <div className="lg:col-span-2 space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <div className="bg-card rounded-2xl border border-border p-5 shadow-sm">
               <div className="flex items-center gap-2 mb-1">
                 <Waves className="w-4 h-4 text-sky-600" />
-                <h2 className="text-sm font-bold text-slate-800">Pre-Scan Briefing</h2>
+                <h2 className="text-sm font-bold text-foreground">Pre-Scan Briefing</h2>
               </div>
-              <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+              <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
                 Before using your ultrasound, AesthetiCite tells you exactly which structures
                 to identify, safe injection windows, and abort criteria for the selected region.
                 Based on RSNA 2025 and J Cosm Dermatology 2025 protocols.
@@ -1204,14 +1204,14 @@ export default function PreProcedureSafetyPage() {
 
               <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
                     Injection Region *
                   </label>
                   <select
                     value={prescanRegion}
                     onChange={e => setPrescanRegion(e.target.value)}
                     data-testid="select-prescan-region"
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400 transition-all"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-slate-400 transition-all"
                   >
                     <option value="">Select region</option>
                     <option value="nose">Nose / Nasal Dorsum</option>
@@ -1227,14 +1227,14 @@ export default function PreProcedureSafetyPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
                     Injector Experience
                   </label>
                   <select
                     value={prescanExperience}
                     onChange={e => setPrescanExperience(e.target.value)}
                     data-testid="select-prescan-experience"
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400 transition-all"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-slate-400 transition-all"
                   >
                     <option value="">Select level</option>
                     <option value="junior">Junior (&lt; 2 years)</option>
@@ -1269,11 +1269,11 @@ export default function PreProcedureSafetyPage() {
           <div className="lg:col-span-3 space-y-4">
 
             {!prescanResult && !prescanLoading && (
-              <div className="bg-white rounded-2xl border border-dashed border-slate-200 p-12 flex flex-col items-center text-center gap-3">
+              <div className="bg-card rounded-2xl border border-dashed border-border p-12 flex flex-col items-center text-center gap-3">
                 <div className="w-12 h-12 rounded-full bg-sky-50 flex items-center justify-center">
                   <Waves className="w-6 h-6 text-sky-400" />
                 </div>
-                <p className="text-sm font-medium text-slate-500">Select a region to generate your pre-scan checklist</p>
+                <p className="text-sm font-medium text-muted-foreground">Select a region to generate your pre-scan checklist</p>
                 <p className="text-xs text-slate-400 max-w-xs">
                   AesthetiCite will tell you which structures to identify before injection,
                   Doppler settings, safe injection windows, and abort criteria.
@@ -1282,20 +1282,20 @@ export default function PreProcedureSafetyPage() {
             )}
 
             {prescanLoading && (
-              <div className="bg-white rounded-2xl border border-slate-200 p-12 flex flex-col items-center gap-4">
+              <div className="bg-card rounded-2xl border border-border p-12 flex flex-col items-center gap-4">
                 <div className="w-10 h-10 border-2 border-sky-200 border-t-sky-600 rounded-full animate-spin" />
-                <p className="text-sm text-slate-500">Generating ultrasound briefing…</p>
+                <p className="text-sm text-muted-foreground">Generating ultrasound briefing…</p>
               </div>
             )}
 
             {prescanResult && (
               <>
                 {/* Header card */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="text-base font-black text-slate-800">{prescanResult.region_label}</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">Pre-scan ultrasound briefing</p>
+                      <h3 className="text-base font-black text-foreground">{prescanResult.region_label}</h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">Pre-scan ultrasound briefing</p>
                     </div>
                     <span className={`text-xs font-bold border rounded-lg px-3 py-1.5 ${
                       prescanResult.risk_level === "very_high" ? "text-red-700 bg-red-50 border-red-200"
@@ -1314,14 +1314,14 @@ export default function PreProcedureSafetyPage() {
                 </div>
 
                 {/* Structures to identify */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+                <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                  <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">
                     Structures to Identify
                   </h4>
                   <ul className="space-y-2">
                     {prescanResult.structures_to_identify.map((s: string, i: number) => (
                       <li key={i} className="flex items-start gap-2.5 text-xs text-slate-700">
-                        <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 text-slate-500 font-bold flex items-center justify-center text-[10px]">
+                        <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 text-muted-foreground font-bold flex items-center justify-center text-[10px]">
                           {i + 1}
                         </span>
                         {s}
@@ -1332,13 +1332,13 @@ export default function PreProcedureSafetyPage() {
 
                 {/* Key findings + Safe windows — 2 col */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+                  <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                    <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">
                       Document These Findings
                     </h4>
                     <ul className="space-y-1.5">
                       {prescanResult.key_findings_to_document.map((f: string, i: number) => (
-                        <li key={i} className="flex items-start gap-2 text-xs text-slate-600">
+                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
                           <span className="text-slate-400 flex-shrink-0">›</span>{f}
                         </li>
                       ))}
@@ -1380,9 +1380,9 @@ export default function PreProcedureSafetyPage() {
                 )}
 
                 {/* Evidence note */}
-                <div className="bg-slate-50 rounded-xl border border-slate-200 px-4 py-3">
+                <div className="bg-slate-50 rounded-xl border border-border px-4 py-3">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Evidence Base</p>
-                  <p className="text-xs text-slate-600">{prescanResult.evidence_note}</p>
+                  <p className="text-xs text-muted-foreground">{prescanResult.evidence_note}</p>
                 </div>
 
                 {/* Disclaimer */}

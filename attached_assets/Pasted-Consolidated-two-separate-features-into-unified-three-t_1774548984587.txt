@@ -1,0 +1,20 @@
+Consolidated two separate features into unified three-tab interfaceConsolidated two separate features into unified three-tab interfaceClear picture. The two tools do different things with the same uploaded photo:
+
+Vision Analysis — structured complication assessment. Upload → engine returns risk score, visual features, ranked causes, clinical action. Output is a structured result card.
+Visual Counsel (Follow-Up) — open-ended streaming Q&A. Upload → clinician asks questions, gets evidence-grounded streaming answers with citations.
+
+They share the same upload endpoint and the same image context. The right merge is one page, three tabs: Analyse · Ask · Healing tracker. Upload once, use all three.Ran 2 commands, created a file, read a fileRan 2 commands, created a file, read a fileOne file replaces both pages. Here's the full integration:
+Drop in: client/src/pages/vision-analysis.tsx
+In App.tsx, replace the two separate routes with:
+tsximport VisionPage from "@/pages/vision-analysis";
+
+<Route path="/vision-analysis">{() => <ProtectedRoute component={VisionPage} />}</Route>
+<Route path="/visual-counsel">{() => <Redirect to="/vision-analysis" />}</Route>
+The redirect means no broken links anywhere — any existing bookmark or navigation pointing to /visual-counsel lands correctly on the unified page.
+
+What changed and why it's better:
+The key insight is that both tools share the same uploaded photo. Previously a clinician had to upload the same image twice — once on /vision-analysis for the structured assessment, again on /visual-counsel to ask a question about it. Now they upload once and the photo persists across all three tabs.
+Analyse tab — the full structured complication engine. Risk score, visual features, ranked causes, protocol links, clinical action. Exactly as before.
+Ask tab — the streaming Q&A from Visual Counsel, now with the same uploaded photo already loaded. Four suggested questions appear before the first message so clinicians know what to ask. The conversation persists within the session.
+Healing tracker — the before/after serial comparison. Separate uploads because it needs two distinct photos.
+The /visual-counsel route stays alive as a redirect so nothing breaks in navigation, the More menu, or any existing links.

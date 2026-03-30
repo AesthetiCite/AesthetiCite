@@ -471,7 +471,7 @@ def build_followup_hint(intent: str) -> str:
 # ── Evidence hierarchy shim — import from canonical module ──────────────────
 try:
     from app.engine.evidence_hierarchy import (
-        classify_document  as classify_chunk,          # noqa: F811, F401
+        classify_document,                             # noqa: F401 — do NOT alias as classify_chunk (would shadow Source-returning fn at line 276)
         EVIDENCE_TYPE_MAP  as _TYPE_MAP,
         badge_for_type     as _badge_for_type,
         enrich_chunks_for_api,                         # noqa: F401

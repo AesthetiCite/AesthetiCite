@@ -32,6 +32,31 @@ def create_access_token(sub: str) -> str:
     payload = {"sub": sub, "iat": int(now.timestamp()), "exp": int(exp.timestamp())}
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALG)
 
+def create_refresh_token(sub: str) -> str:
+    """Long-lived refresh token (30 days). Used only to mint new access tokens."""
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(days=30)
+    payload = {
+        "sub":  sub,
+        "type": "refresh",
+        "iat":  int(now.timestamp()),
+        "exp":  int(exp.timestamp()),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALG)
+
+def decode_refresh_token(token: str) -> str:
+    """Validates a refresh token and returns the user sub (id)."""
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALG])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Token is not a refresh token")
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Missing sub in token")
+        return sub
+    except InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
 def decode_token(token: str) -> str:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALG])

@@ -1,13 +1,7 @@
 import { z } from "zod";
-import { pgTable, text, timestamp, serial, varchar, bigint, customType } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, serial, varchar, bigint } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
-
-const vector = customType<{ data: number[]; config: { dimensions: number } }>({
-  dataType(config) {
-    return `vector(${config?.dimensions ?? 384})`;
-  },
-});
 
 export const searchQuerySchema = z.object({
   query: z.string().min(1, "Query is required").max(1000, "Query too long"),
@@ -40,7 +34,6 @@ export const searchHistory = pgTable("search_history", {
   id: serial("id").primaryKey(),
   query: varchar("query", { length: 500 }).notNull(),
   answer: text("answer"),
-  embedding: vector("embedding", { dimensions: 384 }),
   createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`),
 });
 
@@ -62,7 +55,6 @@ export const messages = pgTable("messages", {
 export const insertSearchHistorySchema = createInsertSchema(searchHistory).omit({
   id: true,
   createdAt: true,
-  embedding: true,
 });
 export const insertConversationSchema = createInsertSchema(conversations).omit({ createdAt: true });
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });

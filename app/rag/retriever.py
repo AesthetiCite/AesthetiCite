@@ -43,14 +43,14 @@ DOSAGE_KEYWORDS = {
 SQL_UNIFIED_ALL = """
 WITH
 v AS (
+  -- No JOIN here so the planner can use the IVFFlat index for ORDER BY + LIMIT.
+  -- Inactive-doc filtering is deferred to the final SELECT.
   SELECT c.id,
          (c.embedding <=> CAST(:qvec AS vector(384))) AS vdist
   FROM chunks c
-  JOIN documents d ON d.id = c.document_id
-  WHERE d.status = 'active'
-    AND c.embedding IS NOT NULL
+  WHERE c.embedding IS NOT NULL
   ORDER BY c.embedding <=> CAST(:qvec AS vector(384))
-  LIMIT 80
+  LIMIT 120
 ),
 f AS (
   SELECT c.id,
@@ -97,6 +97,7 @@ SELECT
 FROM ranked r
 JOIN chunks c ON c.id = r.id
 JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
 ORDER BY
   COALESCE(r.vdist, 1e9) ASC,
   COALESCE(r.fts, 0) DESC;
@@ -105,15 +106,14 @@ ORDER BY
 SQL_UNIFIED_DOMAIN = """
 WITH
 v AS (
+  -- No JOIN here so the planner can use the IVFFlat index.
+  -- Domain and active-doc filtering is deferred to the final SELECT.
   SELECT c.id,
          (c.embedding <=> CAST(:qvec AS vector(384))) AS vdist
   FROM chunks c
-  JOIN documents d ON d.id = c.document_id
-  WHERE d.status = 'active'
-    AND c.embedding IS NOT NULL
-    AND d.domain = :domain
+  WHERE c.embedding IS NOT NULL
   ORDER BY c.embedding <=> CAST(:qvec AS vector(384))
-  LIMIT 80
+  LIMIT 200
 ),
 f AS (
   SELECT c.id,
@@ -161,6 +161,8 @@ SELECT
 FROM ranked r
 JOIN chunks c ON c.id = r.id
 JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND d.domain = :domain
 ORDER BY
   COALESCE(r.vdist, 1e9) ASC,
   COALESCE(r.fts, 0) DESC;
@@ -186,6 +188,63 @@ WHERE d.status = 'active'
 ORDER BY d.year DESC NULLS LAST
 LIMIT :k;
 """
+
+
+SQL_CDG_EXPAND = """
+SELECT
+  d.source_id,
+  d.title,
+  d.year,
+  d.organization_or_journal,
+  d.document_type,
+  d.domain,
+  c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text,
+  NULL::float AS vdist,
+  NULL::float AS krank,
+  COALESCE(d.url, '') AS url
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+WHERE d.source_id = ANY(:source_ids)
+  AND d.status = 'active'
+ORDER BY c.chunk_index ASC NULLS LAST;
+"""
+
+SQL_MGMT_EXPAND = """
+SELECT
+  d.source_id,
+  d.title,
+  d.year,
+  d.organization_or_journal,
+  d.document_type,
+  d.domain,
+  c.page_or_section,
+  COALESCE(c.evidence_level, d.document_type) AS evidence_level,
+  c.text,
+  NULL::float AS vdist,
+  ts_rank_cd(c.tsv, websearch_to_tsquery('english', :mgmt_q)) AS krank,
+  COALESCE(d.url, '') AS url
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+WHERE d.status = 'active'
+  AND c.tsv @@ websearch_to_tsquery('english', :mgmt_q)
+ORDER BY krank DESC
+LIMIT :k;
+"""
+
+# Keywords that trigger management sub-query expansion
+_COMPLICATION_MGMT_MAP = {
+    "ptosis": "ptosis management treatment apraclonidine oxymetazoline botulinum",
+    "blepharoptosis": "blepharoptosis management treatment apraclonidine oxymetazoline",
+    "biofilm": "biofilm filler nodule treatment antibiotics clarithromycin doxycycline",
+    "granuloma": "filler granuloma management treatment intralesional triamcinolone methotrexate",
+    "nodule": "filler nodule biofilm treatment antibiotics intralesional delayed inflammatory",
+    "vascular occlusion": "hyaluronidase dose units vascular occlusion protocol emergency Schelke Cassuto",
+    "occlusion": "hyaluronidase dose units vascular occlusion protocol emergency Schelke Cassuto",
+    "anaphylaxis": "anaphylaxis epinephrine dose management emergency protocol adrenaline",
+    "tyndall": "tyndall effect hyaluronidase treatment management dissolution",
+}
 
 
 def is_numerical_query(question: str) -> bool:
@@ -385,8 +444,8 @@ def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int
     t_embed = time.monotonic() - t0
 
     t1 = time.monotonic()
+    db.execute(text("SET LOCAL ivfflat.probes = 5"))
     db.execute(text("SET LOCAL hnsw.ef_search = 80"))
-    db.execute(text("SET LOCAL ivfflat.probes = 5"))  # lists=100, probes=5 → ~93% recall
 
     candidate_k = max(k_final * 3, 40)
     params = {
@@ -421,9 +480,13 @@ def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int
             logger.warning(f"Drug-title search failed: {e}")
 
     merged = {}
+    # Track expansion chunks separately so we can guarantee them a slot
+    _expanded_keys: list = []
+
     def add_row(r, kind: str):
         key = (r["source_id"], r.get("page_or_section") or "")
-        if key not in merged:
+        is_new = key not in merged
+        if is_new:
             merged[key] = {
                 "source_id": r["source_id"],
                 "title": r["title"],
@@ -438,7 +501,10 @@ def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int
                 "krank": None,
                 "num_match": False,
                 "url": r.get("url", "") or "",
+                "_expansion_kind": kind if kind in ("cdg", "mgmt") else None,
             }
+            if kind in ("cdg", "mgmt"):
+                _expanded_keys.append(key)
         if r.get("vdist") is not None:
             merged[key]["vdist"] = float(r["vdist"])
         if r.get("krank") is not None and r["krank"]:
@@ -450,6 +516,46 @@ def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int
         add_row(r, "unified")
     for r in drug_title_rows:
         add_row(r, "drug")
+
+    # ── CDG document expansion ────────────────────────────────────────────
+    # Safety/clinical guideline documents (source_id prefix "CDG-") are
+    # chunked by section. If one chunk is retrieved, pull ALL sibling chunks
+    # so the full protocol (including dosing) is always in the evidence pack.
+    cdg_source_ids = list({
+        v["source_id"] for v in merged.values()
+        if (v.get("source_id") or "").startswith("CDG-")
+    })
+    if cdg_source_ids:
+        try:
+            cdg_rows = db.execute(
+                text(SQL_CDG_EXPAND),
+                {"source_ids": cdg_source_ids}
+            ).mappings().all()
+            for r in cdg_rows:
+                add_row(r, "cdg")
+        except Exception as _cdg_err:
+            logger.warning(f"CDG expansion failed: {_cdg_err}")
+
+    # ── Complication management expansion ────────────────────────────────
+    # When the question mentions a known complication keyword, run a targeted
+    # FTS sub-query to pull management/treatment chunks that may not rank
+    # highly in the primary vector search (e.g. apraclonidine for ptosis,
+    # HALT-H dosing for vascular occlusion, clarithromycin for biofilm).
+    q_lower = question.lower()
+    mgmt_queries_run: set = set()
+    for kw, mgmt_q in _COMPLICATION_MGMT_MAP.items():
+        if kw in q_lower and mgmt_q not in mgmt_queries_run:
+            mgmt_queries_run.add(mgmt_q)
+            try:
+                mgmt_rows = db.execute(
+                    text(SQL_MGMT_EXPAND),
+                    {"mgmt_q": mgmt_q, "k": 6}
+                ).mappings().all()
+                for r in mgmt_rows:
+                    add_row(r, "mgmt")
+            except Exception as _mgmt_err:
+                logger.warning(f"Mgmt expansion failed for '{kw}': {_mgmt_err}")
+    # ─────────────────────────────────────────────────────────────────────
 
     candidates = list(merged.values())
     max_krank = max((c["krank"] or 0.0 for c in candidates), default=1.0) or 1.0
@@ -485,7 +591,24 @@ def retrieve_db(db: Session, question: str, domain: Optional[str] = None, k: int
         candidates = preferred
 
     candidates.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
-    return candidates[:k_final]
+
+    # ── Guarantee expansion chunks are included ───────────────────────────
+    # CDG protocol chunks and complication-management FTS chunks must always
+    # appear in the evidence pack even if their vector/FTS score is low.
+    # Reserve up to 4 slots (half of k_final) for guaranteed expansion chunks,
+    # keeping the rest populated by the top-scoring normal candidates.
+    if _expanded_keys:
+        expanded_items = [merged[k] for k in _expanded_keys if k in merged]
+        expanded_set = {id(m) for m in expanded_items}
+        normal_top = [c for c in candidates if id(c) not in expanded_set]
+        max_expand_slots = min(4, k_final // 2)
+        guaranteed = expanded_items[:max_expand_slots]
+        remaining_slots = k_final - len(guaranteed)
+        result = guaranteed + normal_top[:remaining_slots]
+    else:
+        result = candidates[:k_final]
+
+    return result
 
 
 def retrieve_hnsw(question: str, k: int = 12) -> List[Dict]:

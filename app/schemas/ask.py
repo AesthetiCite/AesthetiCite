@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, List
+from typing import Any, Dict, Literal, Optional, List
 
 
 Mode = Literal["clinic", "deep_dive"]
@@ -31,3 +31,4 @@ class AskResponse(BaseModel):
     refusal_reason: Optional[str] = None
     request_id: Optional[str] = None
     latency_ms: Optional[int] = None
+    evidence: List[Dict[str, Any]] = []

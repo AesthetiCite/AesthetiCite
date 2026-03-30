@@ -1,0 +1,54 @@
+Everything is already built and in outputs. Nothing to regenerate. Let's go through each one directly.
+
+Action 1 — Gunicorn (done in 2 minutes)
+The Procfile is already in your outputs. Two things to do:
+Add to requirements.txt:
+gunicorn>=21.0.0
+uvicorn[standard]>=0.24.0
+Drop Procfile into the root of your Replit project — same level as main.py. That's it for action 1.
+
+Action 2 — Wire case store + visual store
+You have four files already delivered. Apply them in this order:
+Step 1 — Drop these into app/api/:
+
+visual_store.py → app/api/visual_store.py (new file)
+case_store.py → app/api/case_store.py (new file)
+
+Step 2 — Replace the existing app/api/visual_counseling.py entirely with the visual_counseling.py from outputs.
+Step 3 — Open patch_instructions.py from outputs. It has four exact find/replace instructions for complication_protocol_engine.py and main.py. Follow them top to bottom — they're labelled CHANGE 1 through CHANGE 4.
+The critical ones are:
+
+CHANGE 2 in complication_protocol_engine.py — removes the CASE_STORE = [] line
+CHANGE 3 — replaces the /log-case endpoint body
+CHANGE 4 — replaces the /stats endpoint body
+main.py — adds from app.api.case_store import create_table_sync and calls create_table_sync() in startup
+
+
+Action 3 — HNSW migration
+fix6_hnsw.py is already in outputs. Drop it anywhere in your project, then run from the Replit shell:
+bashDATABASE_URL=your_direct_neon_url python fix6_hnsw.py migrate
+```
+
+Get your direct URL from the Neon console — it looks like `postgresql://user:pass@ep-xxx.neon.tech/dbname` (without `-pooler` in the hostname). The pooled URL will fail because `CREATE INDEX CONCURRENTLY` cannot run through PgBouncer.
+
+The migration output will say:
+```
+OK: CREATE EXTENSION IF NOT EXISTS vector...
+OK: CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_docs_hnsw...
+HNSW migration complete.
+Note: CONCURRENTLY index build runs in the background.
+The index build continues in the background on Neon — your database stays fully online while it builds. You can monitor progress in the Neon console under Monitoring, or run this query:
+sqlSELECT phase, blocks_done, blocks_total 
+FROM pg_stat_progress_create_index;
+Once the index is built, go into wherever AesthetiCiteEngine is instantiated and swap in the HNSW retriever:
+pythonfrom app.api.hnsw_retriever import hnsw_retrieve_fn
+engine = AesthetiCiteEngine(retrieve_fn=hnsw_retrieve_fn, ...)
+
+After all three are done:
+Restart the Replit server. On startup you should see:
+
+[CaseStore] complication_cases table ready. — case store wired
+[Startup] Neon keepalive task started — from patch 2
+Gunicorn spinning up 4 workers once on Railway
+
+The HNSW retrieval will start improving ACI scores on every query once the index finishes building — typically 5–15 minutes on Neon depending on corpus size.

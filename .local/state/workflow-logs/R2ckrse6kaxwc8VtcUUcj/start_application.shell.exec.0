@@ -1,0 +1,536 @@
+[1G[0K⠙[1G[0K
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K⠙[1G[0K8:30:37 AM [express] serving on port 5000
+Starting Python FastAPI backend on port 8000...
+[startup] Using direct Python binary: /home/runner/workspace/.pythonlibs/bin/python3
+[startup] Spawning: /home/runner/workspace/.pythonlibs/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+[python] hnswlib not available (missing or CPU incompatible) — falling back to pgvector
+[python] hnswlib not available - HNSW store disabled
+Proxy attempt 1 failed for /auth/login, retrying in 2000ms...
+Proxy attempt 2 failed for /auth/login, retrying in 2000ms...
+Proxy error for /auth/login after 3 attempts: TypeError: fetch failed
+[90m    at node:internal/deps/undici/undici:14902:13[39m
+[90m    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)[39m
+    at async proxyToFastAPI [90m(/home/runner/workspace/[39mserver/routes.ts:414:26[90m)[39m {
+  [cause]: Error: connect ECONNREFUSED 127.0.0.1:8000
+  [90m    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16)[39m {
+    errno: [33m-111[39m,
+    code: [32m'ECONNREFUSED'[39m,
+    syscall: [32m'connect'[39m,
+    address: [32m'127.0.0.1'[39m,
+    port: [33m8000[39m
+  }
+}
+8:30:53 AM [express] POST /api/auth/login 502 in 4016ms :: {"detail":"Backend service is starting up, please try again in a moment"}
+Proxy attempt 1 failed for /auth/login, retrying in 2000ms...
+Proxy attempt 2 failed for /auth/login, retrying in 2000ms...
+Proxy error for /auth/login after 3 attempts: TypeError: fetch failed
+[90m    at node:internal/deps/undici/undici:14902:13[39m
+[90m    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)[39m
+    at async proxyToFastAPI [90m(/home/runner/workspace/[39mserver/routes.ts:414:26[90m)[39m {
+  [cause]: Error: connect ECONNREFUSED 127.0.0.1:8000
+  [90m    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16)[39m {
+    errno: [33m-111[39m,
+    code: [32m'ECONNREFUSED'[39m,
+    syscall: [32m'connect'[39m,
+    address: [32m'127.0.0.1'[39m,
+    port: [33m8000[39m
+  }
+}
+8:31:01 AM [express] POST /api/auth/login 502 in 4009ms :: {"detail":"Backend service is starting up, please try again in a moment"}
+[startup] Waiting for Python API... 30s elapsed
+[python] 2026-03-20 08:31:13,982 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 307 Temporary Redirect"
+[python] INFO:     Started server process [415]
+[python] INFO:     Waiting for application startup.
+[python] 2026-03-20 08:31:13,991 [INFO] Visuals table ensured
+[python] 2026-03-20 08:31:14,008 [INFO] [operational] Safety engines already patched or unavailable
+[python] 2026-03-20 08:31:14,008 [INFO] [operational] Operational patches applied
+[python] 2026-03-20 08:31:14,009 [INFO] [startup] Background init dispatched — server ready to handle /health immediately
+[python] 2026-03-20 08:31:14,009 [INFO] Visuals table ensured
+[python] INFO:     Application startup complete.
+[python] INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[python] 2026-03-20 08:31:14,063 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 200 OK"
+[python] [network_migrations] schema OK
+[python] [intelligence_migrations] OK
+[python] 2026-03-20 08:31:14,102 [INFO] [startup/bg] Mass upload agent started
+[python] 2026-03-20 08:31:14,108 [INFO] [startup/bg] Index rebuild thread started
+[python] 2026-03-20 08:31:14,108 [INFO] [startup/bg] Background initialization complete
+[python] 2026-03-20 08:31:14,142 [INFO] [index_rebuild] idx_chunks_embedding_hnsw: present
+[python] 2026-03-20 08:31:14,144 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,145 [INFO] [index_rebuild] chunks_text_norm_trgm: present
+[python] 2026-03-20 08:31:14,146 [INFO] [index_rebuild] chunks_tsv_gin: present
+[python] 2026-03-20 08:31:14,146 [INFO] asyncpg retrieval pool initialized (min=5, max=20)
+[python] 2026-03-20 08:31:14,147 [INFO] [index_rebuild] idx_documents_trgm_title: present
+[python] 2026-03-20 08:31:14,148 [INFO] [index_rebuild] idx_documents_fts: present
+[python] 2026-03-20 08:31:14,148 [INFO] [index_rebuild] All indexes checked/rebuilt
+[python] 2026-03-20 08:31:14,194 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,227 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,271 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,306 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,352 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,392 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 200 OK"
+[python] Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]
+[python] 2026-03-20 08:31:14,433 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/tree/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079?recursive=false&expand=false "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,473 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,487 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,489 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,492 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,495 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,509 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,558 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[python] 2026-03-20 08:31:14,558 [WARNING] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[python] 2026-03-20 08:31:14,567 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,569 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 302 Found"
+[python] 2026-03-20 08:31:14,570 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,572 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,601 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,603 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/revision/main "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,604 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,606 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,607 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,616 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]
+[python] [A
+[python] 2026-03-20 08:31:14,629 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] Fetching 5 files:  20%|██        | 1/5 [00:00<00:00,  4.32it/s]
+[python] 2026-03-20 08:31:14,631 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,654 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,688 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,690 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,692 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,693 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,718 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,723 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/all-MiniLM-L6-v2-onnx/xet-read-token/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079 "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,763 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,772 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/model.onnx "HTTP/1.1 302 Found"
+[python] 2026-03-20 08:31:14,773 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,775 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/config.json "HTTP/1.1 200 OK"
+[python] Fetching 5 files:  20%|██        | 1/5 [00:00<00:00,  6.41it/s][A
+[python] 2026-03-20 08:31:14,783 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,794 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,805 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:31:14,841 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:31:14,852 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/all-MiniLM-L6-v2-onnx/5f1b8cd78bc4fb444dd171e59b18f3a3af89a079/tokenizer.json "HTTP/1.1 200 OK"
+[python] Fetching 5 files:  40%|████      | 2/5 [00:01<00:01,  1.62it/s]
+[python] Fetching 5 files: 100%|██████████| 5/5 [00:01<00:00,  4.47it/s]
+[python] Fetching 5 files:  40%|████      | 2/5 [00:01<00:01,  1.80it/s]
+[python] [A
+[python] Fetching 5 files:  60%|██████    | 3/5 [00:01<00:00,  2.81it/s][A
+[python] Fetching 5 files: 100%|██████████| 5/5 [00:01<00:00,  4.50it/s]
+[python] INFO:     127.0.0.1:38248 - "GET /health HTTP/1.1" 200 OK
+Python API started successfully (health check passed)
+[python] 2026-03-20 08:31:16,394 [INFO] Embedding cache warmed: 22 new, 0 already cached
+[migrations] Drizzle migrations applied successfully
+[python] 2026-03-20 08:31:29,098 [INFO] [progress] Loaded — M1=True M2=True M3=True M4=True M5=False | policy: multilang_fixed=True guideline_priority=True cleanup_verified=True | resume: phase=5 qi=110
+[python] 2026-03-20 08:31:38,065 [INFO] =================================================================
+[python] 2026-03-20 08:31:38,065 [INFO]   AesthetiCite Corpus Engine — 5-Milestone Strategy
+2026-03-20 08:31:38,065 [INFO]   Current: 890,365  Target: 1,500,000
+2026-03-20 08:31:38,065 [INFO]   Priority: M1=clean → M2=authoritative → M3=global → M4=broad → M5=aesthetic-deep-dive
+2026-03-20 08:31:38,065 [INFO]   Completion: M1=True M2=True M3=True M4=True M5=False
+2026-03-20 08:31:38,065 [INFO]   Policy: multilang_fixed=True guideline_priority=True cleanup_verified=True
+2026-03-20 08:31:38,066 [INFO] =================================================================
+2026-03-20 08:31:38,066 [INFO] [M1] Already completed — skipping cleanup.
+[python] 2026-03-20 08:31:38,066 [INFO] [M2] Already completed — skipping guideline ingestion.
+2026-03-20 08:31:38,066 [INFO] [M3] Already completed — skipping multilingual ingestion.
+2026-03-20 08:31:38,066 [INFO] [M4] Already completed.
+[python] 2026-03-20 08:31:38,066 [INFO] [M5] Starting aesthetic medicine deep-dive + recency sweep + safety data. Queries: 173. Target: 1,500,000 docs.
+[python] 2026-03-20 08:31:38,066 [INFO] === PHASE 5: Aesthetic Deep-Dive — Subspecialties + Recency + Safety | queries=173 | resuming_from=110 ===
+[python] INFO:     127.0.0.1:37098 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:31:39,183 [INFO]   [111/173] Psychosocial: 9999 PMIDs | "patient selection"[Title/Abstract] AND (aesthetic OR cosmet
+[python] 2026-03-20 08:31:43,937 [INFO] [ingest] 237 new / 463 total — embedding ...
+[python] 2026-03-20 08:31:45,075 [INFO] Unified retrieval: 40 candidates in 29.04s (embed 1.94s)
+[python] 2026-03-20 08:31:45,075 [INFO] [speed_optimizer] precomputed 'vascular occlusion management hyaluronidase treatm' → 8 chunks in 30982.2ms
+2026-03-20 08:31:45,075 [INFO] Numerical query detected: hyaluronidase dose vascular occlusion...
+[python] 2026-03-20 08:31:46,044 [INFO] Unified retrieval: 40 candidates in 0.96s (embed 0.01s)
+[python] INFO:     127.0.0.1:37108 - "GET /health HTTP/1.1" 200 OK
+8:31:46 AM [express] GET /api/health 200 in 15ms :: {"status":"ok","app":"AesthetiCite","env":"dev"}
+[python] 2026-03-20 08:31:47,877 [INFO] [speed_optimizer] precomputed 'hyaluronidase dose vascular occlusion' → 8 chunks in 2801.6ms
+[python] 2026-03-20 08:31:48,980 [INFO] [ingest] embed done (237 vecs) — inserting ...
+[python] 2026-03-20 08:31:51,964 [INFO] Unified retrieval: 40 candidates in 4.01s (embed 0.07s)
+[python] 2026-03-20 08:31:51,965 [INFO] [speed_optimizer] precomputed 'visual symptoms after filler emergency management' → 8 chunks in 4081.7ms
+[python] 2026-03-20 08:31:54,752 [INFO] Unified retrieval: 40 candidates in 2.73s (embed 0.06s)
+[python] 2026-03-20 08:31:54,752 [INFO] [speed_optimizer] precomputed 'anaphylaxis emergency management aesthetic injecta' → 8 chunks in 2787.2ms
+[python] 2026-03-20 08:32:02,678 [INFO] Unified retrieval: 40 candidates in 7.91s (embed 0.01s)
+[python] 2026-03-20 08:32:02,678 [INFO] [speed_optimizer] precomputed 'filler nodule granuloma treatment management' → 8 chunks in 7926.1ms
+[python] INFO:     127.0.0.1:38616 - "POST /auth/login HTTP/1.1" 200 OK
+8:32:06 AM [express] POST /api/auth/login 200 in 584ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU1MjYsImV4cCI6MTc3NDYwMDMyNn0.Z3BEL0x-4wK8zkEhmLSSRHMR74MYoUu__SYUcHmvGQs","token_type":"bearer"}
+[python] INFO:     127.0.0.1:38616 - "GET /api/workflow?complication=vascular_occlusion HTTP/1.1" 200 OK
+8:32:06 AM [express] GET /api/workflow 200 in 11ms :: {"complication":"vascular_occlusion","display_name":"Vascular Occlusion","urgency":"immediate","risk_level":"critical","time_critical":"60-minute treatment window. Tissue damage is irreversible after 4–6 hours.","total_steps":9,"steps":[{"step":1,"type":"action","priority":"critical","action":"STOP injection immediately","detail":"Withdraw needle/cannula. Do not apply pressure. Do not massage — this may extend the occlusion.","timer_seconds":null,"drug":null,"dose":null,"branch":null,"checkpoint":"Injection is stopped and patient is lying flat."},{"step":2,"type":"assess","priority":"critical","action":"Check for visual symptoms","detail":"Ask: any blurred vision, double vision, or visual loss? Examine for ptosis or ophthalmoplegia.","timer_seconds":null,"drug":null,"dose":null,"branch":{"condition":"Any visual symptom present","action":"STOP this protocol. Call 999 immediately. Ophthalmology referral now.","severity":"critical"},"checkpoint":"No visual symptoms confirmed. Continue."},{"step":3,"type":"action","priority":"critical","action":"Inject hyaluronidase 1500 IU NOW","detail":"Flood the entire compromised vascular territory generously. Use 150 IU/ml concentration. Fan technique.","timer_seconds":null,"drug":"Hyaluronidase","dose":"1500 IU minimum — can repeat. Maximum 10,000 IU total in severe cases.","branch":null,"checkpoint":null},{"step":4,"type":"action","priority":"critical","action":"Give aspirin 300 mg orally","detail":"Antiplatelet agent. Give immediately unless contraindicated (active GI bleed, allergy). Ask about contraindications first.","timer_seconds":null,"drug":"Aspirin","dose":"300 mg stat. 75 mg daily thereafter.","branch":null,"checkpoint":null},{"step":5,"type":"action","priority":"high","action":"Apply warm compress","detail":"Promotes vasodilation. Do not use ice — this causes vasoconstriction.","timer_seconds":null,"drug":null,"dose":null,"branch":null,"checkpoint":null},{"step":6,"type":"action","priority":"high","action":"Apply nitroglycerin paste 2% topically","detail":"Thin layer over blanched area. Promotes vasodilation. Avoid mucous membranes.","timer_seconds":null,"drug":"Nitroglycerin paste","dose":"2% paste, thin layer topically.","branch":null,"checkpoint":null},{"step":7,"type":"monitor","priority":"critical","action":"Monitor capillary refill every 5 min","detail":"Press and release skin. Normal refill < 2 seconds. Document colour, warmth, and refill at each check.","timer_seconds":300,"drug":null,"dose":null,"branch":null,"checkpoint":"Is blanching improving? Skin warming? Capillary refill < 2s?"},{"step":8,"type":"escalate","priority":"critical","action":"No improvement at 60 min? Repeat hyaluronidase","detail":"Repeat 1500 IU every 60 minutes. Up to 3000–10,000 IU total. If no improvement → emergency department.","timer_seconds":3600,"drug":null,"dose":null,"branch":{"condition":"No improvement at 60 minutes","action":"Emergency department transfer. Call ahead.","severity":"critical"},"checkpoint":null},{"step":9,"type":"document","priority":"high","action":"Document everything with timestamps","detail":"Product + batch number, time of injection, time blanching noticed, time hyaluronidase given, dose, response. Photograph at baseline and every 15–30 min.","timer_seconds":null,"drug":null,"dose":null,"branch":null,"checkpoint":null}],"completion_criteria":"Blanching fully resolved, normal skin colour, capillary refill < 2 seconds.","escalation_trigger":"Visual symptoms at any point → abandon this workflow, call 999 immediately.","evidence_basis":"BAFPS/RAFT Consensus 2023; Aesthet Surg J 2021."}
+[python] INFO:     127.0.0.1:38616 - "GET /api/workflow/list HTTP/1.1" 200 OK
+8:32:06 AM [express] GET /api/workflow/list 200 in 6ms :: [{"key":"vascular_occlusion","display_name":"Vascular Occlusion","urgency":"immediate","risk_level":"critical","total_steps":9,"time_critical":"60-minute treatment window. Tissue damage is irreversible after 4–6 hours."},{"key":"anaphylaxis","display_name":"Anaphylaxis","urgency":"immediate","risk_level":"critical","total_steps":7,"time_critical":"Minutes. Adrenaline must be given within 5 minutes of recognition."},{"key":"ptosis","display_name":"Botox-Induced Ptosis","urgency":"same_day","risk_level":"low","total_steps":6,"time_critical":"Not immediately time-critical. Resolves 4–8 weeks typically."},{"key":"nodule","display_name":"Filler Nodule / Granuloma","urgency":"same_day","risk_level":"moderate","total_steps":6,"time_critical":"Not immediately time-critical. Assess within days."},{"key":"infection","display_name":"Post-Filler Infection / Biofilm","urgency":"urgent","risk_level":"high","total_steps":6,"time_critical":"Start antibiotics within hours. Delay risks sepsis."},{"key":"tyndall","display_name":"Tyndall Effect","urgency":"routine","risk_level":"low","total_steps":4,"time_critical":"Not time-critical. Treat electively."},{"key":"dir","display_name":"Delayed Inflammatory Reaction","urgency":"same_day","risk_level":"moderate","total_steps":6,"time_critical":"Not immediately time-critical. Treat within 24–48 hours."},{"key":"necrosis","display_name":"Skin Necrosis","urgency":"immediate","risk_level":"critical","total_steps":6,"time_critical":"Urgent. Tissue loss is progressive. Plastic surgery referral within 24–48 hours."}]
+[python] INFO:     127.0.0.1:38616 - "POST /api/cases HTTP/1.1" 422 Unprocessable Entity
+8:32:06 AM [express] POST /api/cases 422 in 15ms :: {"detail":[{"type":"missing","loc":["body","treatment"],"msg":"Field required","input":{"complication":"vascular_occlusion","region":"perioral","product":"HA filler","product_type":"Juvederm Ultra","outcome":"resolved","notes":"Checklist test"}}]}
+[python] 2026-03-20 08:32:07,489 [INFO] Unified retrieval: 40 candidates in 4.79s (embed 0.02s)
+2026-03-20 08:32:07,489 [INFO] [speed_optimizer] precomputed '5-FU triamcinolone filler nodule injection' → 8 chunks in 4811.1ms
+[python] 2026-03-20 08:32:11,203 [INFO] Unified retrieval: 40 candidates in 3.70s (embed 0.01s)
+[python] 2026-03-20 08:32:11,204 [INFO] [speed_optimizer] precomputed 'post-filler infection biofilm treatment antibiotic' → 8 chunks in 3714.0ms
+[python] 2026-03-20 08:32:11,601 [INFO] [ingest] 305 new / 468 total — embedding ...
+[python] 2026-03-20 08:32:14,075 [INFO] Unified retrieval: 40 candidates in 2.86s (embed 0.01s)
+[python] 2026-03-20 08:32:14,075 [INFO] [speed_optimizer] precomputed 'botulinum toxin induced ptosis management apraclon' → 8 chunks in 2871.6ms
+[python] 2026-03-20 08:32:15,106 [INFO] [ingest] embed done (305 vecs) — inserting ...
+[python] 2026-03-20 08:32:15,388 [INFO] Unified retrieval: 40 candidates in 1.30s (embed 0.02s)
+[python] 2026-03-20 08:32:15,389 [INFO] [speed_optimizer] precomputed 'tyndall effect filler hyaluronidase treatment' → 8 chunks in 1313.4ms
+[python] INFO:     127.0.0.1:44640 - "POST /auth/login HTTP/1.1" 200 OK
+8:32:16 AM [express] POST /api/auth/login 200 in 260ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU1MzYsImV4cCI6MTc3NDYwMDMzNn0.U7q9Hfg0Drd8oHrnYPj1Ywj2kwztcBX0CcswoDGFzhQ","token_type":"bearer"}
+Internal Server Error: MulterError: Unexpected field
+    at wrappedFileFilter [90m(/home/runner/workspace/[39mnode_modules/[4mmulter[24m/index.js:41:19[90m)[39m
+    at Multipart.<anonymous> [90m(/home/runner/workspace/[39mnode_modules/[4mmulter[24m/lib/make-middleware.js:183:7[90m)[39m
+[90m    at Multipart.emit (node:events:524:28)[39m
+    at HeaderParser.cb [90m(/home/runner/workspace/[39mnode_modules/[4mbusboy[24m/lib/types/multipart.js:358:14[90m)[39m
+    at HeaderParser.push [90m(/home/runner/workspace/[39mnode_modules/[4mbusboy[24m/lib/types/multipart.js:162:20[90m)[39m
+    at SBMH.ssCb [as _cb] [90m(/home/runner/workspace/[39mnode_modules/[4mbusboy[24m/lib/types/multipart.js:394:37[90m)[39m
+    at feed [90m(/home/runner/workspace/[39mnode_modules/[4mstreamsearch[24m/lib/sbmh.js:219:14[90m)[39m
+    at SBMH.push [90m(/home/runner/workspace/[39mnode_modules/[4mstreamsearch[24m/lib/sbmh.js:104:16[90m)[39m
+    at Multipart._write [90m(/home/runner/workspace/[39mnode_modules/[4mbusboy[24m/lib/types/multipart.js:567:19[90m)[39m
+[90m    at writeOrBuffer (node:internal/streams/writable:572:12)[39m {
+  code: [32m'LIMIT_UNEXPECTED_FILE'[39m,
+  field: [32m'image'[39m,
+  storageErrors: []
+}
+8:32:16 AM [express] POST /api/vision/diagnose 500 in 7ms :: {"message":"Unexpected field"}
+[python] INFO:     127.0.0.1:44640 - "POST /api/generate-report/pdf HTTP/1.1" 200 OK
+8:32:16 AM [express] POST /api/generate-report/pdf 200 in 41ms
+[python] 2026-03-20 08:32:16,440 [INFO] Unified retrieval: 40 candidates in 1.04s (embed 0.01s)
+2026-03-20 08:32:16,441 [INFO] [speed_optimizer] precomputed 'delayed inflammatory reaction filler management tr' → 8 chunks in 1051.7ms
+[python] 2026-03-20 08:32:16,441 [INFO] [speed_optimizer] precomputed 10/10 hot queries
+[python] 2026-03-20 08:32:22,669 [INFO] [ingest] 408 new / 490 total — embedding ...
+[python] INFO:     127.0.0.1:58296 - "POST /auth/login HTTP/1.1" 200 OK
+8:32:23 AM [express] POST /api/auth/login 200 in 320ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU1NDMsImV4cCI6MTc3NDYwMDM0M30.SQOEK44JoVQdLbZmTKthQLFtyUE6tpi6y21-MLFEseQ","token_type":"bearer"}
+[python] INFO:     127.0.0.1:58296 - "POST /v2/stream HTTP/1.1" 200 OK
+[python] 2026-03-20 08:32:23,894 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/bge-small-en-v1.5-onnx-q "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:23,977 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/bge-small-en-v1.5-onnx-Q "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,060 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/bge-small-en-v1.5-onnx-q/tree/52398278842ec682c6f32300af41344b1c0b0bb2?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,143 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/bge-small-en-v1.5-onnx-Q/tree/52398278842ec682c6f32300af41344b1c0b0bb2?recursive=false&expand=false "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,230 [INFO] HTTP Request: GET https://huggingface.co/api/models/qdrant/bge-small-en-v1.5-onnx-q/revision/main "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,319 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/bge-small-en-v1.5-onnx-Q/revision/main "HTTP/1.1 200 OK"
+[python] Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]
+[python] 2026-03-20 08:32:24,398 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/bge-small-en-v1.5-onnx-q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,417 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/bge-small-en-v1.5-onnx-q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/model_optimized.onnx "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,425 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/bge-small-en-v1.5-onnx-q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,431 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/bge-small-en-v1.5-onnx-q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,433 [INFO] HTTP Request: HEAD https://huggingface.co/qdrant/bge-small-en-v1.5-onnx-q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,491 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/bge-small-en-v1.5-onnx-Q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,502 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/bge-small-en-v1.5-onnx-Q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,503 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,505 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/bge-small-en-v1.5-onnx-Q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/model_optimized.onnx "HTTP/1.1 302 Found"
+[python] 2026-03-20 08:32:24,510 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/bge-small-en-v1.5-onnx-Q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,513 [INFO] HTTP Request: HEAD https://huggingface.co/Qdrant/bge-small-en-v1.5-onnx-Q/resolve/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+[python] 2026-03-20 08:32:24,515 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,516 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/config.json "HTTP/1.1 200 OK"
+[python] Fetching 5 files:  20%|██        | 1/5 [00:00<00:00,  5.22it/s]
+[python] 2026-03-20 08:32:24,523 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,533 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,537 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/special_tokens_map.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,543 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer_config.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,547 [INFO] HTTP Request: GET https://huggingface.co/api/resolve-cache/models/Qdrant/bge-small-en-v1.5-onnx-Q/52398278842ec682c6f32300af41344b1c0b0bb2/tokenizer.json "HTTP/1.1 200 OK"
+[python] 2026-03-20 08:32:24,585 [INFO] HTTP Request: GET https://huggingface.co/api/models/Qdrant/bge-small-en-v1.5-onnx-Q/xet-read-token/52398278842ec682c6f32300af41344b1c0b0bb2 "HTTP/1.1 200 OK"
+[python] Fetching 5 files:  40%|████      | 2/5 [00:01<00:02,  1.46it/s]
+[python] Fetching 5 files: 100%|██████████| 5/5 [00:01<00:00,  4.09it/s]
+[python] 2026-03-20 08:32:25,996 [WARNING] Hardened retrieval failed (canceling statement due to statement timeout), falling back to retrieve_db_async
+[python] 2026-03-20 08:32:29,611 [INFO] [ingest] embed done (408 vecs) — inserting ...
+[python] 2026-03-20 08:32:33,514 [INFO] [ingest] 358 new / 478 total — embedding ...
+[python] INFO:     127.0.0.1:46156 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:32:39,047 [INFO] [ingest] embed done (358 vecs) — inserting ...
+[python] 2026-03-20 08:32:41,148 [INFO] Async retrieval: 30 candidates in 15142.1ms (embed 9.6ms, acquire 0.0ms, fetch 15116.6ms)
+[python] 2026-03-20 08:32:43,614 [INFO] [ingest] 430 new / 486 total — embedding ...
+[python] 2026-03-20 08:32:50,267 [INFO] [ingest] embed done (430 vecs) — inserting ...
+[python] INFO:     127.0.0.1:59284 - "POST /auth/login HTTP/1.1" 200 OK
+8:33:12 AM [express] POST /api/auth/login 200 in 317ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU1OTIsImV4cCI6MTc3NDYwMDM5Mn0.614XgvHjP6IEOQtyRJfncjpvHqWVB19MNOHoZFCV2HQ","token_type":"bearer"}
+[python] INFO:     127.0.0.1:59284 - "POST /api/cases HTTP/1.1" 422 Unprocessable Entity
+8:33:12 AM [express] POST /api/cases 422 in 6ms :: {"detail":[{"type":"missing","loc":["body","treatment"],"msg":"Field required","input":{"complication":"vascular_occlusion","region":"perioral","product":"HA filler"}},{"type":"missing","loc":["body","outcome"],"msg":"Field required","input":{"complication":"vascular_occlusion","region":"perioral","product":"HA filler"}}]}
+[python] 2026-03-20 08:33:18,342 [INFO] [ingest] 417 new / 483 total — embedding ...
+[python] 2026-03-20 08:33:26,126 [INFO] [ingest] embed done (417 vecs) — inserting ...
+[python] 2026-03-20 08:33:34,012 [INFO] [ingest] 417 new / 481 total — embedding ...
+[python] INFO:     127.0.0.1:33302 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:33:40,230 [INFO] [ingest] embed done (417 vecs) — inserting ...
+[python] 2026-03-20 08:33:46,204 [INFO] Unified retrieval: 75 candidates in 65.03s (embed 0.03s)
+[python] 2026-03-20 08:33:46,638 [INFO] [ingest] 423 new / 478 total — embedding ...
+[python] 2026-03-20 08:33:52,312 [INFO] [ingest] embed done (423 vecs) — inserting ...
+[python] 2026-03-20 08:34:11,673 [INFO] [ingest] 440 new / 493 total — embedding ...
+[python] 2026-03-20 08:34:19,096 [INFO] [ingest] embed done (440 vecs) — inserting ...
+[python] 2026-03-20 08:34:30,280 [INFO] [ingest] 450 new / 489 total — embedding ...
+[python] 2026-03-20 08:34:38,042 [INFO] [ingest] embed done (450 vecs) — inserting ...
+[python] INFO:     127.0.0.1:45670 - "GET /openapi.json HTTP/1.1" 200 OK
+[python] INFO:     127.0.0.1:46046 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:34:44,280 [INFO] Unified retrieval: 75 candidates in 58.06s (embed 0.02s)
+[python] 2026-03-20 08:34:45,053 [INFO] [ingest] 437 new / 495 total — embedding ...
+[python] INFO:     127.0.0.1:46060 - "GET /openapi.json HTTP/1.1" 200 OK
+[python] 2026-03-20 08:34:51,823 [INFO] [ingest] embed done (437 vecs) — inserting ...
+[python] INFO:     127.0.0.1:50552 - "GET /openapi.json HTTP/1.1" 200 OK
+[python] 2026-03-20 08:35:02,769 [INFO] [ingest] 462 new / 498 total — embedding ...
+[python] 2026-03-20 08:35:09,526 [INFO] [ingest] embed done (462 vecs) — inserting ...
+[python] INFO:     127.0.0.1:53412 - "POST /auth/login HTTP/1.1" 200 OK
+8:35:13 AM [express] POST /api/auth/login 200 in 270ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU3MTMsImV4cCI6MTc3NDYwMDUxM30.5yuUhlEOVWkzS8GcwNs6eOHd8EXW99wilp9x5CwwnFE","token_type":"bearer"}
+[python] INFO:     127.0.0.1:53412 - "POST /api/cases HTTP/1.1" 500 Internal Server Error
+8:35:13 AM [express] POST /api/cases 500 in 55ms :: {"detail":"Internal Server Error"}
+[python] ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/psycopg/cursor.py", line 117, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.NotNullViolation: null value in column "org_id" of relation "case_logs" violates not-null constraint
+DETAIL:  Failing row contains (67181758-0ca5-41d6-9e24-7f178812dc1c, null, null, bdd178b3-392d-46bc-a5b8-1e2496e7eb11, ANONYMOUS, null, null, null, perioral, null, vascular_occlusion, null, null, Hyaluronidase 1500IU, null, null, resolved, Checklist verification test, 2026-03-20 08:35:13.75492+00, 2026-03-20 08:35:13.75492+00).
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/protocols/http/h11_impl.py", line 410, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/applications.py", line 1135, in __call__
+    await super().__call__(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/applications.py", line 107, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 115, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 101, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 355, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 243, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/app/api/cases.py", line 135, in log_case
+    db.execute(
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2258, in _execute_internal
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+           ^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/sql/elements.py", line 527, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2363, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/psycopg/cursor.py", line 117, in execute
+    raise ex.with_traceback(None)
+sqlalchemy.exc.IntegrityError: (psycopg.errors.NotNullViolation) null value in column "org_id" of relation "case_logs" violates not-null constraint
+DETAIL:  Failing row contains (67181758-0ca5-41d6-9e24-7f178812dc1c, null, null, bdd178b3-392d-46bc-a5b8-1e2496e7eb11, ANONYMOUS, null, null, null, perioral, null, vascular_occlusion, null, null, Hyaluronidase 1500IU, null, null, resolved, Checklist verification test, 2026-03-20 08:35:13.75492+00, 2026-03-20 08:35:13.75492+00).
+[SQL: 
+            INSERT INTO case_logs (
+                id, org_id, clinic_id, created_by,
+                patient_reference,
+                complication_type, treatment_given, outcome,
+                procedure, region, product_used, hyaluronidase_dose, notes
+            ) VALUES (
+                %(id)s, %(org_id)s, %(clinic_id)s, %(created_by)s,
+                'ANONYMOUS',
+                %(comp)s, %(treatment)s, %(outcome)s,
+                %(proc)s, %(region)s, %(product)s, %(hyal)s, %(notes)s
+            )
+        ]
+[parameters: {'id': '67181758-0ca5-41d6-9e24-7f178812dc1c', 'org_id': None, 'clinic_id': None, 'created_by': 'bdd178b3-392d-46bc-a5b8-1e2496e7eb11', 'comp': 'vascular_occlusion', 'treatment': 'Hyaluronidase 1500IU', 'outcome': 'resolved', 'proc': None, 'region': 'perioral', 'product': None, 'hyal': None, 'notes': 'Checklist verification test'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+Proxy attempt 1 failed for /api/cases, retrying in 2000ms...
+[python] INFO:     127.0.0.1:53422 - "GET /api/cases HTTP/1.1" 422 Unprocessable Entity
+8:35:15 AM [express] GET /api/cases 422 in 2099ms :: {"detail":[{"type":"missing","loc":["query","complication"],"msg":"Field required","input":null}]}
+[python] INFO:     127.0.0.1:53422 - "POST /api/generate-report HTTP/1.1" 200 OK
+8:35:15 AM [express] POST /api/generate-report 200 in 5ms :: {"report_id":"adecde9a-1968-44ef-ab3d-7b2abb05224a","generated_at":"20 March 2026, 08:35 UTC","sections":{"report_id":"adecde9a-1968-44ef-ab3d-7b2abb05224a","report_date":"20 March 2026, 08:35 UTC","engine_version":"1.0","report_revision":"2026-03","incident":{"clinic_name":"Clinic name not recorded","clinic_address":"Not recorded","incident_date":"Not recorded","incident_time":"Not recorded","report_generated":"20 March 2026, 08:35 UTC"},"clinician":{"name":"Not recorded","role":"Not recorded","registration":"Not recorded"},"patient":{"reference":"ANONYMISED","age_range":"Not recorded","privacy_note":"This document contains no directly identifying patient information."},"procedure":{"procedure":"Not recorded","region":"perioral","product":"Not recorded","batch_number":"Not recorded","volume":"Not recorded","technique":"Not recorded","injector_experience":"Not recorded"},"complication":{"type":"vascular_occlusion","onset":"Not recorded","symptoms":"Not recorded","suspected_diagnosis":"vascular_occlusion"},"timeline":"Timeline not recorded.","treatment":{"summary":"• Hyaluronidase 1500IU","first_intervention":"Not recorded","hyaluronidase_dose":"Not recorded"},"patient_response":"Not recorded","outcome":"resolved","time_to_resolution":"Not recorded","escalation":{"actions":"No escalation required.","referrals":"No referrals made.","emergency_services":"Not required."},"follow_up":{"plan":"Not recorded","review_date":"Not recorded"},"evidence":{"protocol_used":"AesthetiCite clinical protocol","references":[]},"clinician_notes":"Not recorded","declaration":"I, [Practitioner], confirm that the information in this report is accurate to the best of my knowledge as of 20 March 2026, 08:35 UTC.","disclaimer":"This document was generated with AesthetiCite clinical decision support. It is provided as a documentation aid only and does not constitute legal advice. Retain with patient records per your clinic's data retention policy. Consult your medical defence organisation regarding medico-legal obligations."},"status":"generated"}
+[python] INFO:     127.0.0.1:53422 - "GET /api/workflow?complication=vascular_occlusion HTTP/1.1" 200 OK
+8:35:15 AM [express] GET /api/workflow 200 in 2ms :: {"complication":"vascular_occlusion","display_name":"Vascular Occlusion","urgency":"immediate","risk_level":"critical","time_critical":"60-minute treatment window. Tissue damage is irreversible after 4–6 hours.","total_steps":9,"steps":[{"step":1,"type":"action","priority":"critical","action":"STOP injection immediately","detail":"Withdraw needle/cannula. Do not apply pressure. Do not massage — this may extend the occlusion.","timer_seconds":null,"drug":null,"dose":null,"branch":null,"checkpoint":"Injection is stopped and patient is lying flat."},{"step":2,"type":"assess","priority":"critical","action":"Check for visual symptoms","detail":"Ask: any blurred vision, double vision, or visual loss? Examine for ptosis or ophthalmoplegia.","timer_seconds":null,"drug":null,"dose":null,"branch":{"condition":"Any visual symptom present","action":"STOP this protocol. Call 999 immediately. Ophthalmology referral now.","severity":"critical"},"checkpoint":"No visual symptoms confirmed. Continue."},{"step":3,"type":"action","priority":"critical","action":"Inject hyaluronidase 1500 IU NOW","detail":"Flood the entire compromised vascular territory generously. Use 150 IU/ml concentration. Fan technique.","timer_seconds":null,"drug":"Hyaluronidase","dose":"1500 IU minimum — can repeat. Maximum 10,000 IU total in severe cases.","branch":null,"checkpoint":null},{"step":4,"type":"action","priority":"critical","action":"Give aspirin 300 mg orally","detail":"Antiplatelet agent. Give immediately unless contraindicated (active GI bleed, allergy). Ask about contraindications first.","timer_seconds":null,"drug":"Aspirin","dose":"300 mg stat. 75 mg daily thereafter.","branch":null,"checkpoint":null},{"step":5,"type":"action","priority":"high","action":"Apply warm compress","detail":"Promotes vasodilation. Do not use ice — this causes vasoconstriction.","timer_seconds":null,"drug":null,"dose":null,"branch":null,"checkpoint":null},{"step":6,"type":"action","priority":"high","action":"Apply nitroglycerin paste 2% topically","detail":"Thin layer over blanched area. Promotes vasodilation. Avoid mucous membranes.","timer_seconds":null,"drug":"Nitroglycerin paste","dose":"2% paste, thin layer topically.","branch":null,"checkpoint":null},{"step":7,"type":"monitor","priority":"critical","action":"Monitor capillary refill every 5 min","detail":"Press and release skin. Normal refill < 2 seconds. Document colour, warmth, and refill at each check.","timer_seconds":300,"drug":null,"dose":null,"branch":null,"checkpoint":"Is blanching improving? Skin warming? Capillary refill < 2s?"},{"step":8,"type":"escalate","priority":"critical","action":"No improvement at 60 min? Repeat hyaluronidase","detail":"Repeat 1500 IU every 60 minutes. Up to 3000–10,000 IU total. If no improvement → emergency department.","timer_seconds":3600,"drug":null,"dose":null,"branch":{"condition":"No improvement at 60 minutes","action":"Emergency department transfer. Call ahead.","severity":"critical"},"checkpoint":null},{"step":9,"type":"document","priority":"high","action":"Document everything with timestamps","detail":"Product + batch number, time of injection, time blanching noticed, time hyaluronidase given, dose, response. Photograph at baseline and every 15–30 min.","timer_seconds":null,"drug":null,"dose":null,"branch":null,"checkpoint":null}],"completion_criteria":"Blanching fully resolved, normal skin colour, capillary refill < 2 seconds.","escalation_trigger":"Visual symptoms at any point → abandon this workflow, call 999 immediately.","evidence_basis":"BAFPS/RAFT Consensus 2023; Aesthet Surg J 2021."}
+[python] 2026-03-20 08:35:19,830 [INFO] [ingest] 450 new / 492 total — embedding ...
+[python] INFO:     127.0.0.1:44292 - "POST /auth/login HTTP/1.1" 200 OK
+8:35:20 AM [express] POST /api/auth/login 200 in 515ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU3MjAsImV4cCI6MTc3NDYwMDUyMH0.FTYIFNN5tuCvt26fnsR14FKn747PW7PpbjrOme8riEA","token_type":"bearer"}
+[python] 2026-03-20 08:35:21,445 [INFO] HTTP Request: POST http://localhost:1106/modelfarm/openai/chat/completions "HTTP/1.1 400 Bad Request"
+[python] 2026-03-20 08:35:21,446 [ERROR] Vision LLM call failed: Client error '400 Bad Request' for url 'http://localhost:1106/modelfarm/openai/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+[python] INFO:     127.0.0.1:44292 - "POST /api/vision/diagnose HTTP/1.1" 502 Bad Gateway
+8:35:21 AM [express] POST /api/vision/diagnose 502 in 567ms :: {"detail":"Vision engine unavailable: Client error '400 Bad Request' for url 'http://localhost:1106/modelfarm/openai/chat/completions'\nFor"}
+[python] 2026-03-20 08:35:23,026 [INFO] Unified retrieval: 75 candidates in 38.73s (embed 0.01s)
+[python] 2026-03-20 08:35:28,340 [INFO] [ingest] embed done (450 vecs) — inserting ...
+[python] 2026-03-20 08:35:37,007 [INFO] [ingest] 431 new / 493 total — embedding ...
+[python] INFO:     127.0.0.1:33798 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:35:44,212 [INFO] [ingest] embed done (431 vecs) — inserting ...
+[python] 2026-03-20 08:35:51,100 [INFO] [ingest] 456 new / 493 total — embedding ...
+[python] 2026-03-20 08:35:54,239 [INFO] Unified retrieval: 75 candidates in 31.20s (embed 0.01s)
+[python] 2026-03-20 08:35:59,371 [INFO] [ingest] embed done (456 vecs) — inserting ...
+[python] 2026-03-20 08:36:12,297 [INFO] [ingest] 454 new / 489 total — embedding ...
+[python] 2026-03-20 08:36:18,769 [INFO] [ingest] embed done (454 vecs) — inserting ...
+[python] 2026-03-20 08:36:24,001 [INFO] [ingest] 454 new / 496 total — embedding ...
+[python] 2026-03-20 08:36:29,365 [INFO] Unified retrieval: 75 candidates in 35.11s (embed 0.02s)
+[python] 2026-03-20 08:36:32,109 [INFO] [ingest] embed done (454 vecs) — inserting ...
+[python] INFO:     127.0.0.1:60094 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:36:41,821 [INFO] [ingest] 461 new / 488 total — embedding ...
+[python] 2026-03-20 08:36:48,973 [INFO] [ingest] embed done (461 vecs) — inserting ...
+[python] 2026-03-20 08:36:55,985 [INFO]   [113/173] Psychosocial: 566 PMIDs | "GAiS"[Title/Abstract] AND (aesthetic OR cosmetic OR scale O
+[python] 2026-03-20 08:36:56,850 [INFO] [ingest] 16 new / 66 total — embedding ...
+[python] 2026-03-20 08:36:57,163 [INFO] [ingest] embed done (16 vecs) — inserting ...
+[python] INFO:     127.0.0.1:45190 - "POST /auth/login HTTP/1.1" 200 OK
+8:36:57 AM [express] POST /api/auth/login 200 in 290ms :: {"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZGQxNzhiMy0zOTJkLTQ2YmMtYTViOC0xZTI0OTZlN2ViMTEiLCJpYXQiOjE3NzM5OTU4MTcsImV4cCI6MTc3NDYwMDYxN30.yYD3tEbhselzYUisvZInoZyewgF6yLZSXgqrMtLTgW0","token_type":"bearer"}
+[python] INFO:     127.0.0.1:45190 - "POST /api/cases HTTP/1.1" 200 OK
+8:36:57 AM [express] POST /api/cases 200 in 187ms :: {"status":"logged","case_id":"45d9a7c1-3178-439a-b526-f808c50d71ee","complication":"vascular_occlusion","outcome":"resolved"}
+[python] INFO:     127.0.0.1:45190 - "GET /api/cases?complication=vascular_occlusion HTTP/1.1" 500 Internal Server Error
+8:36:57 AM [express] GET /api/cases 500 in 24ms :: {"detail":"Internal Server Error"}
+[python] ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/protocols/http/h11_impl.py", line 410, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/applications.py", line 1135, in __call__
+    await super().__call__(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/applications.py", line 107, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 115, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 101, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 355, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 243, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/app/api/cases.py", line 294, in get_similar_cases
+    outcomes = [r["outcome"] for r in all_rows if r["outcome"]]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/app/api/cases.py", line 294, in <listcomp>
+    outcomes = [r["outcome"] for r in all_rows if r["outcome"]]
+                                                  ~^^^^^^^^^^^
+  File "lib/sqlalchemy/cyextension/resultproxy.pyx", line 54, in sqlalchemy.cyextension.resultproxy.BaseRow.__getitem__
+TypeError: tuple indices must be integers or slices, not str
+[python] 2026-03-20 08:36:59,919 [INFO] [ingest] 62 new / 476 total — embedding ...
+[python] 2026-03-20 08:37:01,010 [INFO] [ingest] embed done (62 vecs) — inserting ...
+[python] 2026-03-20 08:37:04,580 [INFO] Unified retrieval: 120 candidates in 35.21s (embed 0.01s)
+[python] 2026-03-20 08:37:04,707 [INFO]   [114/173] Psychosocial: 541 PMIDs | "FACE-Q"[Title/Abstract] AND (aesthetic OR cosmetic OR outco
+[python] 2026-03-20 08:37:05,394 [INFO] [ingest] 10 new / 30 total — embedding ...
+[python] 2026-03-20 08:37:05,564 [INFO] [ingest] embed done (10 vecs) — inserting ...
+[python] 2026-03-20 08:37:08,810 [INFO] [ingest] 181 new / 464 total — embedding ...
+[python] 2026-03-20 08:37:11,373 [INFO] [ingest] embed done (181 vecs) — inserting ...
+[python] 2026-03-20 08:37:23,201 [INFO]   [115/173] Recency: 364 PMIDs | "aesthetic medicine"[Title/Abstract] AND 2023:2025[PDAT]
+proxyStreamSafe error: TypeError: terminated
+[90m    at Fetch.onAborted (node:internal/deps/undici/undici:11322:53)[39m
+[90m    at Fetch.emit (node:events:524:28)[39m
+[90m    at Fetch.terminate (node:internal/deps/undici/undici:10480:14)[39m
+[90m    at Object.onError (node:internal/deps/undici/undici:11445:38)[39m
+[90m    at Request.onError (node:internal/deps/undici/undici:2210:31)[39m
+[90m    at Object.errorRequest (node:internal/deps/undici/undici:1707:17)[39m
+[90m    at Socket.<anonymous> (node:internal/deps/undici/undici:6433:16)[39m
+[90m    at Socket.emit (node:events:536:35)[39m
+[90m    at TCP.<anonymous> (node:net:343:12)[39m {
+  [cause]: BodyTimeoutError: Body Timeout Error
+  [90m    at FastTimer.onParserTimeout [as _onTimeout] (node:internal/deps/undici/undici:6367:32)[39m
+  [90m    at Timeout.onTick [as _onTimeout] (node:internal/deps/undici/undici:2326:17)[39m
+  [90m    at listOnTimeout (node:internal/timers:581:17)[39m
+  [90m    at process.processTimers (node:internal/timers:519:7)[39m {
+    code: [32m'UND_ERR_BODY_TIMEOUT'[39m,
+    [[32mSymbol(undici.error.UND_ERR)[39m]: [33mtrue[39m,
+    [[32mSymbol(undici.error.UND_ERR_BODY_TIMEOUT)[39m]: [33mtrue[39m
+  }
+}
+[python] 2026-03-20 08:37:26,362 [INFO] [ingest] 67 new / 328 total — embedding ...
+[python] 2026-03-20 08:37:27,293 [INFO] [ingest] embed done (67 vecs) — inserting ...
+[python] 2026-03-20 08:37:30,745 [INFO]   [116/173] Recency: 171 PMIDs | "cosmetic procedure"[Title/Abstract] AND 2023:2025[PDAT]
+[python] 2026-03-20 08:37:31,204 [INFO] Unified retrieval: 120 candidates in 26.62s (embed 0.01s)
+[python] 2026-03-20 08:37:32,238 [INFO] [ingest] 55 new / 156 total — embedding ...
+[python] 2026-03-20 08:37:32,813 [INFO] [ingest] embed done (55 vecs) — inserting ...
+[python] INFO:     127.0.0.1:59646 - "GET /health HTTP/1.1" 200 OK
+[python] 2026-03-20 08:37:39,207 [INFO]   [117/173] Recency: 290 PMIDs | "dermal filler"[Title/Abstract] AND 2023:2025[PDAT]
+[python] 2026-03-20 08:37:41,541 [INFO] [ingest] 9 new / 253 total — embedding ...
+[python] 2026-03-20 08:37:41,641 [INFO] [ingest] embed done (9 vecs) — inserting ...
+[python] 2026-03-20 08:37:43,778 [INFO]   [118/173] Recency: 3208 PMIDs | "botulinum toxin"[Title/Abstract] AND 2023:2025[PDAT]
+[python] 2026-03-20 08:37:47,711 [INFO] [ingest] 105 new / 449 total — embedding ...
+[python] 2026-03-20 08:37:50,112 [INFO] [ingest] embed done (105 vecs) — inserting ...
+[python] 2026-03-20 08:37:50,813 [INFO] [ingest] 124 new / 437 total — embedding ...
+[python] 2026-03-20 08:37:53,425 [INFO] [ingest] embed done (124 vecs) — inserting ...
+[python] 2026-03-20 08:37:56,804 [INFO] [ingest] 92 new / 434 total — embedding ...
+[python] 2026-03-20 08:37:57,206 [INFO] Unified retrieval: 120 candidates in 25.99s (embed 0.01s)
+[python] 2026-03-20 08:37:57,217 [INFO] Quality fusion CACHE MISS (key=883f2fcf…, sources=40, ACI=7.0, retrieval=316069ms, cache_size=1, hits=0, misses=1)
+[python] 2026-03-20 08:37:58,475 [INFO] [ingest] embed done (92 vecs) — inserting ...
+[python] 2026-03-20 08:37:58,862 [INFO] [ingest] 105 new / 443 total — embedding ...
+[python] 2026-03-20 08:38:00,457 [INFO] [ingest] embed done (105 vecs) — inserting ...
+[python] 2026-03-20 08:38:00,882 [INFO] [ingest] 100 new / 442 total — embedding ...
+[python] 2026-03-20 08:38:02,620 [INFO] [ingest] embed done (100 vecs) — inserting ...
+[python] 2026-03-20 08:38:03,490 [INFO] [ingest] 36 new / 188 total — embedding ...
+[python] 2026-03-20 08:38:04,096 [INFO] [ingest] embed done (36 vecs) — inserting ...
+[python] 2026-03-20 08:38:04,260 [INFO] [ingest] 69 new / 457 total — embedding ...
+[python] 2026-03-20 08:38:05,323 [INFO] [ingest] embed done (69 vecs) — inserting ...
+[python] 2026-03-20 08:38:07,234 [INFO]   [119/173] Recency: 1458 PMIDs | "laser"[Title/Abstract] AND (aesthetic OR cosmetic) AND 2023
+[python] 2026-03-20 08:38:10,489 [INFO] [ingest] 164 new / 395 total — embedding ...
+[python] 2026-03-20 08:38:13,584 [INFO] [ingest] embed done (164 vecs) — inserting ...
+[python] 2026-03-20 08:38:16,506 [INFO] [ingest] 128 new / 427 total — embedding ...
+[python] 2026-03-20 08:38:18,265 [INFO] [ingest] embed done (128 vecs) — inserting ...
+[python] 2026-03-20 08:38:18,798 [INFO] [ingest] 162 new / 457 total — embedding ...
+[python] 2026-03-20 08:38:20,712 [INFO] [ingest] embed done (162 vecs) — inserting ...
+[python] 2026-03-20 08:38:24,042 [INFO]   [120/173] Recency: 552 PMIDs | "radiofrequency"[Title/Abstract] AND (aesthetic OR skin) AND
+[python] 2026-03-20 08:38:27,806 [INFO] [ingest] 27 new / 466 total — embedding ...
+[python] 2026-03-20 08:38:28,255 [INFO] [ingest] embed done (27 vecs) — inserting ...
+[python] 2026-03-20 08:38:29,093 [INFO]   [121/173] Recency: 3789 PMIDs | "platelet rich plasma"[Title/Abstract] AND 2023:2025[PDAT]

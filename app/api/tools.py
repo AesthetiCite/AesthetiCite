@@ -106,6 +106,10 @@ async def _interactions_for_rxcuis(rxcuis: List[str]) -> List[InteractionFinding
     
     async with httpx.AsyncClient(timeout=25) as client:
         r = await client.get(url, params=params)
+        if r.status_code == 404:
+            # RxNorm returns 404 when no interaction data exists for these RxCUIs
+            interaction_cache[cache_key] = []
+            return []
         r.raise_for_status()
         data = r.json()
     

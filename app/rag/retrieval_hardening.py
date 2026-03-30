@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+DATABASE_URL: str = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_DIM = 384
@@ -177,7 +177,7 @@ def run_migration(database_url: str = DATABASE_URL) -> None:
     if not database_url:
         raise RuntimeError("DATABASE_URL is not set.")
 
-    conn = psycopg2.connect(database_url)
+    conn = psycopg2.connect(database_url, connect_timeout=10)
 
     print("Step 1/3: Running indexes, cleanup, evidence level alignment...")
     try:
@@ -280,33 +280,46 @@ SET ivfflat.probes = {ivfflat_probes};
 SET hnsw.ef_search = {ef_search};
 
 WITH
-vector_hits AS (
-    SELECT
-        c.id             AS chunk_id,
-        c.document_id,
-        c.chunk_index,
-        c.text           AS content,
-        c.evidence_level,
-        d.source_id,
-        d.title,
-        d.abstract,
-        d.url,
-        d.organization_or_journal,
-        d.journal,
-        d.year,
-        d.language,
-        d.document_type,
-        d.specialty,
-        (c.embedding <=> $1::vector)  AS vector_distance,
-        0.0::float                    AS text_rank
+-- IMPORTANT: vector_ids has NO JOIN so PostgreSQL can use the IVFFlat index
+-- for ORDER BY + LIMIT (joining inside the CTE forces a full table scan).
+vector_ids AS (
+    SELECT c.id AS chunk_id,
+           (c.embedding <=> $1::vector) AS vector_distance,
+           0.0::float AS text_rank
     FROM chunks c
-    JOIN documents d ON d.id = c.document_id
+    WHERE c.embedding IS NOT NULL
     ORDER BY c.embedding <=> $1::vector
     LIMIT 120
 ),
-text_hits AS (
+text_ids AS (
+    SELECT c.id AS chunk_id,
+           1.0::float AS vector_distance,
+           ts_rank_cd(c.tsv, plainto_tsquery('english', $2)) AS text_rank
+    FROM chunks c
+    JOIN documents d ON d.id = c.document_id
+    WHERE d.status = 'active'
+      AND c.tsv @@ plainto_tsquery('english', $2)
+    ORDER BY text_rank DESC
+    LIMIT 120
+),
+candidate_ids AS (
+    SELECT chunk_id, vector_distance, text_rank FROM vector_ids
+    UNION ALL
+    SELECT chunk_id, vector_distance, text_rank FROM text_ids
+),
+merged AS (
+    SELECT chunk_id,
+           min(vector_distance) AS vector_distance,
+           max(text_rank)       AS text_rank
+    FROM candidate_ids
+    GROUP BY chunk_id
+),
+-- Now join the full document metadata only for the (much smaller) merged set
+enriched AS (
     SELECT
-        c.id             AS chunk_id,
+        m.chunk_id,
+        m.vector_distance,
+        m.text_rank,
         c.document_id,
         c.chunk_index,
         c.text           AS content,
@@ -320,23 +333,15 @@ text_hits AS (
         d.year,
         d.language,
         d.document_type,
-        d.specialty,
-        1.0::float        AS vector_distance,
-        ts_rank_cd(c.tsv, plainto_tsquery('english', $2)) AS text_rank
-    FROM chunks c
+        d.specialty
+    FROM merged m
+    JOIN chunks c ON c.id = m.chunk_id
     JOIN documents d ON d.id = c.document_id
-    WHERE c.tsv @@ plainto_tsquery('english', $2)
-    ORDER BY text_rank DESC
-    LIMIT 120
-),
-merged AS (
-    SELECT * FROM vector_hits
-    UNION
-    SELECT * FROM text_hits
+    WHERE d.status = 'active'
 ),
 dedup AS (
     SELECT DISTINCT ON (chunk_id) *
-    FROM merged
+    FROM enriched
 ),
 scored AS (
     SELECT
@@ -520,6 +525,11 @@ _embedding_model = None
 def _get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
+        import os, pathlib
+        if not os.environ.get("FASTEMBED_CACHE_PATH"):
+            os.environ["FASTEMBED_CACHE_PATH"] = str(
+                pathlib.Path(__file__).resolve().parents[2] / ".fastembed_cache"
+            )
         from fastembed import TextEmbedding
         _embedding_model = TextEmbedding(model_name=EMBEDDING_MODEL)
     return _embedding_model
@@ -541,7 +551,7 @@ class HardenedRetrieverSync:
         import psycopg2.extras
         if not database_url:
             raise RuntimeError("DATABASE_URL is not set.")
-        self.conn = psycopg2.connect(database_url)
+        self.conn = psycopg2.connect(database_url, connect_timeout=10)
         self._psycopg2 = psycopg2
         self._extras = psycopg2.extras
 
@@ -641,7 +651,19 @@ class HardenedRetrieverAsync:
 
         retrieval_query = await asyncio.to_thread(translate_to_english, user_query)
         answer_language = detect_answer_language(user_query)
-        embedding = await asyncio.to_thread(embed_query, retrieval_query)
+
+        # IMPORTANT: use the same embedding model that was used to create the
+        # production chunk embeddings (all-MiniLM-L6-v2 via app.rag.embedder).
+        # The local embed_query() uses BAAI/bge-small-en-v1.5 which is a
+        # DIFFERENT vector space — using it would produce garbage retrieval.
+        # asyncpg also requires the vector as a pgvector string "[v1,v2,...]",
+        # NOT a Python list.
+        try:
+            from app.rag.embedder import embed_text as _embed_text_prod
+            _embedding_raw = await asyncio.to_thread(_embed_text_prod, retrieval_query)
+        except Exception:
+            _embedding_raw = await asyncio.to_thread(embed_query, retrieval_query)
+        embedding = "[" + ",".join(str(v) for v in _embedding_raw) + "]"
         keyword_q = build_tsquery(retrieval_query)
 
         set_sql = (
