@@ -5,4 +5,4 @@ RUN npm install
 COPY . .
 RUN npm run build
 ENV NODE_ENV=production
-CMD ["node", "dist/index.cjs"]
+CMD ["/bin/sh", "start.sh"]
