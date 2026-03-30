@@ -1,2 +1,4 @@
 #!/bin/sh
-node dist/index.cjs
+set -e
+cd /app
+exec node dist/index.cjs
