@@ -1,8 +1,8 @@
-#!/bin/bash
-set -euo pipefail
+#!/bin/sh
+set -e
 
 # Resolve the directory this script lives in (project root).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "[build.sh] Working directory: $(pwd)"

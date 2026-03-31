@@ -1,8 +1,9 @@
 FROM node:20-alpine
+RUN apk add --no-cache bash python3 py3-pip
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
-RUN npm run build
+RUN bash build.sh
 ENV NODE_ENV=production
-CMD ["/bin/sh", "start.sh"]
+CMD ["node", "dist/index.cjs"]
